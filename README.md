@@ -1,1 +1,1 @@
-# 2026-spring-microciv
+# microciv
