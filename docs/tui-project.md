@@ -1,504 +1,769 @@
-# MicroCiv TUI 实施计划
+# MicroCiv TUI 重构实施计划
 
-本文档不是补充规则文档，而是把 [tui.md](/home/zolive/microciv/docs/tui.md) 里的冻结规范拆成“按什么顺序实现、改哪些模块、每一步完成后算什么结果”的执行计划。
+本文档不是重复 [tui.md](/home/zolive/microciv/docs/tui.md)，而是把其中已经冻结的页面规则、交互规则、视觉规则和新增的正式技术路线，拆成“按什么顺序实现、每一步要做到什么、做到什么才算通过”的执行计划。
 
-目标很明确：
+当前目标只有一个：
 
-1. 先把 TUI 做对。
-2. 再在稳定界面上继续打磨 AI。
-3. 当前阶段不允许为了赶进度牺牲页面流程、布局层级和视觉基础件。
+1. 先把 TUI 做到可稳定游玩、可稳定观察、可稳定重开。
+2. 在此之前，不继续把精力投到 AI 策略细化。
 
-## 1. 项目目标
+## 1. 本轮完成定义
 
-本轮 TUI 重构必须同时满足三件事：
+本轮 TUI 重构只有在下面条件同时满足时才算完成：
 
-1. 页面流程严格符合 [microciv.md](/home/zolive/microciv/docs/microciv.md) 第 `13` 到 `24` 节。
-2. 布局与视觉严格符合 [tui.md](/home/zolive/microciv/docs/tui.md)。
-3. 最终程序在全屏终端下不依赖滚轮完成正常游戏流程，且地图成为最大视觉主体。
+1. 初始菜单、地图选择、游戏主界面、游戏内菜单、终局、Records 列表、Records 详情全部严格对齐 [tui.md](/home/zolive/microciv/docs/tui.md)。
+2. 手动模式完整游玩一局不需要滚轮。
+3. 自动模式完整观看一局不暴露人工操作按钮。
+4. `Restart` 不再触发 `DuplicateIds` 或其他 screen 生命周期错误。
+5. 左侧地图与终局地图都成为近满高正方形主区域，不再缩成中央小窗。
+6. 六边形、LOGO、资源图标、数字都切换到正式高精度渲染路径，不再以字符拼图作为正式实现。
 
-这不是局部修补，而是一次按规范重排界面结构的工程。
+## 2. 硬性约束
 
-## 2. 范围
+本轮实现必须遵守以下硬约束：
 
-这次只处理 TUI，不改阶段一核心规则。
+1. TUI 主框架固定为 `Textual`。
+2. 富文本和普通说明文字固定为 `Rich`。
+3. 六边形地图、LOGO、资源图标、小型数字、大型数字的正式路径固定为“离屏光栅生成 + 图像显示后端”。
+4. `textual-image` 或同类库只作为“显示后端”，不负责美术逻辑本身。
+5. 地图不再采用“每格一个字符控件”的正式方案，而是整张地图一次性渲染。
+6. 资源图标、LOGO、数字不再采用“字符拼接”的正式方案。
+7. 游戏内除 Records 外，任何页面都不得依赖滚轮完成正常操作。
+8. 所有 transient screen 不允许复用会重复冲突的固定 widget id。
+9. `Restart` 必须先完成 screen 栈归一，再进入新的地图选择页。
+10. 如果 `tui.md` 的结构示意图与旧实现冲突，以 [tui.md](/home/zolive/microciv/docs/tui.md) 为准。
+11. `19.4 LOGO 规范` 中当前版本的“组合关系简记”是唯一有效来源；若旧图与新图不一致，以新图为准。
 
-涉及范围：
+## 3. 正式技术路线
 
-1. `src/microciv/tui/app.py`
-2. `src/microciv/tui/screens/`
-3. `src/microciv/tui/widgets/`
-4. `src/microciv/tui/renderers/`
-5. `src/microciv/tui/presenters/`
+### 3.1 渲染总路线
 
-必要时允许新增 TUI 内部模块，但不应把游戏规则重新塞回 TUI 层。
-
-不在本轮优先范围内的内容：
-
-1. `Baseline` 策略增强
-2. `Expert / Custom` AI 真实实现
-3. 非必要的规则改动
-4. Records 数据结构改版
-
-## 3. 总体顺序
-
-实施顺序固定如下，不要跳着做：
+正式渲染路线固定为：
 
 ```text
-Phase 0  对齐当前代码与规范
-   |
-Phase 1  先立视觉基础件
-   |
-Phase 2  再立页面状态机
-   |
-Phase 3  重做菜单与地图选择
-   |
-Phase 4  重做游戏主界面骨架
-   |
-Phase 5  接上下文操作面板
-   |
-Phase 6  接 Autoplay 专属表现
-   |
-Phase 7  重做终局与 Records
-   |
-Phase 8  全面校对对齐与交互
+逻辑状态
+   -> Presenter 适配
+   -> 离屏渲染层生成图像
+   -> 图像显示后端挂到 Textual Widget
+   -> 鼠标命中测试回到逻辑坐标
 ```
 
-原因：
+职责分层固定如下：
 
-1. 如果先改具体页面，不先统一视觉原件，后面会全盘返工。
-2. 如果先堆交互，不先理顺页面状态机，页面切换会继续互相打架。
-3. 如果不先把游戏主界面骨架定死，后面的城市面板和 Autoplay 面板都会再次挤占地图区。
+1. `presenters/`
+   负责把 `GameState / RecordEntry / Config` 转成界面需要的数据。
+2. `renderers/`
+   负责生成图像，不直接处理 screen 跳转。
+3. `widgets/`
+   负责摆放、刷新、命中测试和事件转发。
+4. `screens/`
+   负责页面区域组合与页面级动作。
+5. `app.py`
+   负责全局 screen 生命周期与路由入口。
 
-## 4. 当前目录与建议落点
+### 3.2 离屏渲染层要求
 
-基于当前仓库，建议按下面的职责分层组织：
+必须建立统一的离屏渲染层，至少覆盖：
+
+1. `logo_renderer`
+2. `digit_renderer_small`
+3. `digit_renderer_large`
+4. `resource_hex_renderer`
+5. `map_renderer`
+
+每种渲染器都必须满足：
+
+1. 输入是纯数据，不读 UI 状态。
+2. 输出是可直接显示的图像对象或缓存文件。
+3. 同一输入多次渲染结果一致。
+4. 可按目标尺寸重绘，不依赖字符单元宽高。
+
+### 3.3 图像显示后端要求
+
+图像显示后端固定承担以下职责：
+
+1. 在 Textual 中显示离屏生成结果。
+2. 响应 widget 尺寸变化，触发重新渲染或缩放。
+3. 支持地图、LOGO、数字、资源图标四类图像。
+
+图像显示后端明确不承担：
+
+1. 六边形拼接规则
+2. 数字模板定义
+3. LOGO 组合规则
+4. 地图命中测试逻辑
+
+### 3.4 地图命中测试要求
+
+地图已经不是一个个 tile button 之后，点击命中必须改成：
+
+```text
+鼠标位置
+   -> 地图图像局部坐标
+   -> 六边形网格命中测试
+   -> 逻辑坐标 (q, r)
+   -> 现有 Game action flow
+```
+
+命中测试必须满足：
+
+1. 只有地图区域内部可命中。
+2. 点中六边形边缘时命中结果稳定。
+3. 选中白边框只绘制，不参与逻辑遮挡。
+
+### 3.5 数字正式路线
+
+数字路线固定如下：
+
+1. 小型数字和大型数字分别使用固定模板族。
+2. 模板允许后续微调弧度，但不允许运行时随布局自由拉伸断裂。
+3. 阴影方向固定为向右。
+4. 阴影必须贴着轮廓走。
+5. 中空字形内轮廓也要遵守相同阴影规则。
+
+## 4. 页面与路由冻结
+
+页面状态机固定为：
+
+```text
++------------------+
+|   Initial Menu   |
++--------+---------+
+         |
+         +--> Play ------> Map Select (Play) ------> Game (Manual)
+         |
+         +--> Autoplay --> Map Select (Autoplay) --> Game (Auto)
+         |
+         +--> Records ---> Record List ---> Record Detail
+         |
+         +--> Exit
+
+Game (Manual / Auto)
+   --m--> In-game Menu
+   --final turn--> Final
+
+In-game Menu
+   --Continue / m--> back to Game
+   --Menu----------> Initial Menu
+   --Exit----------> quit
+
+Final
+   --Restart-------> Map Select (same mode + same config family)
+   --Menu----------> Initial Menu
+   --Exit----------> quit
+```
+
+实现上必须满足：
+
+1. `Play` 和 `Autoplay` 只共用一套页面骨架，不复制两套页面。
+2. `Map Select (Play)` 与 `Map Select (Autoplay)` 是同一类 screen，不同参数。
+3. `Game (Manual)` 与 `Game (Auto)` 是同一类 screen，不同权限和不同右侧内容。
+4. `Restart` 不复用未清理完成的旧 screen 实例。
+
+## 5. 各页面操作流程冻结
+
+本节是正式重构时必须逐项实现的动作清单。
+
+### 5.1 初始菜单
+
+页面上只允许出现：
+
+1. `Play`
+2. `Autoplay`
+3. `Records`
+4. `Exit`
+
+不允许出现：
+
+1. `Baseline`
+2. `Normal`
+3. `Speed`
+4. 地图参数说明
+5. AI 类型说明
+
+动作与结果固定如下：
+
+| 动作 | 结果 |
+| --- | --- |
+| 点击 `Play` | 进入 `Map Select (Play)` |
+| 点击 `Autoplay` | 进入 `Map Select (Autoplay)` |
+| 点击 `Records` | 进入 `Record List` |
+| 点击 `Exit` | 退出程序 |
+| 按 `q` | 退出程序 |
+
+### 5.2 地图选择页
+
+公共控件固定为：
+
+1. `Map Difficulty`
+2. `Map Size`
+3. `Turn Limit`
+4. `Start`
+5. `Recreate`
+6. `Menu`
+
+Autoplay 版额外控件固定为：
+
+1. `AI Type`
+2. `Custom Input` 仅在 `AI Type = Custom` 时显示
+3. `Playback`
+
+动作与结果固定如下：
+
+| 动作 | 结果 |
+| --- | --- |
+| 点击 `Map Difficulty` | 在 `Normal / Hard` 间切换 |
+| 点击 `Map Size` | 在阶段一允许范围内循环 |
+| 点击 `Turn Limit` | 在阶段一允许范围内循环 |
+| 点击 `AI Type` | 在 `Baseline / Expert / Custom` 间切换 |
+| `AI Type = Custom` | 显示 `Custom Input` |
+| 点击 `Playback` | 在 `Normal / Speed` 间切换 |
+| 点击 `Recreate` | 仅重生成地图，保留当前配置 |
+| 点击 `Start` | 若当前配置允许，进入对应 `Game` |
+| 点击 `Menu` | 返回 `Initial Menu` |
+| 按 `q` | 退出程序 |
+
+阶段一的额外限制固定为：
+
+1. `Expert` 与 `Custom` 不可启动真实对局。
+2. 当 `AI Type` 不是 `Baseline` 时，`Start` 不应进入可运行对局。
+
+### 5.3 游戏主界面：手动模式
+
+手动模式必须覆盖以下 UI 状态：
+
+1. `idle`
+2. `terrain_selected_buildable`
+3. `terrain_selected_unbuildable`
+4. `road_selected`
+5. `city_selected`
+6. `build_confirm`
+7. `research_confirm`
+8. `in_game_menu`
+
+#### 5.3.1 `idle`
+
+右侧只显示：
+
+1. `SCORE`
+2. 当前分数数字
+3. `STEP`
+4. 当前回合数字
+5. `Skip`
+6. 右下小字信息区
+
+动作与结果：
+
+| 动作 | 结果 |
+| --- | --- |
+| 点击不可建城也不可修路的普通格 | 进入 `terrain_selected_unbuildable` |
+| 点击可建造普通格 | 进入 `terrain_selected_buildable` |
+| 点击道路格 | 进入 `road_selected` |
+| 点击城市格 | 进入 `city_selected` |
+| 点击 `Skip` | 立即结算回合，留在 `idle` 或进入 `Final` |
+| 按 `m` | 进入 `In-game Menu` |
+| 按 `q` | 退出程序 |
+
+#### 5.3.2 `terrain_selected_unbuildable`
+
+规则固定为：
+
+1. 地图只高亮当前格。
+2. 右侧仍保持默认面板。
+3. 不额外出现 `Build / Cancel`。
+
+动作与结果：
+
+| 动作 | 结果 |
+| --- | --- |
+| 再点同一格 | 回到 `idle` |
+| 点其他格 | 按新格类型切换状态 |
+| 点击 `Skip` | 结算回合 |
+| 按 `m` | 进入 `In-game Menu` |
+
+#### 5.3.3 `terrain_selected_buildable`
+
+可见内容固定为：
+
+1. 若既可建城又可修路，则横向显示 `City / Road` 两个切换项。
+2. 若只允许一种，则只显示一种。
+3. 下方固定显示 `Build / Cancel`。
+4. 提示显示在右下小字区。
+
+动作与结果：
+
+| 动作 | 结果 |
+| --- | --- |
+| 点击 `City` 或 `Road` | 仅切换当前建造目标，不结算 |
+| 点击 `Build` 成功 | 执行动作，结算，回到 `idle` 或进入 `Final` |
+| 点击 `Build` 失败 | 保持当前状态，右下显示错误 |
+| 点击 `Cancel` | 清除选中，回到 `idle` |
+| 再点同一格 | 清除选中，回到 `idle` |
+| 点其他格 | 按新格类型切换状态 |
+
+#### 5.3.4 `road_selected`
+
+规则固定为：
+
+1. 道路格只高亮，不出现额外操作面板。
+2. 右侧保持默认面板。
+
+动作与结果：
+
+| 动作 | 结果 |
+| --- | --- |
+| 再点同一格 | 回到 `idle` |
+| 点其他格 | 按新格类型切换状态 |
+| 点击 `Skip` | 结算回合 |
+
+#### 5.3.5 `city_selected`
+
+可见内容固定为：
+
+1. 四项资源，按 `2 x 2` 排列。
+2. 资源图标内部只有颜色，无文字。
+3. 图标右侧显示该网络资源数值。
+4. 科技区显示 `Agriculture / Logging / Mining / Education`。
+5. 已研究科技加粗，但点击无响应。
+6. 未研究科技点击进入 `research_confirm`。
+7. 右下保留提示小字区。
+
+动作与结果：
+
+| 动作 | 结果 |
+| --- | --- |
+| 点击某资源图标 | 进入 `build_confirm` |
+| 点击某未研究科技 | 进入 `research_confirm` |
+| 点击已研究科技 | 保持 `city_selected` |
+| 再点同一城市 | 回到 `idle` |
+| 点击其他格 | 按新格类型切换状态 |
+
+#### 5.3.6 `build_confirm`
+
+可见内容固定为：
+
+1. 顶部仅显示所选资源六边形图标与当前建筑数量。
+2. 文字使用 `count` 或纯数字，不使用 `current count`。
+3. 下方固定显示 `Build / Cancel`。
+4. 提示留在右下小字区。
+
+动作与结果：
+
+| 动作 | 结果 |
+| --- | --- |
+| 点击 `Build` 成功 | 扣资源，建造，结算，回到 `idle` 或进入 `Final` |
+| 点击 `Build` 失败 | 停留在 `build_confirm`，显示错误 |
+| 点击 `Cancel` | 返回 `city_selected`，保留当前选中城市 |
+
+#### 5.3.7 `research_confirm`
+
+可见内容固定为：
+
+1. 隐藏资源信息区。
+2. 仅显示 `Research / Cancel`。
+3. 提示留在右下小字区。
+
+动作与结果：
+
+| 动作 | 结果 |
+| --- | --- |
+| 点击 `Research` 成功 | 扣科技点，解锁科技，结算，回到 `idle` 或进入 `Final` |
+| 点击 `Research` 失败 | 停留在 `research_confirm`，显示错误 |
+| 点击 `Cancel` | 返回 `city_selected`，保留当前选中城市 |
+
+### 5.4 游戏内菜单
+
+可见控件固定为：
+
+1. `Continue`
+2. `Menu`
+3. `Exit`
+
+动作与结果固定为：
+
+| 动作 | 结果 |
+| --- | --- |
+| 点击 `Continue` | 返回游戏 |
+| 点击 `Menu` | 返回 `Initial Menu`，不保留局内 UI 选中态 |
+| 点击 `Exit` | 退出程序 |
+| 按 `m` | 等同 `Continue` |
+| 按 `q` | 退出程序 |
+
+### 5.5 游戏主界面：Autoplay 模式
+
+Autoplay 使用和手动模式同一页面骨架，但权限固定不同：
+
+1. 不允许点击地图插入动作。
+2. 不允许显示人工 `Build / Cancel / Research / City / Road`。
+3. 保留 `m` 和 `q`。
+4. 右下小字区第一行固定显示 `mode / ai`。
+5. 若存在提示，则提示占第二行。
+6. `SCORE / STEP` 的位置与风格必须与手动模式一致。
+
+动作与结果固定为：
+
+| 动作 | 结果 |
+| --- | --- |
+| `Normal` 模式自动推进 | 逐回合同步刷新 |
+| `Speed` 模式自动推进 | 批量推进，低频刷新 |
+| 按 `m` | 进入 `In-game Menu` |
+| 按 `q` | 退出程序 |
+
+### 5.6 终局页
+
+可见控件固定为：
+
+1. 左侧终局地图
+2. `SCORE`
+3. 最终分数数字
+4. `Restart`
+5. `Menu`
+6. `Exit`
+
+动作与结果固定为：
+
+| 动作 | 结果 |
+| --- | --- |
+| 点击 `Restart` | 进入新的地图选择页，保留同模式配置家族，不崩溃 |
+| 点击 `Menu` | 回到 `Initial Menu` |
+| 点击 `Exit` | 退出程序 |
+| 按 `q` | 退出程序 |
+
+### 5.7 Records 列表
+
+无记录时：
+
+1. 只显示 `No Records`
+2. 只显示居中的 `Back`
+3. 不显示 `Export`
+
+有记录时：
+
+1. 使用左右双列卡片
+2. 两列横向铺满宽度
+3. 底部固定 `Export / Back`
+
+动作与结果固定为：
+
+| 动作 | 结果 |
+| --- | --- |
+| 点击记录卡 | 进入 `Record Detail` |
+| 点击 `Export` | 导出 CSV |
+| 点击 `Back` | 返回 `Initial Menu` |
+| 按 `b` | 返回 `Initial Menu` |
+| 按 `d` | 滚到底部 |
+| 按 `t` | 滚到顶部 |
+| 按 `q` | 退出程序 |
+
+### 5.8 Records 详情
+
+顶部固定结构：
+
+1. 左地图
+2. 右信息
+3. `Back`
+
+向下滚动后出现统计区。
+
+动作与结果固定为：
+
+| 动作 | 结果 |
+| --- | --- |
+| 点击 `Back` | 返回 `Record List` |
+| 按 `b` | 返回 `Record List` |
+| 按 `d` | 滚到底部 |
+| 按 `t` | 滚到顶部 |
+| 按 `q` | 退出程序 |
+
+## 6. 布局与几何预算
+
+为避免再次出现“看起来写了，实际上点不到”的情况，本轮验收视口固定两档：
+
+1. `120 x 40`
+2. `140 x 60`
+
+这两档都必须满足以下条件：
+
+1. 主菜单四个入口全部可见、可点。
+2. 地图选择页全部配置按钮可见、可点。
+3. 手动模式一整套 `城市 -> 建筑确认 -> 返回` 操作不出现 `OutOfBounds`。
+4. 手动模式 `城市 -> 科研确认 -> 返回` 操作不出现 `OutOfBounds`。
+5. Autoplay 到终局后 `Restart / Menu / Exit` 全部可见、可点。
+
+布局预算固定为：
+
+1. 页面外边距只允许小空隙，不允许大面积留白。
+2. 左侧地图壳必须以“近满高正方形”为目标。
+3. 右侧信息栏固定为窄栏。
+4. 左侧地图底部不预留提示区。
+5. 右侧底部固定保留小字信息区。
+6. 手动模式下右侧所有核心操作必须完整落在可视区，无滚动。
+7. 只有 Records 页面允许纵向滚动。
+
+建议的实现预算：
+
+1. `side_width = clamp(28, floor(viewport_width * 0.24), 36)`
+2. `gap = 2`
+3. `map_square_side = min(viewport_height - 2 * outer_padding, viewport_width - side_width - gap - 2 * outer_padding)`
+4. 资源区固定为两行两列。
+5. 科技区固定为四行。
+6. 建造确认区和研究确认区固定为短面板，不允许把按钮挤到屏幕外。
+
+## 7. 模块落点
+
+建议按下面的模块边界执行，不再混合职责：
 
 ```text
 src/microciv/tui/
-├── app.py                  # 应用入口、全局绑定、screen 跳转入口
+├── app.py
 ├── presenters/
-│   ├── game_session.py     # 逻辑状态到界面状态的适配
-│   ├── status.py           # 右侧小字信息区与状态摘要
-│   └── state_machine.py    # 新增：统一页面状态与切换规则
+│   ├── game_session.py
+│   ├── status.py
+│   └── state_machine.py
 ├── renderers/
-│   ├── map.py              # 六边形地图渲染
-│   ├── logo.py             # 7 六边形 LOGO
-│   ├── digits.py           # 新增：小型/大型点阵数字与标题字
-│   └── hexes.py            # 新增：纯色六边形图元
+│   ├── assets.py
+│   ├── digits.py
+│   ├── logo.py
+│   ├── map.py
+│   └── hexes.py
 ├── screens/
-│   ├── menu.py             # 初始菜单
-│   ├── setup.py            # 地图选择
-│   ├── game.py             # 手动 / 自动共用主界面
-│   ├── final.py            # 终局界面
-│   └── records.py          # 记录列表 / 详情
+│   ├── menu.py
+│   ├── setup.py
+│   ├── game.py
+│   ├── game_menu.py
+│   ├── final.py
+│   └── records.py
 └── widgets/
-    ├── logo.py             # LOGO 挂载件
-    ├── map_grid.py         # 地图部件
-    ├── side_panel.py       # 新增：右侧窄栏骨架
-    ├── action_panel.py     # 新增：普通格/城市/确认面板
-    ├── metric_panel.py     # 新增：SCORE / STEP / 小字信息区
-    └── record_cards.py     # 新增：双列记录卡片
+    ├── image_surface.py
+    ├── logo.py
+    ├── map_view.py
+    ├── metric_panel.py
+    ├── action_panel.py
+    └── record_cards.py
 ```
 
-这里最重要的原则是：
+模块职责固定如下：
 
-1. `renderers/` 只负责“怎么画”。
-2. `widgets/` 只负责“怎么摆”和“怎么接事件”。
-3. `screens/` 只负责“当前页面有哪些区域”。
-4. `presenters/` 只负责“当前状态该显示什么”。
+1. `renderers/assets.py`
+   - 图像缓存键
+   - 公共颜色与尺寸常量
+2. `renderers/hexes.py`
+   - 六边形几何与资源/地形/选中边框绘制
+3. `renderers/logo.py`
+   - 按 `19.4 LOGO 规范` 输出 LOGO
+4. `renderers/digits.py`
+   - 小型/大型数字模板与标题字模板
+5. `renderers/map.py`
+   - 整张地图渲染与命中测试辅助
+6. `widgets/image_surface.py`
+   - 图像显示后端的统一包装
+7. `widgets/map_view.py`
+   - 地图图像挂载、缩放、点击坐标转换
+8. `widgets/action_panel.py`
+   - 手动模式右侧上下文区域
+9. `widgets/metric_panel.py`
+   - `SCORE / STEP / info` 固定框架
 
-## 5. 每阶段实施内容
+## 8. 实施顺序
 
-## 5.1 Phase 0：先做结构校对
+实施顺序固定如下，不允许跳步：
 
-目标：把当前代码与 [tui.md](/home/zolive/microciv/docs/tui.md) 的差距列成明确修改面，不直接写视觉细节。
+### Phase 0：收口生命周期与路由
 
-需要完成：
+目标：
 
-1. 盘点每个现有 screen 是否符合 `页面总流程`。
-2. 盘点 `game.py` 是否把右侧面板做成了“常驻大状态栏”。
-3. 盘点 `map_grid.py` 是否仍在格内放文字、符号或覆盖信息。
-4. 盘点 `records.py` 是否仍保留与规范不符的按钮布局。
-5. 盘点 `logo.py` 和 `map.py` 是否还在使用带边框六边形。
+1. 先解决 `Restart` 崩溃风险。
+2. 先把 screen 栈和 route 入口收成单一真源。
 
-交付结果：
+必须完成：
 
-1. 一份代码层 TODO 列表。
-2. 一组准备被替换或拆分的模块名单。
+1. 明确 route 名称与 screen 创建入口。
+2. 去掉会重复冲突的 transient fixed id。
+3. 把 `Restart` 改成“清理旧 screen -> 新建 setup screen”的安全路径。
 
-完成标准：
+通过标准：
 
-1. 不改逻辑。
-2. 只输出重构边界。
+1. `Restart` 多次循环不崩溃。
+2. `Menu -> Play/Autoplay -> Final -> Restart` 不出现 `DuplicateIds`。
 
-## 5.2 Phase 1：先立视觉基础件
+### Phase 1：建立正式渲染基础设施
 
-目标：先把后续所有页面都会复用的视觉原件做对。
+目标：
 
-必须先完成的原件：
+1. 把六边形、数字、LOGO 从字符路线切走。
+2. 建好离屏渲染与图像显示最小闭环。
 
-1. 纯色六边形图元
-2. 选中态白边框
-3. 地图六边形网格排布
-4. 资源信息区六边形图标
-5. 7 六边形 LOGO
-6. 小型点阵数字
-7. 大型点阵数字
+必须完成：
 
-关键要求：
+1. 图像显示 widget
+2. LOGO 渲染器
+3. 小型数字渲染器
+4. 大型数字渲染器
+5. 六边形图元渲染器
 
-1. 六边形默认没有边框。
-2. 只有地图当前选中格有白边框。
-3. 地图六边形、资源图标、LOGO 六边形是同一套视觉语言。
-4. 小型数字用于右侧信息区。
-5. 大型数字用于 `SCORE`、终局分数、标题强化区域。
-6. 数字阴影方向固定为向右，且必须贴轮廓。
+通过标准：
 
-建议新增模块：
+1. 单独测试页可以稳定显示 LOGO、资源六边形、小型数字、大型数字。
+2. 不再依赖字符画作为正式实现。
 
-1. `src/microciv/tui/renderers/hexes.py`
-2. `src/microciv/tui/renderers/digits.py`
+### Phase 2：重做菜单与地图选择
 
-完成标准：
+目标：
 
-1. 任何页面都不再依赖文字塞进地图格表达状态。
-2. 任何六边形默认都不出现黑框、灰框、白框。
-3. 在独立测试页里能单独渲染：
-   - LOGO
-   - 一小片地图
-   - 四种资源图标
-   - 小型/大型数字
+1. 先把用户进入游戏前的两层页面做正确。
 
-## 5.3 Phase 2：页面状态机归一
+必须完成：
 
-目标：把页面切换逻辑先做成单一真源。
+1. 初始菜单只保留四入口
+2. 地图选择正确分离 `Play` 与 `Autoplay`
+3. 左侧地图预览改为正式图像路线
+4. `Recreate` 保留配置
 
-必须覆盖的状态：
+通过标准：
 
-1. `initial_menu`
-2. `map_select_play`
-3. `map_select_autoplay`
-4. `game_play`
-5. `game_autoplay`
-6. `in_game_menu`
-7. `final_screen`
-8. `records_list`
-9. `record_detail`
+1. 不再提前出现 `Baseline / Normal / Speed`
+2. 菜单与地图选择在两档验收视口都无溢出
 
-必须覆盖的跳转：
+### Phase 3：重做游戏主界面骨架与地图视图
 
-```text
-Initial Menu
-  -> Play Map Select
-  -> Autoplay Map Select
-  -> Records List
-  -> Exit
+目标：
 
-Play Map Select
-  -> Game Screen
-  -> Menu
+1. 把地图重新做成页面主角。
+2. 左侧地图切到整图渲染 + 命中测试。
 
-Autoplay Map Select
-  -> Game Screen
-  -> Menu
+必须完成：
 
-Game Screen
-  -> In-game Menu
-  -> Final Screen
+1. 左侧近满高正方形地图壳
+2. 右侧窄栏
+3. 默认 `SCORE / STEP / Skip / info`
+4. 地图点击命中测试
 
-In-game Menu
-  -> Continue
-  -> Menu
-  -> Exit
+通过标准：
 
-Final Screen
-  -> Restart
-  -> Menu
-  -> Exit
+1. 点击地图可稳定得到逻辑坐标
+2. 地图、LOGO、资源图标六边形语言统一
 
-Records List
-  -> Record Detail
-  -> Back
+### Phase 4：重做手动模式上下文面板
 
-Record Detail
-  -> Back to List
-```
+目标：
 
-建议新增模块：
+1. 把 `idle / terrain / city / confirm` 做成明确状态机。
 
-1. `src/microciv/tui/presenters/state_machine.py`
+必须完成：
 
-完成标准：
+1. 普通格建造面板
+2. 道路格只高亮
+3. 城市资源区
+4. 科技区
+5. 建造确认页
+6. 研究确认页
+7. 提示生命周期
 
-1. 页面流转只经过一套路由。
-2. `Play` 和 `Autoplay` 的区别只体现在配置项和权限，不产生两套平行 UI 体系。
-3. `m / b / q / d / t` 的行为在对应页面固定。
+通过标准：
 
-## 5.4 Phase 3：重做初始菜单与地图选择
+1. `城市 -> 建造确认 -> Cancel -> 城市`
+2. `城市 -> 研究确认 -> Cancel -> 城市`
+3. `普通格 -> Build 成功 / 失败`
+4. 以上流程都不出现 `OutOfBounds`
 
-目标：先把用户进入游戏前的两层页面做对。
+### Phase 5：重做 Autoplay 表现
 
-### 初始菜单
+目标：
 
-必须满足：
+1. 自动模式看起来就是自动模式。
 
-1. 左侧只有 LOGO 与 `MicroCiv`。
-2. 右侧只有 `Play / Autoplay / Records / Exit`。
-3. 不能提前出现 `Baseline / Normal / Speed`。
-4. 终端放大后左右区域同步扩张，不缩在中间。
+必须完成：
 
-### 地图选择
+1. 隐藏人工操作
+2. 保留 `m / q`
+3. `mode / ai / tip` 放入右下小字区
+4. `Normal / Speed` 共用骨架
 
-必须满足：
+通过标准：
 
-1. 左侧显示地图预览。
-2. 右侧显示配置项。
-3. `Play` 版只显示地图参数。
-4. `Autoplay` 版额外显示 `AI Type / Custom Input / Playback`。
-5. `Recreate` 只刷新地图，不重置配置。
-6. `Menu` 返回初始菜单。
+1. 自动模式中无法误触人工动作
+2. `SCORE / STEP` 与手动模式一致
 
-需要优先修改：
+### Phase 6：重做终局与 Records
 
-1. `src/microciv/tui/screens/menu.py`
-2. `src/microciv/tui/screens/setup.py`
-3. `src/microciv/tui/widgets/logo.py`
-4. `src/microciv/tui/widgets/map_grid.py`
+目标：
 
-完成标准：
+1. 把后半段页面全部切到统一视觉体系。
 
-1. 初始菜单与地图选择界面已经完全符合 [tui.md](/home/zolive/microciv/docs/tui.md)。
-2. 后续进入游戏时不再需要“补充解释当前模式”。
+必须完成：
 
-## 5.5 Phase 4：重做游戏主界面骨架
+1. 终局地图改为正式图像路线
+2. `Restart / Menu / Exit` 稳定可用
+3. Records 双列卡片铺满
+4. 无记录时隐藏 `Export`
+5. 详情页顶部左地图右信息
 
-目标：把最重要的主界面版式先拉正。
+通过标准：
 
-页面结构必须固定为：
+1. `Autoplay -> Final -> Restart`
+2. `Records -> Detail -> Back`
+3. `Records -> Export`
+4. 全部路径稳定
 
-```text
-+------------------------------+------------------+
-|                              | SCORE            |
-|                              | STEP             |
-|   左侧：近满高正方形地图区     | Skip / 小字信息区 |
-|                              |                  |
-+------------------------------+------------------+
-```
+### Phase 7：最终对齐与回归
 
-必须满足：
+目标：
 
-1. 左侧地图区是主角。
-2. 左侧地图区是近满高正方形。
-3. 右侧是窄栏。
-4. 左侧底部不留提示区。
-5. 右侧底部保留小字信息区。
-6. 默认状态下不展开大资源表或大科技表。
-7. 正常游戏流程不需要滚轮。
+1. 解决最后的对齐、间距和细节问题。
 
-需要优先修改：
+必须完成：
 
-1. `src/microciv/tui/screens/game.py`
-2. `src/microciv/tui/widgets/map_grid.py`
-3. `src/microciv/tui/widgets/side_panel.py`
-4. `src/microciv/tui/widgets/metric_panel.py`
-5. `src/microciv/tui/presenters/status.py`
+1. LOGO 组合与 [tui.md](/home/zolive/microciv/docs/tui.md) `19.4` 当前示意一致
+2. 大小数字阴影方向与轮廓一致
+3. 地图和资源图标默认无边框
+4. 只有选中格出现白边框
+5. 文档示意误差不带入程序
 
-完成标准：
+通过标准：
 
-1. 即便还没接城市面板，默认游戏界面也已经正确利用全屏。
-2. 当前界面中没有任何需要滚动才能看到的核心动作。
+1. 两档验收视口全部通过
+2. 人工完整手测一局不被界面阻塞
 
-## 5.6 Phase 5：接上下文面板与操作流程
+## 9. 回归检查单
 
-目标：把“点击什么格，右侧出现什么面板”做成确定规则。
+每次提交后至少回归以下动作：
 
-必须按顺序接入：
+1. 初始菜单四入口
+2. 地图选择 `Start / Recreate / Menu`
+3. 手动模式：
+   - 普通格选中 / 取消
+   - 建城
+   - 修路
+   - 点击道路格
+   - 点击城市
+   - 资源 -> 建造确认 -> Build / Cancel
+   - 科技 -> 研究确认 -> Research / Cancel
+   - `Skip`
+4. `m` 打开游戏内菜单
+5. 游戏内菜单 `Continue / Menu / Exit`
+6. Autoplay `Normal`
+7. Autoplay `Speed`
+8. 终局 `Restart / Menu / Exit`
+9. Records：
+   - 空列表
+   - 有记录列表
+   - 导出
+   - 详情
+   - `b / d / t / q`
 
-1. 普通地形默认状态
-2. 普通地形建造面板
-3. 道路格只高亮不出操作
-4. 城市操作面板
-5. 建筑确认面板
-6. 研究确认面板
-7. `Skip`
-8. 失败提示生命周期
+## 10. 本轮不做的事
 
-交互规则必须固定：
+以下内容不在本轮重构目标内：
 
-1. 一次只选中一个格。
-2. 点击已选中格取消选中。
-3. `Cancel` 取消选中或返回上一级面板。
-4. Build / Research 失败不结束回合。
-5. Build / Research 成功后推进回合并刷新分数。
-6. 提示只显示在右下小字区。
+1. `Baseline` 策略增强
+2. `Expert / Custom` 真实对局能力
+3. 游戏规则改版
+4. Records 数据模型改版
+5. 额外动画特效优先级提升到高于可用性
 
-需要优先修改：
+结论很简单：
 
-1. `src/microciv/tui/screens/game.py`
-2. `src/microciv/tui/widgets/action_panel.py`
-3. `src/microciv/tui/presenters/game_session.py`
-4. `src/microciv/tui/presenters/status.py`
-
-完成标准：
-
-1. 手动游玩整局不需要滚轮。
-2. 所有人工操作都通过明确的上下文面板完成。
-3. 地图点击和右侧面板切换不再互相冲突。
-
-## 5.7 Phase 6：接 Autoplay 专属表现
-
-目标：在不复制一套页面的前提下，让自动模式看起来就是自动模式。
-
-必须满足：
-
-1. `Autoplay` 与 `Play` 共用主界面骨架。
-2. `Autoplay` 不出现人工操作按钮。
-3. `SCORE / STEP` 位置与手动模式一致。
-4. 底部小字区显示：
-   - `mode`
-   - `ai`
-   - `tip`
-5. `Normal` 逐回合同步刷新。
-6. `Speed` 批量低频刷新。
-7. 自动运行中仍可：
-   - `m`
-   - `q`
-
-需要优先修改：
-
-1. `src/microciv/tui/screens/game.py`
-2. `src/microciv/tui/presenters/game_session.py`
-3. `src/microciv/tui/presenters/status.py`
-
-完成标准：
-
-1. 自动模式下用户不会误以为还能手动下指令。
-2. `Normal` 与 `Speed` 的差异只体现在刷新节奏，不体现在页面结构。
-
-## 5.8 Phase 7：终局与 Records
-
-目标：把后半段页面全部拉回规范。
-
-### 终局页
-
-必须满足：
-
-1. 左侧仍是大正方形终局地图。
-2. 右侧只放分数和 `Restart / Menu / Exit`。
-3. 不退化成普通摘要卡片。
-
-### Records 列表
-
-必须满足：
-
-1. 无记录时不显示 `Export`。
-2. 无记录时 `Back` 居中。
-3. 有记录时是左右双列卡片。
-4. 两列横向铺满宽度，不留大块空白。
-5. Records 是唯一允许滚轮的主页面。
-
-### Records 详情
-
-必须满足：
-
-1. 顶部是左地图右信息。
-2. 向下滚动才进入统计区域。
-3. `Back` 与 `b` 都返回列表。
-
-需要优先修改：
-
-1. `src/microciv/tui/screens/final.py`
-2. `src/microciv/tui/screens/records.py`
-3. `src/microciv/tui/widgets/record_cards.py`
-
-完成标准：
-
-1. 终局和 Records 不再是主界面规范之外的独立风格。
-2. 所有页面共享同一套视觉语言。
-
-## 5.9 Phase 8：最后做对齐、间距与验收
-
-目标：解决“能用”和“像规范”之间最后那段差距。
-
-必须逐项检查：
-
-1. 全屏终端下每个页面是否真正扩张利用空间。
-2. 地图区是否始终是最大视觉主体。
-3. 右侧窄栏是否存在多余空白或过度挤压。
-4. 选项间距是否足够，正常操作是否完全不需要滚轮。
-5. 字体、点阵字、LOGO、六边形图标是否语言统一。
-6. 六边形默认是否真的无边框。
-7. 只有选中格是否真的有白框。
-8. 小字信息区是否始终留在右下。
-9. Markdown 示意图中的字符误差是否没有被带进程序。
-
-完成标准：
-
-1. TUI 达到可以让人完整手测的程度。
-2. 后续 AI 工作不再受“界面难以操作”阻塞。
-
-## 6. 阶段依赖
-
-必须遵守下面的依赖关系：
-
-```text
-视觉原件
-   -> 页面骨架
-   -> 游戏主界面
-   -> 上下文操作面板
-   -> Autoplay
-   -> 终局 / Records
-   -> 最终对齐验收
-```
-
-禁止反向施工：
-
-1. 不要先做 Records 卡片动画，再回头修地图骨架。
-2. 不要先堆 Autoplay 展示，再回头修手动模式面板层级。
-3. 不要先做局部美术特效，再回头修状态机。
-
-## 7. 每阶段验收口径
-
-每个阶段都至少要过三类检查：
-
-1. 结构检查
-   - 页面和模块职责是否对上
-2. 交互检查
-   - 鼠标、快捷键、面板切换是否符合文档
-3. 视觉检查
-   - 布局比例、对齐、边框、地图占比是否符合文档
-
-建议每阶段至少补一类自动化检查：
-
-1. `Textual` screen smoke test
-2. 关键页面渲染断言
-3. 基础交互路径测试
-
-## 8. 本轮完成定义
-
-本轮 TUI 工作只有在下面条件同时满足时才算完成：
-
-1. 初始菜单、地图选择、游戏主界面、游戏内菜单、终局、Records 列表、Records 详情全部按 [tui.md](/home/zolive/microciv/docs/tui.md) 重做完成。
-2. 手动模式完整游玩一局不需要滚轮。
-3. 自动模式不会暴露人工操作按钮。
-4. 地图格、LOGO、资源六边形图标默认都无边框，只有选中格出现白边框。
-5. 小型和大型点阵数字都已落地，并符合右侧阴影规则。
-6. 全屏终端下界面已正确铺满，不再缩成中央小窗。
-
-## 9. 实施建议
-
-建议后续真正动手时按下面的提交粒度推进：
-
-1. 提交 1：视觉原件与公共部件
-2. 提交 2：页面状态机与菜单/地图选择
-3. 提交 3：游戏主界面骨架
-4. 提交 4：手动模式上下文面板
-5. 提交 5：Autoplay 专属表现
-6. 提交 6：终局与 Records
-7. 提交 7：最终对齐与测试补齐
-
-这样做的好处是：
-
-1. 每一步都能独立回看。
-2. 出现偏差时容易定位。
-3. 不会把“布局问题、交互问题、视觉问题”混在同一次提交里。
+1. 先修 screen 生命周期。
+2. 再切正式渲染路线。
+3. 再重做页面骨架与操作面板。
+4. 直到“所有动作可达、所有页面稳定、所有六边形和数字不再靠字符硬拼”为止。
