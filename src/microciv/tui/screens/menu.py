@@ -5,7 +5,7 @@ from __future__ import annotations
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Button, Static
+from textual.widgets import Button
 
 from microciv.tui.presenters.state_machine import ScreenRoute
 from microciv.tui.widgets.logo import LogoWidget
@@ -13,6 +13,8 @@ from microciv.tui.widgets.logo import LogoWidget
 
 class MainMenuScreen(Screen[None]):
     """Top-level entry screen."""
+
+    route = ScreenRoute.MAIN_MENU
 
     BINDINGS = [Binding("q", "quit", "Quit")]
 
@@ -59,21 +61,15 @@ class MainMenuScreen(Screen[None]):
         color: #f3c0b5;
     }
 
-    #menu-title {
-        margin-top: 1;
-        color: #f2dfb4;
-        text-style: bold;
-    }
     """
 
     def __init__(self) -> None:
-        super().__init__(id=ScreenRoute.MAIN_MENU.value)
+        super().__init__()
 
     def compose(self):
         with Horizontal(id="menu-root"):
             with Vertical(id="menu-left"):
-                yield LogoWidget(show_title=False)
-                yield Static("MicroCiv", id="menu-title")
+                yield LogoWidget(show_title=True)
             with Vertical(id="menu-right"):
                 yield Button("Play", id="menu-play")
                 yield Button("Autoplay", id="menu-autoplay")

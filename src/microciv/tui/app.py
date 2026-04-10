@@ -10,7 +10,7 @@ from microciv.config import AppPaths, build_app_paths
 from microciv.game.models import GameConfig
 from microciv.records import RecordDatabase, RecordEntry, RecordStore, export_records_csv
 from microciv.tui.presenters.game_session import GameSession, create_game_session
-from microciv.tui.presenters.state_machine import ScreenRoute
+from microciv.tui.presenters.state_machine import ScreenRoute, route_for_screen
 from microciv.tui.screens.final import FinalScreen
 from microciv.tui.screens.game import GameScreen
 from microciv.tui.screens.menu import MainMenuScreen
@@ -44,6 +44,11 @@ class MicroCivApp(App[None]):
         self.record_store = RecordStore(self.paths.records_file)
         self.records = RecordDatabase()
         self.active_session: GameSession | None = None
+
+    @property
+    def current_route(self) -> ScreenRoute | None:
+        """Return the current top-of-stack route."""
+        return route_for_screen(self.screen)
 
     def on_mount(self) -> None:
         self.paths.data_dir.mkdir(parents=True, exist_ok=True)
@@ -95,7 +100,7 @@ class MicroCivApp(App[None]):
         return export_records_csv(self.records.records, self.paths.exports_dir)
 
     def return_to_menu(self) -> None:
-        while self.screen.id != ScreenRoute.MAIN_MENU.value and len(self.screen_stack) > 1:
+        while self.current_route is not ScreenRoute.MAIN_MENU and len(self.screen_stack) > 1:
             self.pop_screen()
         self.active_session = None
 

@@ -9,8 +9,10 @@ description = "A Textual-based micro strategy civilization simulator for the 202
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "pillow>=11.0.0",
     "rich>=14.0.0",
     "textual>=8.2.3",
+    "textual-image>=0.8.3",
 ]
 
 [project.scripts]

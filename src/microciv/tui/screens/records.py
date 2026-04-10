@@ -11,12 +11,15 @@ from microciv.game.enums import MapDifficulty, OccupantType, TerrainType
 from microciv.game.models import GameConfig, GameState, Tile
 from microciv.records.models import RecordEntry
 from microciv.tui.presenters.state_machine import ScreenRoute
-from microciv.tui.widgets.map_grid import MapGrid
+from microciv.tui.renderers.assets import DETAIL_MAP_HEX_METRICS
+from microciv.tui.widgets.map_preview import MapPreview
 from microciv.tui.widgets.record_cards import RecordCardButton
 
 
 class RecordsListScreen(Screen[None]):
     """Two-column records list screen."""
+
+    route = ScreenRoute.RECORDS_LIST
 
     BINDINGS = [
         Binding("b", "back", "Back"),
@@ -40,7 +43,7 @@ class RecordsListScreen(Screen[None]):
     #records-scroll {
         width: 1fr;
         height: 1fr;
-        padding-right: 1;
+        padding-right: 0;
     }
 
     .records-row {
@@ -51,12 +54,16 @@ class RecordsListScreen(Screen[None]):
 
     .records-row RecordCardButton {
         width: 1fr;
-        min-height: 8;
+        min-height: 9;
         margin-right: 1;
         border: none;
         background: #1d1c18;
         color: #f7efdd;
         text-align: left;
+    }
+
+    .records-row RecordCardButton:last-child {
+        margin-right: 0;
     }
 
     #records-empty {
@@ -70,30 +77,29 @@ class RecordsListScreen(Screen[None]):
         width: 1fr;
         height: auto;
         margin-top: 1;
+        align: center middle;
     }
 
     #records-actions Button {
-        width: 24;
+        width: 20;
         min-height: 3;
         border: none;
         background: #1d1c18;
         color: #f7efdd;
-        margin-right: 1;
-    }
-
-    #records-actions.-centered {
-        align: center middle;
+        margin: 0 1;
     }
 
     #records-message {
-        color: #a9b7be;
-        margin-top: 1;
+        width: 1fr;
         height: auto;
+        margin-top: 1;
+        color: #a9b7be;
+        content-align: center middle;
     }
     """
 
     def __init__(self) -> None:
-        super().__init__(id=ScreenRoute.RECORDS_LIST.value)
+        super().__init__()
         self._message = ""
 
     def compose(self):
@@ -108,10 +114,7 @@ class RecordsListScreen(Screen[None]):
                             yield RecordCardButton(left, id=f"record-card-{left.record_id}")
                             if right is not None:
                                 yield RecordCardButton(right, id=f"record-card-{right.record_id}")
-                            else:
-                                yield Static("")
-            action_classes = "-centered" if not records else ""
-            with Horizontal(id="records-actions", classes=action_classes):
+            with Horizontal(id="records-actions"):
                 if records:
                     yield Button("Export", id="records-export")
                 yield Button("Back", id="records-back")
@@ -136,18 +139,26 @@ class RecordsListScreen(Screen[None]):
         assert button_id is not None
         if button_id == "records-back":
             self.dismiss()
-        elif button_id == "records-export":
+            return
+        if button_id == "records-export":
             export_path = self.app.export_records()
-            self._message = "No records to export." if export_path is None else f"Exported: {export_path.name}"
-            self.refresh(layout=True, recompose=True)
-        elif button_id.startswith("record-card-"):
+            message = "No records to export." if export_path is None else f"Exported: {export_path.name}"
+            self._set_message(message)
+            return
+        if button_id.startswith("record-card-"):
             record_id = int(button_id.removeprefix("record-card-"))
             record = next(record for record in self.app.records.records if record.record_id == record_id)
             self.app.open_record_detail(record)
 
+    def _set_message(self, message: str) -> None:
+        self._message = message
+        self.query_one("#records-message", Static).update(message)
+
 
 class RecordDetailScreen(Screen[None]):
     """Single record detail view."""
+
+    route = ScreenRoute.RECORD_DETAIL
 
     BINDINGS = [
         Binding("b", "back", "Back"),
@@ -162,10 +173,15 @@ class RecordDetailScreen(Screen[None]):
         color: #f3ead7;
     }
 
-    #record-detail-scroll {
+    #record-detail-root {
         width: 1fr;
         height: 1fr;
         padding: 1 2;
+    }
+
+    #record-detail-scroll {
+        width: 1fr;
+        height: 1fr;
     }
 
     #record-detail-top {
@@ -174,16 +190,17 @@ class RecordDetailScreen(Screen[None]):
         margin-bottom: 1;
     }
 
-    #record-detail-map {
+    #record-detail-map-shell {
         width: 1fr;
         height: auto;
+        padding-right: 1;
         align: center middle;
     }
 
     #record-detail-side {
-        width: 30;
+        width: 28;
         height: auto;
-        padding-left: 2;
+        padding-left: 1;
     }
 
     #record-detail-side Button {
@@ -195,6 +212,23 @@ class RecordDetailScreen(Screen[None]):
         color: #f7efdd;
     }
 
+    #record-detail-stats {
+        width: 1fr;
+        height: auto;
+    }
+
+    .record-stat-column {
+        width: 1fr;
+        height: auto;
+        padding-right: 2;
+    }
+
+    .record-meta {
+        color: #f7efdd;
+        margin-bottom: 1;
+        height: auto;
+    }
+
     .record-stat {
         color: #a9b7be;
         margin-bottom: 1;
@@ -203,27 +237,35 @@ class RecordDetailScreen(Screen[None]):
     """
 
     def __init__(self, record: RecordEntry) -> None:
-        super().__init__(id=ScreenRoute.RECORD_DETAIL.value)
+        super().__init__()
         self.record = record
 
     def compose(self):
-        with VerticalScroll(id="record-detail-scroll"):
-            with Horizontal(id="record-detail-top"):
-                with Vertical(id="record-detail-map"):
-                    yield MapGrid(_record_state(self.record), interactive=False, compact=True, id="record-detail-map-grid")
-                with Vertical(id="record-detail-side"):
-                    yield Static(f"Mode: {self.record.mode}", classes="record-stat")
-                    yield Static(f"AI: {self.record.ai_type}", classes="record-stat")
-                    yield Static(f"Diff: {self.record.map_difficulty}", classes="record-stat")
-                    yield Button("Back", id="record-detail-back")
-            yield Static(f"Final Score      {self.record.final_score}", classes="record-stat")
-            yield Static(f"City Count       {self.record.city_count}", classes="record-stat")
-            yield Static(f"Building Count   {self.record.building_count}", classes="record-stat")
-            yield Static(f"Tech Count       {self.record.tech_count}", classes="record-stat")
-            yield Static(f"Food             {self.record.food}", classes="record-stat")
-            yield Static(f"Wood             {self.record.wood}", classes="record-stat")
-            yield Static(f"Ore              {self.record.ore}", classes="record-stat")
-            yield Static(f"Science          {self.record.science}", classes="record-stat")
+        with Vertical(id="record-detail-root"):
+            with VerticalScroll(id="record-detail-scroll"):
+                with Horizontal(id="record-detail-top"):
+                    with Vertical(id="record-detail-map-shell"):
+                        yield MapPreview(
+                            _record_state(self.record),
+                            metrics=DETAIL_MAP_HEX_METRICS,
+                            id="record-detail-map",
+                        )
+                    with Vertical(id="record-detail-side"):
+                        yield Static(f"Mode: {_title_case(self.record.mode)}", classes="record-meta")
+                        yield Static(f"AI  : {self.record.ai_type}", classes="record-meta")
+                        yield Static(f"Diff: {_title_case(self.record.map_difficulty)}", classes="record-meta")
+                        yield Button("Back", id="record-detail-back")
+                with Horizontal(id="record-detail-stats"):
+                    with Vertical(classes="record-stat-column"):
+                        yield Static(f"Final Score      {self.record.final_score}", classes="record-stat")
+                        yield Static(f"City Count       {self.record.city_count}", classes="record-stat")
+                        yield Static(f"Building Count   {self.record.building_count}", classes="record-stat")
+                        yield Static(f"Tech Count       {self.record.tech_count}", classes="record-stat")
+                    with Vertical(classes="record-stat-column"):
+                        yield Static(f"Food             {self.record.food}", classes="record-stat")
+                        yield Static(f"Wood             {self.record.wood}", classes="record-stat")
+                        yield Static(f"Ore              {self.record.ore}", classes="record-stat")
+                        yield Static(f"Science          {self.record.science}", classes="record-stat")
 
     def action_back(self) -> None:
         self.dismiss()
@@ -249,6 +291,10 @@ def _pairwise(records: list[RecordEntry]) -> list[tuple[RecordEntry, RecordEntry
         right = records[index + 1] if index + 1 < len(records) else None
         pairs.append((left, right))
     return pairs
+
+
+def _title_case(value: str) -> str:
+    return value.replace("_", " ").title()
 
 
 def _record_state(record: RecordEntry) -> GameState:

@@ -12,7 +12,7 @@ from microciv.game.enums import MapDifficulty, PlaybackMode, PolicyType
 from microciv.game.models import GameConfig, GameState
 from microciv.tui.presenters.game_session import build_state_from_config
 from microciv.tui.presenters.state_machine import ScreenRoute
-from microciv.tui.widgets.map_grid import MapGrid
+from microciv.tui.widgets.map_preview import MapPreview
 
 TURN_LIMIT_OPTIONS = (30, 50, 80, 100, 150)
 MAP_SIZE_OPTIONS = tuple(range(4, 11))
@@ -54,7 +54,7 @@ class SetupScreen(Screen[None]):
     #setup-preview {
         width: 1fr;
         height: 1fr;
-        padding: 1;
+        padding: 1 1 1 0;
         align: center middle;
     }
 
@@ -103,8 +103,8 @@ class SetupScreen(Screen[None]):
         autoplay: bool,
         initial_config: GameConfig | None = None,
     ) -> None:
-        screen_id = ScreenRoute.SETUP_AUTOPLAY.value if autoplay else ScreenRoute.SETUP_PLAY.value
-        super().__init__(id=screen_id)
+        super().__init__()
+        self.route = ScreenRoute.SETUP_AUTOPLAY if autoplay else ScreenRoute.SETUP_PLAY
         self._autoplay = autoplay
         self._map_size = initial_config.map_size if initial_config else DEFAULT_MAP_SIZE
         self._turn_limit = initial_config.turn_limit if initial_config else DEFAULT_TURN_LIMIT
@@ -123,7 +123,7 @@ class SetupScreen(Screen[None]):
             yield Static(title, id="setup-title")
             with Horizontal(id="setup-main"):
                 with Vertical(id="setup-preview"):
-                    yield MapGrid(self._preview_state, compact=True, interactive=False, id="setup-map-preview")
+                    yield MapPreview(self._preview_state, id="setup-map-preview")
                 with Vertical(id="setup-options"):
                     yield Button(f"Map Difficulty : {self._difficulty.value.title()}", id="setup-difficulty")
                     yield Button(f"Map Size : {self._map_size}", id="setup-map-size")
@@ -225,9 +225,9 @@ class SetupScreen(Screen[None]):
 
     def _note_text(self) -> str:
         if not self._autoplay:
-            return "Left side shows the current generated map. Recreate keeps all settings."
+            return ""
         if self._policy_type is PolicyType.BASELINE:
-            return "Autoplay is configured here. Baseline is the only executable AI in phase one."
+            return ""
         if self._policy_type is PolicyType.EXPERT:
-            return "Expert is reserved for a later phase. Switch back to Baseline to start."
-        return "Custom is reserved for a later phase. The goal field is visible, but Start stays unavailable."
+            return "Phase 1: Baseline only."
+        return "Phase 1: Baseline only."

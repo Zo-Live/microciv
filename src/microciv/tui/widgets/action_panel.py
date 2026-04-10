@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+from textual import events
 from textual.containers import Horizontal
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Static
 
 from microciv.game.enums import ResourceType
-from microciv.tui.renderers.hexes import resource_color
-from microciv.tui.widgets.hexes import HexButton
+from microciv.tui.renderers.assets import RESOURCE_HEX_METRICS
+from microciv.tui.renderers.hexes import render_hex_image, resource_color
+from microciv.tui.widgets.image_surface import ImageSurface
 
 
 class ResourceButton(Widget):
-    """Clickable resource icon with a numeric value."""
+    """Compact clickable resource icon with a numeric value."""
 
     class Pressed(Message):
         """Posted when the resource icon is selected."""
@@ -25,10 +27,16 @@ class ResourceButton(Widget):
 
     DEFAULT_CSS = """
     ResourceButton {
-        width: auto;
+        width: 1fr;
         height: auto;
         padding: 0;
-        margin: 0 3 0 0;
+        margin: 0 1 0 0;
+    }
+
+    ResourceButton .resource-row {
+        width: 1fr;
+        height: auto;
+        align: left middle;
     }
 
     ResourceButton .resource-value {
@@ -41,21 +49,29 @@ class ResourceButton(Widget):
     }
     """
 
-    def __init__(self, resource_type: ResourceType, value: int, *, id: str | None = None) -> None:
+    def __init__(
+        self,
+        resource_type: ResourceType,
+        value: int,
+        *,
+        id: str | None = None,
+        interactive: bool = True,
+    ) -> None:
         super().__init__(id=id)
         self.resource_type = resource_type
         self.value = value
+        self._interactive = interactive
 
     def compose(self):
-        with Horizontal():
-            yield HexButton(
-                self.resource_type.value,
-                color=resource_color(self.resource_type),
-                compact=True,
-                id=f"{self.id}-hex" if self.id else None,
+        with Horizontal(classes="resource-row"):
+            yield ImageSurface(
+                render_hex_image(resource_color(self.resource_type), metrics=RESOURCE_HEX_METRICS),
+                id=f"{self.id}-icon" if self.id else None,
             )
             yield Static(str(self.value), classes="resource-value")
 
-    def on_hex_button_pressed(self, message: HexButton.Pressed) -> None:
-        message.stop()
+    def on_click(self, event: events.Click) -> None:
+        if not self._interactive:
+            return
+        event.stop()
         self.post_message(self.Pressed(self, self.resource_type))

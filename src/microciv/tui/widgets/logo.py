@@ -6,8 +6,8 @@ from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import Static
 
-from microciv.tui.renderers.logo import LOGO_TAGLINE, render_logo_rows
-from microciv.tui.widgets.hexes import HexButton
+from microciv.tui.renderers.logo import LOGO_TAGLINE, render_logo_image
+from microciv.tui.widgets.image_surface import ImageSurface
 
 
 class LogoWidget(Widget):
@@ -50,23 +50,9 @@ class LogoWidget(Widget):
         self.show_tagline = show_tagline
 
     def compose(self):
-        rows = render_logo_rows()
         with Vertical():
-            for index, row in enumerate(rows):
-                with Horizontal(classes="logo-row"):
-                    if index == 0:
-                        yield Static("", classes="logo-indent-large")
-                    elif index in {1, 2}:
-                        yield Static("", classes="logo-indent-small")
-                    elif index == 3:
-                        yield Static("", classes="logo-indent-large")
-                    for color in row:
-                        yield HexButton(
-                            f"logo-{index}-{color}",
-                            color=color,
-                            compact=True,
-                            disabled=True,
-                        )
+            with Horizontal(classes="logo-row"):
+                yield ImageSurface(render_logo_image(), id="logo-image")
             if self.show_title:
                 yield Static("MicroCiv", classes="logo-title")
             if self.show_tagline:

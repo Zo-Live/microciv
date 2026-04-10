@@ -13,12 +13,12 @@ class RecordCardButton(Button):
     def __init__(self, record: RecordEntry, *, id: str | None = None) -> None:
         label = "\n".join(
             [
-                f"#{record.record_id}",
+                f"#{record.record_id:04d}",
                 record.timestamp.replace("T", " ")[:16],
                 f"score: {record.final_score}",
-                f"mode: {record.mode}",
+                f"mode: {record.mode.title()}",
                 f"ai: {record.ai_type}",
-                f"diff: {record.map_difficulty}",
+                f"diff: {record.map_difficulty.title()}",
             ]
         )
         super().__init__(label, id=id)

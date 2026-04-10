@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Grid, Horizontal, Vertical
 from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import Button, Static
@@ -20,7 +20,7 @@ from microciv.tui.presenters.state_machine import ScreenRoute
 from microciv.tui.screens.game_menu import GameMenuScreen
 from microciv.tui.widgets.action_panel import ResourceButton
 from microciv.tui.widgets.hexes import HexButton
-from microciv.tui.widgets.map_grid import MapGrid
+from microciv.tui.widgets.map_view import MapView
 from microciv.tui.widgets.metric_panel import MetricPanel
 
 PANEL_DEFAULT = "default"
@@ -47,6 +47,8 @@ RESOURCE_LABELS: dict[ResourceType, str] = {
 class GameScreen(Screen[None]):
     """Shared game screen for manual play and autoplay."""
 
+    route = ScreenRoute.GAME
+
     BINDINGS = [
         Binding("m", "open_menu", "Menu"),
         Binding("q", "quit", "Quit"),
@@ -61,19 +63,20 @@ class GameScreen(Screen[None]):
     #game-root {
         width: 1fr;
         height: 1fr;
-        padding: 1 2;
+        padding: 1;
     }
 
     #game-map-shell {
         width: 1fr;
         height: 1fr;
+        padding-right: 1;
         align: center middle;
     }
 
     #game-side-shell {
-        width: 34;
+        width: 30;
         height: 1fr;
-        padding-left: 2;
+        padding-left: 1;
     }
 
     #game-context-shell {
@@ -105,6 +108,23 @@ class GameScreen(Screen[None]):
         height: auto;
     }
 
+    .terrain-choice-row {
+        width: 1fr;
+        height: auto;
+        grid-size: 2;
+        grid-columns: 1fr 1fr;
+        grid-gutter: 1 0;
+    }
+
+    .terrain-choice-row Button {
+        width: 1fr;
+        min-width: 0;
+    }
+
+    .context-row ResourceButton {
+        width: 1fr;
+    }
+
     .context-label {
         color: #f2dfb4;
         text-style: bold;
@@ -133,7 +153,7 @@ class GameScreen(Screen[None]):
     """
 
     def __init__(self, session: GameSession) -> None:
-        super().__init__(id=ScreenRoute.GAME.value)
+        super().__init__()
         self.session = session
         self._autoplay_timer: Timer | None = None
         self._panel_mode = PANEL_DEFAULT
@@ -145,7 +165,7 @@ class GameScreen(Screen[None]):
         state = self.session.state
         with Horizontal(id="game-root"):
             with Vertical(id="game-map-shell"):
-                yield MapGrid(
+                yield MapView(
                     state,
                     selected_coord=state.selection.selected_coord,
                     interactive=self.session.policy is None,
@@ -157,13 +177,12 @@ class GameScreen(Screen[None]):
                     turn=state.turn,
                     turn_limit=state.config.turn_limit,
                     info_lines=self._metric_info_lines(),
+                    autoplay=self.session.policy is not None,
                     id="game-metric-panel",
                 )
-                with Vertical(id="game-context-shell"):
-                    if self.session.policy is None:
+                if self.session.policy is None:
+                    with Vertical(id="game-context-shell"):
                         yield from self._compose_manual_context()
-                    else:
-                        yield Static("", classes="context-note")
 
     def on_mount(self) -> None:
         if self.session.policy is not None:
@@ -178,7 +197,7 @@ class GameScreen(Screen[None]):
     def action_quit(self) -> None:
         self.app.exit()
 
-    def on_map_grid_tile_selected(self, message: MapGrid.TileSelected) -> None:
+    def on_map_view_tile_selected(self, message: MapView.TileSelected) -> None:
         if self.session.policy is not None:
             return
         self._handle_tile_click(message.coord)
@@ -235,7 +254,7 @@ class GameScreen(Screen[None]):
         if self._panel_mode == PANEL_TERRAIN:
             choices = self._terrain_choices()
             if len(choices) == 2:
-                with Horizontal(classes="context-row"):
+                with Grid(classes="terrain-choice-row"):
                     yield Button("City", id="action-choice-city", classes=self._choice_class(ActionType.BUILD_CITY))
                     yield Button("Road", id="action-choice-road", classes=self._choice_class(ActionType.BUILD_ROAD))
             elif ActionType.BUILD_CITY in choices:
@@ -277,7 +296,7 @@ class GameScreen(Screen[None]):
             with Horizontal(classes="context-row"):
                 if self._pending_building is not None:
                     resource_type = _resource_type_for_building(self._pending_building)
-                    yield ResourceButton(resource_type, count, id="build-confirm-resource")
+                    yield ResourceButton(resource_type, count, id="build-confirm-resource", interactive=False)
             yield Static(f"count: {count}", classes="context-note")
             yield Button("Build", id="action-build")
             yield Button("Cancel", id="action-cancel")
@@ -299,10 +318,7 @@ class GameScreen(Screen[None]):
         state = self.session.state
         if self.session.policy is None:
             return [state.message] if state.message else []
-        info_lines = [
-            f"mode: {state.config.playback_mode.value}",
-            f"ai: {state.config.policy_type.value}",
-        ]
+        info_lines = [f"mode: {state.config.playback_mode.value}   ai: {state.config.policy_type.value}"]
         if state.message:
             info_lines.append(f"tip: {state.message}")
         return info_lines
@@ -384,6 +400,11 @@ class GameScreen(Screen[None]):
         result = self.session.engine.apply_action(action)
         if result.success:
             self._clear_selection()
+        self.query_one("#game-map", MapView).set_state(
+            self.session.state,
+            self.session.state.selection.selected_coord,
+            interactive=self.session.policy is None,
+        )
         self.refresh(layout=True, recompose=True)
         if self.session.state.is_game_over:
             self._stop_autoplay()
@@ -420,6 +441,11 @@ class GameScreen(Screen[None]):
             if self.session.state.config.playback_mode is not PlaybackMode.SPEED:
                 break
 
+        self.query_one("#game-map", MapView).set_state(
+            self.session.state,
+            self.session.state.selection.selected_coord,
+            interactive=self.session.policy is None,
+        )
         self.refresh(layout=True, recompose=True)
         if self.session.state.is_game_over:
             self._stop_autoplay()

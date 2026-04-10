@@ -14,6 +14,8 @@ from microciv.tui.widgets.logo import LogoWidget
 class GameMenuScreen(Screen[None]):
     """Pause-style menu shown over the game screen."""
 
+    route = ScreenRoute.GAME_MENU
+
     BINDINGS = [
         Binding("m", "continue_game", "Continue"),
         Binding("q", "quit", "Quit"),
@@ -54,7 +56,7 @@ class GameMenuScreen(Screen[None]):
     """
 
     def __init__(self) -> None:
-        super().__init__(id=ScreenRoute.GAME_MENU.value)
+        super().__init__()
 
     def compose(self):
         with Horizontal(id="game-menu-root"):
