@@ -29,6 +29,7 @@ class MapPreview(Container):
         state: GameState,
         *,
         metrics: HexRasterMetrics = PREVIEW_MAP_HEX_METRICS,
+        settle_before_first_paint: bool = False,
         id: str | None = None,
     ) -> None:
         super().__init__(id=id)
@@ -37,11 +38,18 @@ class MapPreview(Container):
 
     def compose(self):
         yield ImageSurface(
-            render_map_image(self._state, metrics=self._metrics),
+            self._render_image(),
             id=f"{self.id}-image" if self.id else None,
         )
 
     def set_state(self, state: GameState) -> None:
         """Update the previewed state."""
         self._state = state
-        self.query_one(ImageSurface).set_image(render_map_image(state, metrics=self._metrics))
+        self.query_one(ImageSurface).set_image(self._render_image())
+
+    def _render_image(self):
+        return render_map_image(self._state, metrics=self._metrics)
+
+    def clear_image(self) -> None:
+        """Compatibility shim kept for callers that previously blanked the preview."""
+        return

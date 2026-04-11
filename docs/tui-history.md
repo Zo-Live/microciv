@@ -1001,3 +1001,192 @@
 4. 另外还有两类纯交互问题：
    - setup 预览层没有兜住地图生成失败异常，导致 `Recreate / hard 大图` 直接闪退。
    - 手动模式和 Records 里还有少量布局/反馈语义偏差，对应 `350 / 351 / 已研究科技无反馈 / 358`。
+
+## 21. `issues/` 修复记录
+
+### 21.1 图像残影与条状空缺问题族
+
+对应问题：
+
+1. `341`
+2. `342`
+3. `344`
+4. `345`
+5. `348`
+6. `349`
+7. `352`
+8. `357`
+
+修复思路：
+
+1. 不再用“外层 `Container` + 内层 `AutoImage`”这条双层图像链。
+2. 将 `src/microciv/tui/widgets/image_surface.py` 改成单层的 `BaseImage(Renderable=HalfcellRenderable)` 包装，只保留统一 API 和显式 cell 尺寸同步。
+3. 继续保留显式 cell 尺寸映射，但把它收敛到 `ImageSurface` 本身，避免旧实现中外层容器和内层图像 widget 尺寸不同步。
+4. 将主要 screen/shell 的背景显式改为实底 `#111111`，包括：
+   - `src/microciv/tui/screens/menu.py`
+   - `src/microciv/tui/screens/setup.py`
+   - `src/microciv/tui/screens/game.py`
+   - `src/microciv/tui/screens/final.py`
+   - `src/microciv/tui/screens/records.py`
+   - 以及 `src/microciv/tui/widgets/map_preview.py`
+   - `src/microciv/tui/widgets/map_view.py`
+
+结果：
+
+1. 图像控件的 region 恢复为稳定的非零尺寸。
+2. 地图点击、预览更新、终局页和 Records 页都继续可用。
+3. 这一改动本质上是先把“透明区域叠加 + 尺寸回退后旧区域留脏”的问题族压住，为后续缩放和布局修复打底。
+
+验证：
+
+1. `./.venv/bin/python -m pytest tests/test_raster_renderers.py tests/test_logo.py tests/test_tui.py -q`
+2. `23 passed`
+
+### 21.2 地图与数字自适应缩放
+
+对应问题：
+
+1. `343`
+2. `346`
+3. `347`
+4. `353`
+5. `354`
+6. `355`
+7. `356`
+
+修复思路：
+
+1. 新增 `src/microciv/tui/renderers/scaling.py`，把“按终端 cell 边界缩放 raster 图像”收成统一 helper。
+2. `src/microciv/tui/widgets/map_preview.py` 和 `src/microciv/tui/widgets/map_view.py` 改成在 `mount / resize / set_state` 后按父容器可用区域重新生成缩放后的地图图像。
+3. 主地图命中测试仍保留原始几何布局，但点击坐标换算改为基于当前实际显示尺寸，保证“缩放后仍能正确点格子”。
+4. 数字渲染提升了底图分辨率：
+   - `src/microciv/tui/renderers/assets.py` 提高 `SMALL/LARGE_DIGIT_CELL_PX`
+   - `src/microciv/tui/renderers/digits.py` 调整小型 `3 / 8` 模板，并把缩放重采样从 `NEAREST` 改为 `LANCZOS`
+5. `src/microciv/tui/widgets/metric_panel.py` 改成按右栏实际宽度自适应生成 `SCORE / STEP` 数字。
+6. `src/microciv/tui/screens/final.py` 的终局分数图也改成按右侧壳层宽度自适应缩放，不再依赖固定比例。
+
+结果：
+
+1. `map size = 10` 时，游戏主地图会先缩放到左侧可见区域内，不再把底部裁掉。
+2. 四位分数在终局侧栏中可完整显示，不再按固定比例截断。
+3. 小型数字 `3 / 8` 的区分度比之前更高，大型分数阴影也不再像之前那样被粗暴像素缩放压坏。
+
+验证：
+
+1. 新增/更新测试：
+   - `tests/test_tui.py::test_tui_large_map_fits_main_game_shell_and_four_digit_score_fits_final_side_shell`
+   - 现有 `test_tui_game_uses_raster_map_and_map_clicks_select_tiles`
+   - 现有 `test_tui_final_screen_uses_raster_map_and_controls_fit`
+2. 相关回归均已通过。
+
+### 21.3 setup 预览层大图硬难度闪退
+
+对应问题：
+
+1. `issues.txt` 中两段 `Recreate / hard / map size 10 / turn 150` 闪退
+
+修复思路：
+
+1. 根因不在 setup screen，而在 `src/microciv/game/mapgen.py`。
+2. `MapGenerator.generate(...)` 之前只要 `_generate_once(...)` 内部河流生成失败，就会直接把 `RuntimeError("River generation failed.")` 抛出到 TUI 层。
+3. 现在将这类 `RuntimeError` 纳入 `MAX_MAP_RETRIES` 内部重试，而不是立即终止整个对局初始化/预览生成流程。
+
+结果：
+
+1. 单次河流失败只会消耗一次内部候选地图尝试。
+2. setup 页连续多次 `Recreate` 不会因为某个 seed 的河流路径没找到就把程序带崩。
+
+验证：
+
+1. 新增 `tests/test_mapgen.py::test_hard_large_map_seed_that_previously_failed_now_retries_internally`
+2. 新增 `tests/test_tui.py::test_tui_setup_recreate_survives_repeated_hard_large_map_regeneration`
+3. 两条测试均已通过。
+
+### 21.4 手动模式右栏交互语义修正
+
+对应问题：
+
+1. `350`
+2. `351`
+3. “点击已研究过的科技后没有响应”
+
+修复思路：
+
+1. `src/microciv/tui/screens/game.py`
+2. 对 `PANEL_TERRAIN`：
+   - 只有在同格同时允许 `City / Road` 时才显示双选项按钮
+   - 若只有单一合法动作，不再渲染一个几乎无效果的 `City` 文本按钮，而是直接显示非交互标签 + `Build / Cancel`
+3. 对提示区：
+   - 手动模式不再把提示放在 `MetricPanel` 的 `STEP` 下方
+   - 新增 `#game-side-info` 作为右栏底部的小字区
+4. 对已解锁科技：
+   - 点击已研究科技时不再直接静默 `return`
+   - 现在会写入短提示，例如 `Agriculture already unlocked.`
+5. 为保证 `120 x 40` 小视口也不溢出，同时收紧了右栏的按钮高度和垂直间距：
+   - `#game-context-shell Button` 改为 `min-height: 2`
+   - tech 按钮、label、note 的上下边距整体压缩
+
+结果：
+
+1. 单选建造场景里不会再出现“点了像没反应的 `City` 按钮”。
+2. 手动模式提示现在固定在右下角底部保留区。
+3. 已研究科技点击后有明确反馈。
+4. `120 x 40` 下右栏不再因为新增底部提示而把 `Cancel` 挤出屏幕。
+
+验证：
+
+1. 新增 `tests/test_tui.py::test_tui_single_terrain_choice_uses_label_instead_of_redundant_city_button`
+2. 新增 `tests/test_tui.py::test_tui_manual_mode_places_tip_bottom_right_and_feedbacks_on_researched_tech`
+3. 现有 `tests/test_tui.py::test_tui_small_viewport_manual_panels_and_metric_digits_fit`
+4. 以上回归均已通过。
+
+### 21.5 Records 奇数项最后一张卡片不再占满整行
+
+对应问题：
+
+1. `358`
+
+修复思路：
+
+1. `src/microciv/tui/screens/records.py`
+2. 当最后一行只有一条记录时，追加一个 `.record-card-placeholder` 占位元素，维持双列结构。
+3. 同时去掉原先双列之间的 `1` 列 gutter，让两列真正平分整行宽度，不再因为额外空列造成明显“不一样宽”。
+
+结果：
+
+1. 奇数条记录时，最后一条不会再从左到右独占整行。
+2. 视觉上仍保持两列铺满宽度的布局。
+
+验证：
+
+1. 新增 `tests/test_tui.py::test_tui_records_odd_last_card_keeps_same_width_as_other_cards`
+2. 回归已通过。
+
+### 21.6 图像延迟刷新在 screen 退场后的生命周期保护
+
+对应问题：
+
+1. 本轮修复过程中，新出现过两条回归：
+   - `Autoplay -> Final` 末尾保存记录时，旧 `MapView` 的延迟刷新回调仍可能触发
+   - `Final -> Restart` 时，旧 `MapView` 退场后延迟回调找不到 `ImageSurface`
+
+修复思路：
+
+1. `src/microciv/tui/widgets/map_view.py`
+2. `src/microciv/tui/widgets/map_preview.py`
+3. 在 `_refresh_image()` 中增加保护：只有 widget 仍然 mounted 且 `ImageSurface` child 仍存在时，才执行实际的图像更新。
+
+结果：
+
+1. screen 切换、终局入场、Restart 返回 setup 时，不会再因为延迟刷新打到已卸载节点而抛出 `NoMatches`。
+
+验证：
+
+1. 现有 `tests/test_tui.py::test_tui_speed_autoplay_reaches_final_and_saves_record`
+2. 现有 `tests/test_tui.py::test_tui_restart_returns_to_setup_without_duplicate_ids`
+3. 均已重新通过。
+
+### 21.7 本轮总验证
+
+1. `./.venv/bin/python -m pytest`
+2. 结果：`72 passed in 38.68s`

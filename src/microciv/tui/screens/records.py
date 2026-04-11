@@ -38,12 +38,14 @@ class RecordsListScreen(Screen[None]):
         width: 1fr;
         height: 1fr;
         padding: 1 2;
+        background: #111111;
     }
 
     #records-scroll {
         width: 1fr;
         height: 1fr;
         padding-right: 0;
+        background: #111111;
     }
 
     .records-row {
@@ -55,15 +57,22 @@ class RecordsListScreen(Screen[None]):
     .records-row RecordCardButton {
         width: 1fr;
         min-height: 9;
-        margin-right: 1;
         border: none;
         background: #1d1c18;
         color: #f7efdd;
         text-align: left;
     }
 
-    .records-row RecordCardButton:last-child {
-        margin-right: 0;
+    .record-card-gap {
+        width: 1;
+        min-height: 9;
+        background: #111111;
+    }
+
+    .record-card-placeholder {
+        width: 1fr;
+        min-height: 9;
+        background: #111111;
     }
 
     #records-empty {
@@ -112,8 +121,11 @@ class RecordsListScreen(Screen[None]):
                     for left, right in _pairwise(records):
                         with Horizontal(classes="records-row"):
                             yield RecordCardButton(left, id=f"record-card-{left.record_id}")
+                            yield Static("", classes="record-card-gap")
                             if right is not None:
                                 yield RecordCardButton(right, id=f"record-card-{right.record_id}")
+                            else:
+                                yield Static("", classes="record-card-placeholder")
             with Horizontal(id="records-actions"):
                 if records:
                     yield Button("Export", id="records-export")
@@ -121,7 +133,7 @@ class RecordsListScreen(Screen[None]):
             yield Static(self._message, id="records-message")
 
     def action_back(self) -> None:
-        self.dismiss()
+        self.app.return_to_menu()
 
     def action_scroll_bottom(self) -> None:
         if self.query("#records-scroll"):
@@ -138,7 +150,7 @@ class RecordsListScreen(Screen[None]):
         button_id = event.button.id
         assert button_id is not None
         if button_id == "records-back":
-            self.dismiss()
+            self.app.return_to_menu()
             return
         if button_id == "records-export":
             export_path = self.app.export_records()
@@ -177,11 +189,13 @@ class RecordDetailScreen(Screen[None]):
         width: 1fr;
         height: 1fr;
         padding: 1 2;
+        background: #111111;
     }
 
     #record-detail-scroll {
         width: 1fr;
         height: 1fr;
+        background: #111111;
     }
 
     #record-detail-top {
@@ -195,12 +209,14 @@ class RecordDetailScreen(Screen[None]):
         height: auto;
         padding-right: 1;
         align: center middle;
+        background: #111111;
     }
 
     #record-detail-side {
         width: 28;
         height: auto;
         padding-left: 1;
+        background: #111111;
     }
 
     #record-detail-side Button {
@@ -268,7 +284,7 @@ class RecordDetailScreen(Screen[None]):
                         yield Static(f"Science          {self.record.science}", classes="record-stat")
 
     def action_back(self) -> None:
-        self.dismiss()
+        self.app.open_records()
 
     def action_scroll_bottom(self) -> None:
         self.query_one("#record-detail-scroll", VerticalScroll).scroll_end(animate=False)
@@ -281,7 +297,7 @@ class RecordDetailScreen(Screen[None]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "record-detail-back":
-            self.dismiss()
+            self.app.open_records()
 
 
 def _pairwise(records: list[RecordEntry]) -> list[tuple[RecordEntry, RecordEntry | None]]:

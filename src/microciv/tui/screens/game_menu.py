@@ -30,7 +30,7 @@ class GameMenuScreen(Screen[None]):
     #game-menu-root {
         width: 1fr;
         height: 1fr;
-        padding: 1 2;
+        padding: 1 3;
         align: center middle;
     }
 
@@ -38,16 +38,17 @@ class GameMenuScreen(Screen[None]):
         width: 1fr;
         height: 1fr;
         align: center middle;
+        padding-right: 3;
     }
 
     #game-menu-right {
-        width: 32;
+        width: 30;
         height: auto;
     }
 
     #game-menu-right Button {
         width: 1fr;
-        min-height: 3;
+        min-height: 4;
         margin-bottom: 1;
         border: none;
         background: #1d1c18;

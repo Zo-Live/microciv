@@ -10,7 +10,7 @@ from textual.widgets import Button, Static
 from microciv.tui.presenters.game_session import GameSession
 from microciv.tui.presenters.state_machine import ScreenRoute
 from microciv.tui.renderers.assets import FINAL_MAP_HEX_METRICS
-from microciv.tui.renderers.digits import render_large_number_image, scale_number_image
+from microciv.tui.renderers.digits import render_final_score_number_image
 from microciv.tui.widgets.image_surface import ImageSurface
 from microciv.tui.widgets.map_preview import MapPreview
 
@@ -32,6 +32,7 @@ class FinalScreen(Screen[None]):
         width: 1fr;
         height: 1fr;
         padding: 1 2;
+        background: #111111;
     }
 
     #final-map-shell {
@@ -39,12 +40,14 @@ class FinalScreen(Screen[None]):
         height: 1fr;
         padding-right: 1;
         align: center middle;
+        background: #111111;
     }
 
     #final-side-shell {
         width: 32;
         height: 1fr;
         padding-left: 1;
+        background: #111111;
     }
 
     #final-score-label {
@@ -74,14 +77,20 @@ class FinalScreen(Screen[None]):
     def __init__(self, session: GameSession) -> None:
         super().__init__()
         self.session = session
+        self._score_surface: ImageSurface | None = None
 
     def compose(self):
         with Horizontal(id="final-root"):
             with Vertical(id="final-map-shell"):
-                yield MapPreview(self.session.state, metrics=FINAL_MAP_HEX_METRICS, id="final-map")
+                yield MapPreview(
+                    self.session.state,
+                    metrics=FINAL_MAP_HEX_METRICS,
+                    id="final-map",
+                )
             with Vertical(id="final-side-shell"):
                 yield Static("SCORE", id="final-score-label")
-                yield ImageSurface(_scaled_score_image(self.session.state.score), id="final-score-value")
+                self._score_surface = ImageSurface(self._score_image(), id="final-score-value")
+                yield self._score_surface
                 yield Button("Restart", id="final-restart")
                 yield Button("Menu", id="final-menu")
                 yield Button("Exit", id="final-exit")
@@ -99,5 +108,14 @@ class FinalScreen(Screen[None]):
         elif button_id == "final-exit":
             self.app.exit()
 
-def _scaled_score_image(score: int):
-    return scale_number_image(render_large_number_image(score), 0.68)
+    def _refresh_score_image(self) -> None:
+        if not self.is_mounted or self._score_surface is None or not self._score_surface.is_mounted:
+            return
+        self._score_surface.set_image(self._score_image())
+
+    def _score_image(self):
+        return render_final_score_number_image(
+            self.session.state.score,
+            slot_width_cells=28,
+            slot_height_cells=4,
+        )

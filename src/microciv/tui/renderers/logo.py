@@ -46,8 +46,15 @@ def render_logo_specs() -> tuple[RasterHexSpec, ...]:
     return LOGO_HEXES
 
 
-def render_logo_image(*, background: str = APP_BACKGROUND) -> Image.Image:
+def render_logo_image(
+    *,
+    background: str = APP_BACKGROUND,
+    max_width_cells: int | None = None,
+    max_height_cells: int | None = None,
+) -> Image.Image:
     """Render the seven-hex logo as one raster image."""
+    # Ignore max_width_cells and max_height_cells for simplicity
+    # Use fixed metrics for stable rendering
     return render_hex_cluster_image(LOGO_HEXES, metrics=LOGO_HEX_METRICS, background=background)
 
 

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from rich.console import Group
-from rich.text import Text
+from textual import events
+from textual.containers import Vertical
 from textual.message import Message
-from textual.widgets import Button, Static
+from textual.widget import Widget
+from textual.widgets import Static
 
-from microciv.tui.renderers.hexes import render_hex
+from microciv.tui.renderers.assets import HexRasterMetrics, RESOURCE_HEX_METRICS
+from microciv.tui.renderers.hexes import render_hex_image
+from microciv.tui.widgets.image_surface import ImageSurface
 
 
-class HexButton(Button):
+class HexButton(Widget):
     """Clickable hex display with no default border."""
 
     class Pressed(Message):
@@ -29,6 +32,21 @@ class HexButton(Button):
         margin: 0;
         border: none;
         background: transparent;
+        align: center top;
+    }
+
+    HexButton > Vertical {
+        width: auto;
+        height: auto;
+        align: center top;
+    }
+
+    HexButton .hex-button-label {
+        width: auto;
+        height: auto;
+        content-align: center top;
+        color: #f3ead7;
+        margin-top: 1;
     }
     """
 
@@ -39,50 +57,57 @@ class HexButton(Button):
         color: str,
         selected: bool = False,
         compact: bool = False,
+        label: str | None = None,
+        show_label: bool = False,
+        metrics: HexRasterMetrics | None = None,
         id: str | None = None,
         classes: str | None = None,
         disabled: bool = False,
     ) -> None:
-        super().__init__("", id=id, classes=classes, disabled=disabled)
+        super().__init__(id=id, classes=classes, disabled=disabled)
         self.value = value
         self.color = color
         self.selected = selected
         self.compact = compact
+        self.label = label
+        self.show_label = show_label
+        self.metrics = metrics or RESOURCE_HEX_METRICS
+        self._image_surface: ImageSurface | None = None
 
     def set_visuals(self, *, color: str, selected: bool) -> None:
         """Update color and selection state."""
         self.color = color
         self.selected = selected
-        self.refresh()
+        if self._image_surface is not None and self._image_surface.is_mounted:
+            self._image_surface.set_image(self._render_image())
+        self.refresh(layout=True)
 
-    def render(self):
-        return render_hex(self.color, selected=self.selected, compact=self.compact)
+    def compose(self):
+        with Vertical():
+            self._image_surface = ImageSurface(self._render_image(), id=f"{self.id}-image" if self.id else None)
+            yield self._image_surface
+            if self.show_label and self.label:
+                yield Static(self.label, classes="hex-button-label", id=f"{self.id}-label" if self.id else None)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button is self and not self.disabled:
-            event.stop()
-            self.post_message(self.Pressed(self, self.value))
+    def on_click(self, event: events.Click) -> None:
+        if self.disabled:
+            return
+        event.stop()
+        self.post_message(self.Pressed(self, self.value))
+
+    def _render_image(self):
+        return render_hex_image(
+            self.color,
+            selected=self.selected,
+            metrics=self.metrics,
+        )
 
 
 class HexStat(Static):
-    """Compact hex icon with a numeric value next to it."""
+    """Legacy placeholder for compact hex stats."""
 
     DEFAULT_CSS = """
     HexStat {
-        width: auto;
-        height: auto;
-        padding: 0;
-        margin: 0 2 0 0;
+        display: none;
     }
     """
-
-    def __init__(self, *, color: str, value: int, id: str | None = None) -> None:
-        super().__init__(id=id)
-        self.color = color
-        self.value = value
-        self.update(self._build_renderable())
-
-    def _build_renderable(self) -> Group:
-        hex_renderable = render_hex(self.color, compact=True)
-        value_text = Text(f"{self.value}", style="#f3ead7 bold")
-        return Group(hex_renderable, value_text)

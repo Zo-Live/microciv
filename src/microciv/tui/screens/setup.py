@@ -35,6 +35,7 @@ class SetupScreen(Screen[None]):
         width: 1fr;
         height: 1fr;
         padding: 1 2;
+        background: #111111;
     }
 
     #setup-title {
@@ -49,6 +50,7 @@ class SetupScreen(Screen[None]):
     #setup-main {
         width: 1fr;
         height: 1fr;
+        background: #111111;
     }
 
     #setup-preview {
@@ -56,12 +58,14 @@ class SetupScreen(Screen[None]):
         height: 1fr;
         padding: 1 1 1 0;
         align: center middle;
+        background: #111111;
     }
 
     #setup-options {
         width: 40;
         height: 1fr;
         padding: 1 0 0 2;
+        background: #111111;
     }
 
     #setup-options Button {
@@ -116,6 +120,8 @@ class SetupScreen(Screen[None]):
         self._custom_goal = ""
         self._seed = initial_config.seed if initial_config else 0
         self._preview_state: GameState = self._build_preview_state()
+        self._setup_refresh_serial = 0
+        self._preview_widget: MapPreview | None = None
 
     def compose(self):
         title = "MAP SELECT"
@@ -123,31 +129,14 @@ class SetupScreen(Screen[None]):
             yield Static(title, id="setup-title")
             with Horizontal(id="setup-main"):
                 with Vertical(id="setup-preview"):
-                    yield MapPreview(self._preview_state, id="setup-map-preview")
-                with Vertical(id="setup-options"):
-                    yield Button(f"Map Difficulty : {self._difficulty.value.title()}", id="setup-difficulty")
-                    yield Button(f"Map Size : {self._map_size}", id="setup-map-size")
-                    yield Button(f"Turn Limit : {self._turn_limit}", id="setup-turn-limit")
-                    if self._autoplay:
-                        yield Button(f"AI Type : {self._policy_type.value.title()}", id="setup-ai-type")
-                        if self._policy_type is PolicyType.CUSTOM:
-                            yield Input(
-                                value=self._custom_goal,
-                                placeholder="Custom goal",
-                                id="setup-custom-input",
-                            )
-                        yield Button(
-                            f"Playback : {self._playback_mode.value.title()}",
-                            id="setup-playback",
-                        )
-                    yield Button(
-                        "Start",
-                        id="setup-start",
-                        disabled=self._autoplay and self._policy_type is not PolicyType.BASELINE,
+                    self._preview_widget = MapPreview(
+                        self._preview_state,
+                        id="setup-map-preview",
+                        settle_before_first_paint=True,
                     )
-                    yield Button("Recreate", id="setup-recreate")
-                    yield Button("Menu", id="setup-menu")
-                    yield Static(self._note_text(), classes="setup-note", id="setup-note")
+                    yield self._preview_widget
+                with Vertical(id="setup-options"):
+                    yield from self._compose_option_widgets()
 
     def action_quit(self) -> None:
         self.app.exit()
@@ -170,19 +159,19 @@ class SetupScreen(Screen[None]):
         elif button_id == "setup-turn-limit":
             index = TURN_LIMIT_OPTIONS.index(self._turn_limit)
             self._turn_limit = TURN_LIMIT_OPTIONS[(index + 1) % len(TURN_LIMIT_OPTIONS)]
-            self.refresh(layout=True, recompose=True)
+            self._schedule_setup_refresh(refresh_preview=False)
         elif button_id == "setup-ai-type":
             index = AI_TYPE_OPTIONS.index(self._policy_type)
             self._policy_type = AI_TYPE_OPTIONS[(index + 1) % len(AI_TYPE_OPTIONS)]
-            self.refresh(layout=True, recompose=True)
+            self._schedule_setup_refresh(refresh_preview=False)
         elif button_id == "setup-playback":
             index = PLAYBACK_OPTIONS.index(self._playback_mode)
             self._playback_mode = PLAYBACK_OPTIONS[(index + 1) % len(PLAYBACK_OPTIONS)]
-            self.refresh(layout=True, recompose=True)
+            self._schedule_setup_refresh(refresh_preview=False)
         elif button_id == "setup-recreate":
             self._refresh_preview(recreate=True)
         elif button_id == "setup-menu":
-            self.dismiss()
+            self.app.return_to_menu()
         elif button_id == "setup-start":
             config = self._build_start_config()
             if config is None:
@@ -193,7 +182,7 @@ class SetupScreen(Screen[None]):
         if recreate:
             self._seed += 1
         self._preview_state = self._build_preview_state()
-        self.refresh(layout=True, recompose=True)
+        self._schedule_setup_refresh(refresh_preview=True)
 
     def _build_preview_state(self) -> GameState:
         preview_config = GameConfig.for_play(
@@ -231,3 +220,61 @@ class SetupScreen(Screen[None]):
         if self._policy_type is PolicyType.EXPERT:
             return "Phase 1: Baseline only."
         return "Phase 1: Baseline only."
+
+    def _schedule_setup_refresh(self, *, refresh_preview: bool) -> None:
+        self._setup_refresh_serial += 1
+        refresh_serial = self._setup_refresh_serial
+        self.call_next(self._apply_setup_refresh, refresh_serial, refresh_preview)
+
+    def _apply_setup_refresh(self, refresh_serial: int, refresh_preview: bool) -> None:
+        if refresh_serial != self._setup_refresh_serial or not self.is_mounted:
+            return
+        self.call_next(self._replace_option_children, refresh_serial, refresh_preview)
+
+    async def _replace_option_children(self, refresh_serial: int, refresh_preview: bool) -> None:
+        if refresh_serial != self._setup_refresh_serial or not self.is_mounted or not self.query("#setup-options"):
+            return
+        options = self.query_one("#setup-options", Vertical)
+        await options.remove_children()
+        if refresh_serial != self._setup_refresh_serial or not self.is_mounted or not options.is_mounted:
+            return
+        await options.mount_all(list(self._compose_option_widgets()))
+        if refresh_preview:
+            self.call_after_refresh(self._refresh_preview_after_layout, refresh_serial)
+
+    def _refresh_preview_after_layout(self, refresh_serial: int) -> None:
+        if refresh_serial != self._setup_refresh_serial or not self.is_mounted:
+            return
+        if self._preview_widget is None or not self._preview_widget.is_mounted:
+            return
+        self._preview_widget.set_state(self._preview_state)
+
+    def _compose_option_widgets(self):
+        widgets: list[Button | Input | Static] = [
+            Button(f"Map Difficulty : {self._difficulty.value.title()}", id="setup-difficulty"),
+            Button(f"Map Size : {self._map_size}", id="setup-map-size"),
+            Button(f"Turn Limit : {self._turn_limit}", id="setup-turn-limit"),
+        ]
+        if self._autoplay:
+            widgets.append(Button(f"AI Type : {self._policy_type.value.title()}", id="setup-ai-type"))
+            custom_input = Input(
+                value=self._custom_goal,
+                placeholder="Custom goal",
+                id="setup-custom-input",
+            )
+            custom_input.display = self._policy_type is PolicyType.CUSTOM
+            widgets.append(custom_input)
+            widgets.append(Button(f"Playback : {self._playback_mode.value.title()}", id="setup-playback"))
+        widgets.extend(
+            [
+                Button(
+                    "Start",
+                    id="setup-start",
+                    disabled=self._autoplay and self._policy_type is not PolicyType.BASELINE,
+                ),
+                Button("Recreate", id="setup-recreate"),
+                Button("Menu", id="setup-menu"),
+                Static(self._note_text(), classes="setup-note", id="setup-note"),
+            ]
+        )
+        return widgets

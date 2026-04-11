@@ -25,6 +25,7 @@ class HexRasterMetrics:
 
 LOGO_HEX_METRICS = HexRasterMetrics(cell_side=30, fill_inset=1, selection_width=4, margin=3)
 RESOURCE_HEX_METRICS = HexRasterMetrics(cell_side=18, fill_inset=1, selection_width=3, margin=3)
+TERRAIN_CHOICE_HEX_METRICS = HexRasterMetrics(cell_side=20, fill_inset=1, selection_width=3, margin=3)
 PREVIEW_MAP_HEX_METRICS = HexRasterMetrics(cell_side=16, fill_inset=1, selection_width=3, margin=4)
 DETAIL_MAP_HEX_METRICS = HexRasterMetrics(cell_side=22, fill_inset=1, selection_width=4, margin=5)
 FINAL_MAP_HEX_METRICS = HexRasterMetrics(cell_side=28, fill_inset=1, selection_width=5, margin=6)

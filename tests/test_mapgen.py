@@ -74,3 +74,13 @@ def test_hard_map_size_eight_generates_two_rivers_while_normal_generates_one() -
 
     assert len(normal.river_paths) == 1
     assert len(hard.river_paths) == 2
+
+
+def test_hard_large_map_seed_that_previously_failed_now_retries_internally() -> None:
+    generator = MapGenerator()
+    generated = generator.generate(
+        GameConfig.for_play(map_size=10, turn_limit=150, seed=6, map_difficulty=MapDifficulty.HARD)
+    )
+
+    assert generated.cell_count > 0
+    assert len(generated.river_paths) == 2

@@ -208,6 +208,19 @@ exports/*
 .cursorignore
 .cursorindexingignore
 
+# Development artifacts
+docs/issues-*/
+docs/analysis.md
+docs/execution-unresolved-*.md
+docs/history-new.md
+docs/project-new.md
+docs/rebuild.md
+docs/review-unresolved-*.md
+docs/tui-review-plan-*.md
+docs/unresolved.md
+legage/
+issues/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

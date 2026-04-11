@@ -1,165 +1,196 @@
 # MicroCiv
 
-## 当前状态
+A terminal-based micro strategy civilization simulator built with Python and Textual.
 
-当前仓库已完成阶段一的核心实现，当前可用内容包括：
+![Python](https://img.shields.io/badge/python-3.13%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-1. `docs/microciv.md`
-   阶段一需求与规则文档
-2. `project.md`
-   阶段一执行冻结规范
-3. `main.py`
-   仓库根目录薄入口，负责引导到 `src/`
-4. `pyproject.toml`
-   Python 项目配置
-5. `src/microciv/game/`
-   阶段一逻辑层、地图生成、结算、动作系统
-6. `src/microciv/ai/`
-   `Baseline` 与 `Random` 策略实现
-7. `src/microciv/records/`
-   本地持久化与 CSV 导出
-8. `src/microciv/tui/`
-   最小可用 Textual 界面：主菜单、地图设置、游戏页、终局页、Records 页
+## Overview
 
-当前项目结构如下。
+MicroCiv is a minimalist turn-based strategy game that runs in your terminal. Build cities, connect them with roads, manage resources, and research technologies across a hexagonal map.
 
-## 已确认的项目结构
+### Features
 
-```text
-microciv/
-├── README.md
-├── LICENSE
-├── pyproject.toml
-├── uv.lock
-├── main.py
-├── project.md
-├── docs/
-│   ├── microciv.md
-│   ├── logo.jpg
-│   └── number-like-this.png
-├── data/
-│   └── records.json
-├── exports/
-├── tests/
-└── src/
-    └── microciv/
-        ├── __init__.py
-        ├── app.py
-        ├── config.py
-        ├── constants.py
-        ├── game/
-        │   ├── __init__.py
-        │   ├── enums.py
-        │   ├── models.py
-        │   ├── actions.py
-        │   ├── engine.py
-        │   ├── mapgen.py
-        │   ├── resources.py
-        │   ├── networks.py
-        │   └── scoring.py
-        ├── ai/
-        │   ├── __init__.py
-        │   ├── policy.py
-        │   ├── baseline.py
-        │   └── random_policy.py
-        ├── tui/
-        │   ├── __init__.py
-        │   ├── screens/
-        │   ├── widgets/
-        │   ├── renderers/
-        │   └── presenters/
-        ├── records/
-        │   ├── __init__.py
-        │   ├── models.py
-        │   ├── store.py
-        │   └── export.py
-        └── utils/
-            ├── __init__.py
-            ├── rng.py
-            └── hexgrid.py
+- **Hexagonal Map System**: Procedurally generated maps with multiple terrain types (Plains, Forests, Mountains, Rivers, Wastelands)
+- **City Building**: Found cities, construct buildings (Farms, Lumber Mills, Mines, Libraries)
+- **Resource Management**: Balance Food, Wood, Ore, and Science across connected city networks
+- **Technology Tree**: Research Agriculture, Logging, Mining, and Education
+- **AI Opponents**: Baseline and Random AI policies for autonomous play
+- **Records System**: Local persistence of game results with CSV export
+- **Terminal UI**: Built with [Textual](https://textual.textualize.io/) for a rich terminal experience
+
+## Installation
+
+### Requirements
+
+- Python 3.13 or higher
+- Terminal with Unicode and color support (Windows Terminal, iTerm2, GNOME Terminal, etc.)
+
+### Using uv (Recommended)
+
+```bash
+# Install uv if you haven't already
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone the repository
+git clone git@github.com:Zo-Live/microciv.git
+cd microciv
+
+# Create virtual environment and install dependencies
+uv venv
+uv sync
 ```
 
-## 结构说明
+### Using pip
 
-### 入口层
+```bash
+# Clone the repository
+git clone git@github.com:Zo-Live/microciv.git
+cd microciv
 
-1. `main.py`
-   保持为仓库根目录下的薄入口，只负责启动应用
-2. `src/microciv/app.py`
-   作为程序主入口，负责初始化配置、加载 Records、启动 Textual App
+# Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-### 逻辑层
+# Install dependencies
+pip install -e ".[dev]"
+```
 
-1. `src/microciv/game/`
-   放置阶段一的核心规则逻辑，不依赖具体 UI
-2. `enums.py`
-   定义地形、建筑、科技、模式、动作等枚举
-3. `models.py`
-   定义 `GameConfig`、`GameState`、城市、道路、网络等数据结构
-4. `actions.py`
-   定义动作对象与合法性校验入口
-5. `engine.py`
-   负责动作执行、回合推进、结算顺序与终局判断
-6. `mapgen.py`
-   负责可复现的地图生成
-7. `resources.py`
-   负责资源归属、停工判定、建筑与地形产出
-8. `networks.py`
-   负责网络识别、并网与共享资源/科技状态
-9. `scoring.py`
-   负责当前分数与终局分数计算
+## Usage
 
-### AI 层
+### Start the Game
 
-1. `src/microciv/ai/policy.py`
-   定义策略接口，给阶段二继续扩展
-2. `src/microciv/ai/baseline.py`
-   实现阶段一 Baseline AI
-3. `src/microciv/ai/random_policy.py`
-   实现对照用随机策略，仅用于测试与实验比较
+```bash
+# Using uv
+uv run microciv
 
-### TUI 层
+# Or using the entry point
+python -m microciv
 
-1. `src/microciv/tui/`
-   放置所有 Textual 表现层代码
-2. `screens/`
-   放置主菜单、地图选择、游戏界面、Records、终局等页面
-3. `widgets/`
-   放置地图、右侧面板、LOGO、记录卡片等可复用组件
-4. `renderers/`
-   放置地图、点阵字、LOGO 等渲染逻辑
-5. `presenters/`
-   负责把逻辑层状态转换为界面展示数据，避免 UI 直接处理复杂规则
+# Or directly
+python main.py
+```
 
-### Records 与数据层
+### Game Controls
 
-1. `src/microciv/records/store.py`
-   负责 `data/records.json` 的读写与 FIFO 裁剪
-2. `src/microciv/records/export.py`
-   负责 CSV 导出到 `exports/`
-3. `src/microciv/records/models.py`
-   定义记录结构和导出字段
-4. `data/`
-   运行时生成，本地持久化 Records
-5. `exports/`
-   运行时生成，保存 CSV 导出文件
+| Key | Action |
+|-----|--------|
+| `Enter` / Click | Select menu items, confirm actions |
+| `q` | Quit current screen |
+| `m` | Open in-game menu |
+| Arrow keys / Mouse | Navigate and interact |
 
-### 测试层
+### Game Flow
 
-1. `tests/`
-   放置地图生成、规则结算、Baseline AI、Records 持久化等测试
-2. 测试必须优先覆盖 `project.md` 中冻结的参数、阈值、顺序和导出口径
+1. **Main Menu**: Choose Play, Autoplay, Records, or Exit
+2. **Map Setup**: Select difficulty, map size, and turn limit
+3. **Gameplay**: 
+   - Click hexes to select terrain or cities
+   - Build cities on empty terrain
+   - Build roads to connect cities
+   - Construct buildings in cities
+   - Research technologies
+4. **Game Over**: View final score and statistics
 
-### 工具层
+## Project Structure
 
-1. `src/microciv/utils/rng.py`
-   统一管理带种子的随机数接口，确保地图和 AI 可复现
-2. `src/microciv/utils/hexgrid.py`
-   提供六边形坐标、邻接、距离、路径等通用工具
+```
+microciv/
+├── src/microciv/
+│   ├── game/          # Core game logic
+│   │   ├── engine.py  # Game loop and action execution
+│   │   ├── models.py  # Game state and data structures
+│   │   ├── actions.py # Action validation
+│   │   ├── mapgen.py  # Map generation
+│   │   ├── resources.py  # Resource management
+│   │   ├── networks.py   # City network logic
+│   │   └── scoring.py    # Score calculation
+│   ├── tui/           # Terminal UI
+│   │   ├── screens/   # Game screens
+│   │   ├── widgets/   # UI components
+│   │   ├── renderers/ # Image rendering
+│   │   └── presenters/# State transformation
+│   ├── ai/            # AI policies
+│   │   ├── baseline.py
+│   │   └── random_policy.py
+│   ├── records/       # Persistence layer
+│   └── utils/         # Utilities
+├── tests/             # Test suite
+├── docs/              # Documentation
+├── data/              # Runtime data (created automatically)
+└── exports/           # CSV exports (created automatically)
+```
 
-## 实现约束
+## Development
 
-1. 逻辑层与 TUI 层必须解耦，AI 直接调用逻辑层，不依赖 Textual
-2. 阶段一只实现 `Baseline` 的可运行 Autoplay，`Expert` 与 `Custom` 只保留接口
-3. `data/` 与 `exports/` 属于运行时目录，可以在程序启动时自动创建
-4. 后续实现以 `project.md` 为冻结规范，以 `docs/microciv.md` 为需求背景说明
+### Running Tests
+
+```bash
+# Run all tests
+uv run pytest
+
+# Run with coverage
+uv run pytest --cov=src/microciv
+
+# Run specific test file
+uv run pytest tests/test_engine.py
+```
+
+### Code Quality
+
+```bash
+# Format code
+uv run ruff format src/
+
+# Lint code
+uv run ruff check src/
+
+# Type check
+uv run mypy src/microciv
+```
+
+### Project Structure Notes
+
+- **Logic Layer** (`game/`): Pure game logic, no UI dependencies
+- **TUI Layer** (`tui/`): Textual-based terminal interface
+- **AI Layer** (`ai/`): Policy implementations that interact only with the logic layer
+- **Records Layer** (`records/`): Local persistence and CSV export
+
+## Game Rules Summary
+
+### Terrain Types
+
+| Terrain | Base Yield |
+|---------|-----------|
+| Plains | 1 Food |
+| Forest | 1 Wood |
+| Mountain | 1 Ore |
+| River | 1 Science |
+| Wasteland | -1 Food |
+
+### Buildings
+
+| Building | Cost | Yield |
+|----------|------|-------|
+| Farm | 3 Food | +1 Food |
+| Lumber Mill | 3 Wood | +1 Wood |
+| Mine | 3 Ore | +1 Ore |
+| Library | 3 Science | +1 Science |
+
+### Network Rules
+
+- Cities connected by roads form a network
+- Resources and technologies are shared within a network
+- Networks can merge when cities are connected
+- Famine occurs if a network's total food production ≤ 0
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+Built with:
+- [Textual](https://textual.textualize.io/) - Terminal UI framework
+- [Pillow](https://python-pillow.org/) - Image rendering
+- [textual-image](https://github.com/adamchen123/textual-image) - Terminal image display

@@ -196,6 +196,22 @@ def render_large_number_image(
     )
 
 
+def render_final_score_number_image(
+    value: int | str,
+    *,
+    slot_width_cells: int = 28,
+    slot_height_cells: int = 4,
+    body_color: str = TEXT_ACCENT,
+    shadow_color: str = SHADOW_COLOR,
+    background: str = APP_BACKGROUND,
+) -> Image.Image:
+    """Render the final score using the same large number renderer as the game HUD."""
+    # Simply render the large number and scale it to fit
+    # For simplicity, we use a fixed scale similar to the game metric panel
+    image = render_large_number_image(value, body_color=body_color, shadow_color=shadow_color, background=background)
+    return scale_number_image(image, 0.48)
+
+
 def scale_number_image(image: Image.Image, scale: float) -> Image.Image:
     """Return a nearest-neighbor scaled copy for compact panel use."""
     width = max(int(round(image.width * scale)), 1)

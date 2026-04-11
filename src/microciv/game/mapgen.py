@@ -132,7 +132,11 @@ class MapGenerator:
         last_errors: list[str] = []
 
         for _ in range(MAX_MAP_RETRIES):
-            generated = self._generate_once(config, rng)
+            try:
+                generated = self._generate_once(config, rng)
+            except RuntimeError as error:
+                last_errors = [str(error)]
+                continue
             repaired = self._repair_quality(generated, config)
             errors = self._quality_errors(repaired, config)
             if not errors:

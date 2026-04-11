@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from textual.app import App
+from textual.screen import Screen
 
 from microciv.config import AppPaths, build_app_paths
 from microciv.game.models import GameConfig
@@ -58,36 +59,35 @@ class MicroCivApp(App[None]):
 
     def open_setup_for_play(self) -> None:
         self._clear_active_message()
-        self.push_screen(SetupScreen(autoplay=False))
+        self._show_primary_screen(SetupScreen(autoplay=False))
 
     def open_setup_for_autoplay(self) -> None:
         self._clear_active_message()
-        self.push_screen(SetupScreen(autoplay=True))
+        self._show_primary_screen(SetupScreen(autoplay=True))
 
     def open_setup_for_config(self, config: GameConfig) -> None:
         self._clear_active_message()
-        self.push_screen(SetupScreen(autoplay=config.mode.value == "autoplay", initial_config=config))
+        self._show_primary_screen(SetupScreen(autoplay=config.mode.value == "autoplay", initial_config=config))
 
     def open_records(self) -> None:
         self.reload_records()
-        self.push_screen(RecordsListScreen())
+        self._show_primary_screen(RecordsListScreen())
 
     def open_record_detail(self, record: RecordEntry) -> None:
-        self.push_screen(RecordDetailScreen(record))
+        self._show_primary_screen(RecordDetailScreen(record))
 
     def start_session(self, config: GameConfig) -> None:
         self.active_session = create_game_session(config)
-        self.push_screen(GameScreen(self.active_session))
+        self._show_primary_screen(GameScreen(self.active_session))
 
     def complete_session(self, session: GameSession) -> None:
         if session.saved_record is None:
             session.saved_record = self.record_store.append_completed_game(session.state)
             self.reload_records()
-        self.push_screen(FinalScreen(session))
+        self._show_primary_screen(FinalScreen(session))
 
     def restart_from_session(self, session: GameSession) -> None:
         self.active_session = None
-        self.return_to_menu()
         self.open_setup_for_config(session.state.config)
 
     def reload_records(self) -> RecordDatabase:
@@ -100,12 +100,21 @@ class MicroCivApp(App[None]):
         return export_records_csv(self.records.records, self.paths.exports_dir)
 
     def return_to_menu(self) -> None:
-        while self.current_route is not ScreenRoute.MAIN_MENU and len(self.screen_stack) > 1:
-            self.pop_screen()
         self.active_session = None
+        self._show_primary_screen(MainMenuScreen())
 
     def _clear_active_message(self) -> None:
         if self.active_session is None:
             return
         self.active_session.state.message = ""
         self.active_session.state.selection.clear()
+
+    def _show_primary_screen(self, screen: Screen[object]) -> None:
+        # Keep only the implicit root screen at the bottom of the stack.
+        # Primary navigation then always pushes a fresh top-level screen,
+        # while overlays like the in-game menu can still use push/dismiss.
+        if len(self.screen_stack) <= 1:
+            self.push_screen(screen)
+            return
+        self.pop_screen()
+        self.call_next(self._show_primary_screen, screen)

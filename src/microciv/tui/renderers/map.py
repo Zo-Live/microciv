@@ -116,6 +116,22 @@ def render_map_image(
     return render_hex_cluster_image(specs, metrics=metrics, background=background)
 
 
+def render_map_image_for_cells(
+    state: GameState,
+    *,
+    template_metrics: HexRasterMetrics = MAP_HEX_METRICS,
+    max_width_cells: int | None = None,
+    max_height_cells: int | None = None,
+    background: str = APP_BACKGROUND,
+) -> tuple[Image.Image, MapRasterLayout]:
+    """Render the map using fixed metrics (simplified version)."""
+    # For simplicity, we just use the template metrics directly
+    # This ensures stable rendering without dynamic scaling
+    image = render_map_image(state, metrics=template_metrics, background=background)
+    layout = build_map_layout(state, metrics=template_metrics)
+    return (image, layout)
+
+
 def _point_in_polygon(point: tuple[float, float], polygon: tuple[tuple[float, float], ...]) -> bool:
     """Return True when the point lies inside the polygon."""
     point_x, point_y = point

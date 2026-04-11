@@ -19,7 +19,6 @@ from microciv.tui.presenters.game_session import GameSession, selected_city_id_f
 from microciv.tui.presenters.state_machine import ScreenRoute
 from microciv.tui.screens.game_menu import GameMenuScreen
 from microciv.tui.widgets.action_panel import ResourceButton
-from microciv.tui.widgets.hexes import HexButton
 from microciv.tui.widgets.map_view import MapView
 from microciv.tui.widgets.metric_panel import MetricPanel
 
@@ -208,11 +207,6 @@ class GameScreen(Screen[None]):
         self._pending_tech = None
         self._panel_mode = PANEL_BUILD_CONFIRM
         self.refresh(layout=True, recompose=True)
-
-    def on_hex_button_pressed(self, message: HexButton.Pressed) -> None:
-        if self._panel_mode != PANEL_BUILD_CONFIRM:
-            return
-        message.stop()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
