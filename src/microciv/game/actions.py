@@ -8,8 +8,7 @@ from microciv.constants import BUILDING_COSTS, BUILDING_LIMIT_PER_CITY, TECH_COS
 from microciv.game.enums import ActionType, BuildingType, OccupantType, TechType, TerrainType
 from microciv.game.models import GameState
 from microciv.game.resources import choose_river_road_payment_network
-from microciv.utils.hexgrid import Coord, coord_sort_key, neighbors
-
+from microciv.utils.grid import Coord, cardinal_neighbors, coord_sort_key
 
 BUILDING_REQUIRED_TECH: dict[BuildingType, TechType] = {
     building_type: tech_type for tech_type, building_type in TECH_UNLOCKS.items()
@@ -36,7 +35,9 @@ class Action:
 
     @classmethod
     def build_building(cls, city_id: int, building_type: BuildingType) -> Action:
-        return cls(action_type=ActionType.BUILD_BUILDING, city_id=city_id, building_type=building_type)
+        return cls(
+            action_type=ActionType.BUILD_BUILDING, city_id=city_id, building_type=building_type
+        )
 
     @classmethod
     def research_tech(cls, city_id: int, tech_type: TechType) -> Action:
@@ -131,11 +132,14 @@ def _validate_build_road(state: GameState, action: Action) -> ActionValidation:
     if not any(
         (neighbor_tile := state.board.get(neighbor)) is not None
         and neighbor_tile.occupant in {OccupantType.CITY, OccupantType.ROAD}
-        for neighbor in neighbors(action.coord)
+        for neighbor in cardinal_neighbors(action.coord)
     ):
         return ActionValidation(False, "Road must connect to an existing city or road")
 
-    if tile.base_terrain is TerrainType.RIVER and choose_river_road_payment_network(state, action.coord) is None:
+    if (
+        tile.base_terrain is TerrainType.RIVER
+        and choose_river_road_payment_network(state, action.coord) is None
+    ):
         return ActionValidation(False, "Not enough resources")
     return ActionValidation(True)
 

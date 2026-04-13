@@ -8,7 +8,7 @@ from pathlib import Path
 
 from microciv.constants import MAX_RECORDS, PROJECT_VERSION
 from microciv.game.models import GameState
-from microciv.records.models import RecordDatabase, RecordEntry, RECORDS_SCHEMA_VERSION
+from microciv.records.models import RECORDS_SCHEMA_VERSION, RecordDatabase, RecordEntry
 
 
 class RecordStore:
@@ -19,21 +19,24 @@ class RecordStore:
 
     def load(self) -> RecordDatabase:
         if not self.path.exists():
-            return RecordDatabase(schema_version=RECORDS_SCHEMA_VERSION, next_record_id=1, records=[])
+            return self._empty_database()
 
         payload = json.loads(self.path.read_text(encoding="utf-8"))
-        database = RecordDatabase.from_dict(payload)
+        try:
+            database = RecordDatabase.from_dict(payload)
+        except (KeyError, TypeError, ValueError):
+            return self._reset_incompatible_file()
+
         if database.schema_version != RECORDS_SCHEMA_VERSION:
-            raise ValueError(
-                f"Unsupported record schema version {database.schema_version}; "
-                f"expected {RECORDS_SCHEMA_VERSION}."
-            )
+            return self._reset_incompatible_file()
         return database
 
     def save(self, database: RecordDatabase) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        temp_path.write_text(json.dumps(database.to_dict(), ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+        temp_path.write_text(
+            json.dumps(database.to_dict(), ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+        )
         temp_path.replace(self.path)
 
     def append_completed_game(
@@ -59,3 +62,14 @@ class RecordStore:
             database.records = database.records[-MAX_RECORDS:]
         self.save(database)
         return entry
+
+    def _empty_database(self) -> RecordDatabase:
+        return RecordDatabase(schema_version=RECORDS_SCHEMA_VERSION, next_record_id=1, records=[])
+
+    def _reset_incompatible_file(self) -> RecordDatabase:
+        backup_path = self.path.with_suffix(f"{self.path.suffix}.incompatible")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if backup_path.exists():
+            backup_path.unlink()
+        self.path.replace(backup_path)
+        return self._empty_database()

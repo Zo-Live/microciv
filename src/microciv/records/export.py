@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
 
 from microciv.records.models import CSV_FIELD_ORDER, RecordEntry
 

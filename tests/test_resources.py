@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from microciv.game.enums import OccupantType, ResourceType, TerrainType
-from microciv.game.models import BuildingCounts, City, GameConfig, GameState, Network, ResourcePool, Tile
+from microciv.game.models import (
+    BuildingCounts,
+    City,
+    GameConfig,
+    GameState,
+    Network,
+    ResourcePool,
+    Tile,
+)
 from microciv.game.networks import recompute_networks
 from microciv.game.resources import (
     can_pay_river_road_cost,
@@ -13,12 +21,12 @@ from microciv.game.resources import (
 )
 
 
-def test_recompute_resource_ownership_splits_river_resources_by_building_type() -> None:
+def test_recompute_resource_ownership_uses_moore_neighborhood() -> None:
     state = GameState.empty(GameConfig.for_play())
     state.board = {
         (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
-        (1, -1): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
-        (1, 0): Tile(base_terrain=TerrainType.RIVER),
+        (2, 2): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (1, 1): Tile(base_terrain=TerrainType.RIVER),
     }
     state.cities = {
         1: City(
@@ -30,7 +38,7 @@ def test_recompute_resource_ownership_splits_river_resources_by_building_type() 
         ),
         2: City(
             city_id=2,
-            coord=(1, -1),
+            coord=(2, 2),
             founded_turn=2,
             network_id=2,
             buildings=BuildingCounts(library=2),
@@ -43,50 +51,17 @@ def test_recompute_resource_ownership_splits_river_resources_by_building_type() 
 
     ownership = recompute_resource_ownership(state)
 
-    assert ownership[(1, 0)][ResourceType.FOOD] == 1
-    assert ownership[(1, 0)][ResourceType.SCIENCE] == 2
-
-
-def test_recompute_resource_ownership_breaks_ties_by_founding_turn_then_coord() -> None:
-    state = GameState.empty(GameConfig.for_play())
-    state.board = {
-        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
-        (1, -1): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
-        (1, 0): Tile(base_terrain=TerrainType.PLAIN),
-    }
-    state.cities = {
-        1: City(
-            city_id=1,
-            coord=(0, 0),
-            founded_turn=1,
-            network_id=1,
-            buildings=BuildingCounts(farm=1),
-        ),
-        2: City(
-            city_id=2,
-            coord=(1, -1),
-            founded_turn=2,
-            network_id=2,
-            buildings=BuildingCounts(farm=1),
-        ),
-    }
-    state.networks = {
-        1: Network(network_id=1, city_ids={1}),
-        2: Network(network_id=2, city_ids={2}),
-    }
-
-    ownership = recompute_resource_ownership(state)
-
-    assert ownership[(1, 0)][ResourceType.FOOD] == 1
+    assert ownership[(1, 1)][ResourceType.FOOD] == 1
+    assert ownership[(1, 1)][ResourceType.SCIENCE] == 2
 
 
 def test_settle_resources_applies_network_famine_snapshot_rules() -> None:
     state = GameState.empty(GameConfig.for_play())
     state.board = {
         (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
-        (1, 0): Tile(base_terrain=TerrainType.FOREST),
-        (3, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
-        (4, 0): Tile(base_terrain=TerrainType.FOREST),
+        (0, 1): Tile(base_terrain=TerrainType.FOREST),
+        (3, 3): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (3, 2): Tile(base_terrain=TerrainType.FOREST),
     }
     state.cities = {
         1: City(
@@ -98,7 +73,7 @@ def test_settle_resources_applies_network_famine_snapshot_rules() -> None:
         ),
         2: City(
             city_id=2,
-            coord=(3, 0),
+            coord=(3, 3),
             founded_turn=2,
             network_id=2,
             buildings=BuildingCounts(lumber_mill=1),
@@ -119,7 +94,7 @@ def test_settle_resources_applies_network_famine_snapshot_rules() -> None:
     assert summary.food_consumption == {1: 4, 2: 4}
 
 
-def test_cover_reward_and_river_road_cost_helpers_follow_frozen_rules() -> None:
+def test_cover_reward_and_river_road_cost_helpers_follow_rules() -> None:
     river_reward = cover_reward_for_tile(TerrainType.RIVER)
     network = Network(network_id=1, resources=ResourcePool(wood=3, ore=10))
 
@@ -134,12 +109,12 @@ def test_cover_reward_and_river_road_cost_helpers_follow_frozen_rules() -> None:
 def test_choose_river_road_payment_network_uses_founded_turn_then_coord() -> None:
     state = GameState.empty(GameConfig.for_play())
     state.board = {
-        (-1, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
-        (1, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (2, 1): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
     }
     state.cities = {
-        1: City(city_id=1, coord=(-1, 0), founded_turn=2, network_id=1),
-        2: City(city_id=2, coord=(1, 0), founded_turn=1, network_id=2),
+        1: City(city_id=1, coord=(0, 1), founded_turn=2, network_id=1),
+        2: City(city_id=2, coord=(2, 1), founded_turn=1, network_id=2),
     }
     state.networks = {
         1: Network(network_id=1, city_ids={1}, resources=ResourcePool(wood=3)),
@@ -147,6 +122,6 @@ def test_choose_river_road_payment_network_uses_founded_turn_then_coord() -> Non
     }
     recompute_networks(state)
 
-    chosen_network_id = choose_river_road_payment_network(state, (0, 0))
+    chosen_network_id = choose_river_road_payment_network(state, (1, 1))
 
     assert chosen_network_id == 2

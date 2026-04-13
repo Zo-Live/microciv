@@ -9,7 +9,6 @@ from microciv.constants import (
     BUILDING_YIELDS,
     COVER_REWARD_AMOUNT,
     FOOD_CONSUMPTION_PER_CITY,
-    RESOURCE_TYPES,
     RIVER_ROAD_ORE_COST,
     RIVER_ROAD_WOOD_COST,
     TERRAIN_YIELDS,
@@ -17,7 +16,7 @@ from microciv.constants import (
 from microciv.game.enums import BuildingType, OccupantType, ResourceType, TerrainType
 from microciv.game.models import City, GameState, Network, ResourcePool, Tile
 from microciv.game.networks import map_passable_coords_to_networks
-from microciv.utils.hexgrid import Coord, coord_sort_key, neighbors
+from microciv.utils.grid import Coord, cardinal_neighbors, coord_sort_key, moore_neighbors
 
 ResourceOwnership = dict[Coord, dict[ResourceType, int]]
 
@@ -59,7 +58,10 @@ def cover_reward_for_tile(tile: Tile | TerrainType) -> ResourcePool:
 
 def can_pay_river_road_cost(network: Network) -> bool:
     """Return whether a network can pay the extra cost for a river road."""
-    return network.resources.wood >= RIVER_ROAD_WOOD_COST or network.resources.ore >= RIVER_ROAD_ORE_COST
+    return (
+        network.resources.wood >= RIVER_ROAD_WOOD_COST
+        or network.resources.ore >= RIVER_ROAD_ORE_COST
+    )
 
 
 def charge_river_road_cost(network: Network) -> ResourceType:
@@ -78,13 +80,16 @@ def choose_river_road_payment_network(state: GameState, coord: Coord) -> int | N
     network_coord_map = map_passable_coords_to_networks(state)
     candidate_network_ids = {
         network_coord_map[neighbor]
-        for neighbor in neighbors(coord)
-        if neighbor in network_coord_map and can_pay_river_road_cost(state.networks[network_coord_map[neighbor]])
+        for neighbor in cardinal_neighbors(coord)
+        if neighbor in network_coord_map
+        and can_pay_river_road_cost(state.networks[network_coord_map[neighbor]])
     }
     if not candidate_network_ids:
         return None
 
-    return min(candidate_network_ids, key=lambda network_id: _network_priority_key(state, network_id))
+    return min(
+        candidate_network_ids, key=lambda network_id: _network_priority_key(state, network_id)
+    )
 
 
 def recompute_resource_ownership(state: GameState) -> ResourceOwnership:
@@ -99,24 +104,30 @@ def recompute_resource_ownership(state: GameState) -> ResourceOwnership:
         if tile.base_terrain not in TERRAIN_YIELDS:
             continue
 
-        adjacent_cities = [
+        nearby_cities = [
             state.cities[coord_to_city_id[neighbor]]
-            for neighbor in neighbors(coord)
+            for neighbor in moore_neighbors(coord)
             if neighbor in coord_to_city_id
         ]
-        if not adjacent_cities:
+        if not nearby_cities:
             continue
 
         if tile.base_terrain is TerrainType.PLAIN:
-            ownership[coord] = {ResourceType.FOOD: _choose_owner(adjacent_cities, ResourceType.FOOD).city_id}
+            ownership[coord] = {
+                ResourceType.FOOD: _choose_owner(nearby_cities, ResourceType.FOOD).city_id
+            }
         elif tile.base_terrain is TerrainType.FOREST:
-            ownership[coord] = {ResourceType.WOOD: _choose_owner(adjacent_cities, ResourceType.WOOD).city_id}
+            ownership[coord] = {
+                ResourceType.WOOD: _choose_owner(nearby_cities, ResourceType.WOOD).city_id
+            }
         elif tile.base_terrain is TerrainType.MOUNTAIN:
-            ownership[coord] = {ResourceType.ORE: _choose_owner(adjacent_cities, ResourceType.ORE).city_id}
+            ownership[coord] = {
+                ResourceType.ORE: _choose_owner(nearby_cities, ResourceType.ORE).city_id
+            }
         elif tile.base_terrain is TerrainType.RIVER:
             ownership[coord] = {
-                ResourceType.FOOD: _choose_owner(adjacent_cities, ResourceType.FOOD).city_id,
-                ResourceType.SCIENCE: _choose_owner(adjacent_cities, ResourceType.SCIENCE).city_id,
+                ResourceType.FOOD: _choose_owner(nearby_cities, ResourceType.FOOD).city_id,
+                ResourceType.SCIENCE: _choose_owner(nearby_cities, ResourceType.SCIENCE).city_id,
             }
 
     return ownership
@@ -124,7 +135,9 @@ def recompute_resource_ownership(state: GameState) -> ResourceOwnership:
 
 def compute_famine_snapshot(state: GameState) -> dict[int, bool]:
     """Take the per-network famine snapshot used for the current settlement pass."""
-    return {network_id: network.resources.food <= 0 for network_id, network in state.networks.items()}
+    return {
+        network_id: network.resources.food <= 0 for network_id, network in state.networks.items()
+    }
 
 
 def calculate_terrain_yields(

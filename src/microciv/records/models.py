@@ -5,12 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from microciv.constants import PROJECT_VERSION
-from microciv.game.enums import Mode
+from microciv.game.enums import Mode, PolicyType
 from microciv.game.models import City, GameState, Network, Road, Tile
-from microciv.game.scoring import building_count, calculate_score, city_count, tech_count, total_resources
-from microciv.utils.hexgrid import Coord, coord_sort_key
+from microciv.game.scoring import (
+    building_count,
+    calculate_score,
+    city_count,
+    tech_count,
+    total_resources,
+)
+from microciv.utils.grid import Coord, coord_sort_key
 
-RECORDS_SCHEMA_VERSION = 1
+RECORDS_SCHEMA_VERSION = 2
 
 CSV_FIELD_ORDER: tuple[str, ...] = (
     "record_id",
@@ -48,6 +54,10 @@ CSV_FIELD_ORDER: tuple[str, ...] = (
     "decision_time_ms_total",
     "decision_time_ms_avg",
     "decision_time_ms_max",
+    "turn_elapsed_ms_total",
+    "turn_elapsed_ms_avg",
+    "turn_elapsed_ms_max",
+    "session_elapsed_ms",
 )
 
 
@@ -55,28 +65,33 @@ CSV_FIELD_ORDER: tuple[str, ...] = (
 class RecordTileSnapshot:
     """Serializable snapshot of a final map tile."""
 
-    q: int
-    r: int
+    x: int
+    y: int
     base_terrain: str
     occupant: str
 
     @classmethod
     def from_tile(cls, coord: Coord, tile: Tile) -> RecordTileSnapshot:
-        return cls(q=coord[0], r=coord[1], base_terrain=tile.base_terrain.value, occupant=tile.occupant.value)
+        return cls(
+            x=coord[0],
+            y=coord[1],
+            base_terrain=tile.base_terrain.value,
+            occupant=tile.occupant.value,
+        )
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordTileSnapshot:
         return cls(
-            q=int(payload["q"]),
-            r=int(payload["r"]),
+            x=int(payload["x"]),
+            y=int(payload["y"]),
             base_terrain=str(payload["base_terrain"]),
             occupant=str(payload["occupant"]),
         )
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "q": self.q,
-            "r": self.r,
+            "x": self.x,
+            "y": self.y,
             "base_terrain": self.base_terrain,
             "occupant": self.occupant,
         }
@@ -87,8 +102,8 @@ class RecordCitySnapshot:
     """Serializable snapshot of a final city."""
 
     city_id: int
-    q: int
-    r: int
+    x: int
+    y: int
     founded_turn: int
     network_id: int
     farm: int
@@ -101,8 +116,8 @@ class RecordCitySnapshot:
     def from_city(cls, city: City) -> RecordCitySnapshot:
         return cls(
             city_id=city.city_id,
-            q=city.coord[0],
-            r=city.coord[1],
+            x=city.coord[0],
+            y=city.coord[1],
             founded_turn=city.founded_turn,
             network_id=city.network_id,
             farm=city.buildings.farm,
@@ -116,8 +131,8 @@ class RecordCitySnapshot:
     def from_dict(cls, payload: dict[str, object]) -> RecordCitySnapshot:
         return cls(
             city_id=int(payload["city_id"]),
-            q=int(payload["q"]),
-            r=int(payload["r"]),
+            x=int(payload["x"]),
+            y=int(payload["y"]),
             founded_turn=int(payload["founded_turn"]),
             network_id=int(payload["network_id"]),
             farm=int(payload["farm"]),
@@ -130,8 +145,8 @@ class RecordCitySnapshot:
     def to_dict(self) -> dict[str, object]:
         return {
             "city_id": self.city_id,
-            "q": self.q,
-            "r": self.r,
+            "x": self.x,
+            "y": self.y,
             "founded_turn": self.founded_turn,
             "network_id": self.network_id,
             "farm": self.farm,
@@ -147,28 +162,30 @@ class RecordRoadSnapshot:
     """Serializable snapshot of a final road."""
 
     road_id: int
-    q: int
-    r: int
+    x: int
+    y: int
     built_turn: int
 
     @classmethod
     def from_road(cls, road: Road) -> RecordRoadSnapshot:
-        return cls(road_id=road.road_id, q=road.coord[0], r=road.coord[1], built_turn=road.built_turn)
+        return cls(
+            road_id=road.road_id, x=road.coord[0], y=road.coord[1], built_turn=road.built_turn
+        )
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordRoadSnapshot:
         return cls(
             road_id=int(payload["road_id"]),
-            q=int(payload["q"]),
-            r=int(payload["r"]),
+            x=int(payload["x"]),
+            y=int(payload["y"]),
             built_turn=int(payload["built_turn"]),
         )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "road_id": self.road_id,
-            "q": self.q,
-            "r": self.r,
+            "x": self.x,
+            "y": self.y,
             "built_turn": self.built_turn,
         }
 
@@ -260,6 +277,10 @@ class RecordEntry:
     decision_time_ms_total: int
     decision_time_ms_avg: int
     decision_time_ms_max: int
+    turn_elapsed_ms_total: int
+    turn_elapsed_ms_avg: int
+    turn_elapsed_ms_max: int
+    session_elapsed_ms: int
     final_map: list[RecordTileSnapshot] = field(default_factory=list)
     cities: list[RecordCitySnapshot] = field(default_factory=list)
     roads: list[RecordRoadSnapshot] = field(default_factory=list)
@@ -284,14 +305,16 @@ class RecordEntry:
             timestamp=timestamp,
             game_version=game_version,
             mode=state.config.mode.value,
-            ai_type="Human" if state.config.mode is Mode.PLAY else "Baseline",
+            ai_type=_ai_type_label(state),
             custom_goal="",
-            playback_mode="" if state.config.mode is Mode.PLAY else state.config.playback_mode.value,
+            playback_mode=""
+            if state.config.mode is Mode.PLAY
+            else state.config.playback_mode.value,
             seed=state.config.seed,
             map_size=state.config.map_size,
             map_difficulty=state.config.map_difficulty.value,
             turn_limit=state.config.turn_limit,
-            actual_turns=state.config.turn_limit,
+            actual_turns=state.turn,
             final_score=calculate_score(state),
             city_count=city_count(state),
             building_count=building_count(state),
@@ -315,6 +338,10 @@ class RecordEntry:
             decision_time_ms_total=state.stats.decision_time_ms_total,
             decision_time_ms_avg=state.stats.decision_time_ms_avg,
             decision_time_ms_max=state.stats.decision_time_ms_max,
+            turn_elapsed_ms_total=state.stats.turn_elapsed_ms_total,
+            turn_elapsed_ms_avg=state.stats.turn_elapsed_ms_avg,
+            turn_elapsed_ms_max=state.stats.turn_elapsed_ms_max,
+            session_elapsed_ms=state.stats.session_elapsed_ms,
             final_map=_board_snapshots(state),
             cities=_city_snapshots(state),
             roads=_road_snapshots(state),
@@ -359,10 +386,16 @@ class RecordEntry:
             decision_time_ms_total=int(payload["decision_time_ms_total"]),
             decision_time_ms_avg=int(payload["decision_time_ms_avg"]),
             decision_time_ms_max=int(payload["decision_time_ms_max"]),
+            turn_elapsed_ms_total=int(payload["turn_elapsed_ms_total"]),
+            turn_elapsed_ms_avg=int(payload["turn_elapsed_ms_avg"]),
+            turn_elapsed_ms_max=int(payload["turn_elapsed_ms_max"]),
+            session_elapsed_ms=int(payload["session_elapsed_ms"]),
             final_map=[RecordTileSnapshot.from_dict(item) for item in payload.get("final_map", [])],
             cities=[RecordCitySnapshot.from_dict(item) for item in payload.get("cities", [])],
             roads=[RecordRoadSnapshot.from_dict(item) for item in payload.get("roads", [])],
-            networks=[RecordNetworkSnapshot.from_dict(item) for item in payload.get("networks", [])],
+            networks=[
+                RecordNetworkSnapshot.from_dict(item) for item in payload.get("networks", [])
+            ],
         )
 
     def to_csv_row(self) -> dict[str, object]:
@@ -419,14 +452,18 @@ def _board_snapshots(state: GameState) -> list[RecordTileSnapshot]:
 def _city_snapshots(state: GameState) -> list[RecordCitySnapshot]:
     return [
         RecordCitySnapshot.from_city(city)
-        for city in sorted(state.cities.values(), key=lambda city: (coord_sort_key(city.coord), city.city_id))
+        for city in sorted(
+            state.cities.values(), key=lambda city: (coord_sort_key(city.coord), city.city_id)
+        )
     ]
 
 
 def _road_snapshots(state: GameState) -> list[RecordRoadSnapshot]:
     return [
         RecordRoadSnapshot.from_road(road)
-        for road in sorted(state.roads.values(), key=lambda road: (coord_sort_key(road.coord), road.road_id))
+        for road in sorted(
+            state.roads.values(), key=lambda road: (coord_sort_key(road.coord), road.road_id)
+        )
     ]
 
 
@@ -435,3 +472,13 @@ def _network_snapshots(state: GameState) -> list[RecordNetworkSnapshot]:
         RecordNetworkSnapshot.from_network(network)
         for network in sorted(state.networks.values(), key=lambda network: network.network_id)
     ]
+
+
+def _ai_type_label(state: GameState) -> str:
+    if state.config.mode is Mode.PLAY:
+        return "Human"
+    if state.config.policy_type is PolicyType.BASELINE:
+        return "Baseline"
+    if state.config.policy_type is PolicyType.RANDOM:
+        return "Random"
+    return state.config.policy_type.value.title()

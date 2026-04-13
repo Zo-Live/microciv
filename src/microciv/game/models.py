@@ -26,7 +26,7 @@ from microciv.game.enums import (
     TechType,
     TerrainType,
 )
-from microciv.utils.hexgrid import Coord, coord_sort_key
+from microciv.utils.grid import Coord, coord_sort_key
 
 
 @dataclass(slots=True)
@@ -209,6 +209,10 @@ class Stats:
     decision_time_ms_total: int = 0
     decision_time_ms_avg: int = 0
     decision_time_ms_max: int = 0
+    turn_elapsed_ms_total: int = 0
+    turn_elapsed_ms_avg: int = 0
+    turn_elapsed_ms_max: int = 0
+    session_elapsed_ms: int = 0
 
     def record_decision_time(self, duration_ms: int) -> None:
         if duration_ms < 0:
@@ -217,6 +221,27 @@ class Stats:
         self.decision_time_ms_total += duration_ms
         self.decision_time_ms_max = max(self.decision_time_ms_max, duration_ms)
         self.decision_time_ms_avg = self.decision_time_ms_total // self.decision_count
+
+    def record_turn_time(self, duration_ms: int) -> None:
+        if duration_ms < 0:
+            raise ValueError("duration_ms must be non-negative.")
+        turn_count = (
+            self.build_city_count
+            + self.build_road_count
+            + self.build_farm_count
+            + self.build_lumber_mill_count
+            + self.build_mine_count
+            + self.build_library_count
+            + self.research_agriculture_count
+            + self.research_logging_count
+            + self.research_mining_count
+            + self.research_education_count
+            + self.skip_count
+        )
+        turn_count = max(turn_count, 1)
+        self.turn_elapsed_ms_total += duration_ms
+        self.turn_elapsed_ms_max = max(self.turn_elapsed_ms_max, duration_ms)
+        self.turn_elapsed_ms_avg = self.turn_elapsed_ms_total // turn_count
 
 
 @dataclass(slots=True)
@@ -247,8 +272,8 @@ class GameConfig:
         if self.mode is Mode.AUTOPLAY:
             if self.policy_type is PolicyType.NONE:
                 raise ValueError("Autoplay mode requires a concrete policy_type.")
-            if self.policy_type is not PolicyType.BASELINE:
-                raise ValueError("Phase one only supports PolicyType.BASELINE in autoplay mode.")
+            if self.policy_type not in {PolicyType.BASELINE, PolicyType.RANDOM}:
+                raise ValueError("Autoplay mode only supports baseline or random policy types.")
             if self.playback_mode is PlaybackMode.NONE:
                 raise ValueError("Autoplay mode requires a playback_mode.")
 

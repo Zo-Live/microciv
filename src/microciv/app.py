@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from microciv.tui.app import MicroCivApp
+from microciv.curses_app import CursesMicroCivApp
 
 
 def main() -> None:
-    """Run the Textual application."""
-    MicroCivApp().run()
+    """Run the curses application."""
+    CursesMicroCivApp().run()

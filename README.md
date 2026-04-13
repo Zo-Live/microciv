@@ -1,42 +1,33 @@
 # MicroCiv
 
-A terminal-based micro strategy civilization simulator built with Python and Textual.
-
-![Python](https://img.shields.io/badge/python-3.13%2B-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+A terminal-based micro strategy civilization simulator built with Python and curses.
 
 ## Overview
 
-MicroCiv is a minimalist turn-based strategy game that runs in your terminal. Build cities, connect them with roads, manage resources, and research technologies across a hexagonal map.
+MicroCiv is a turn-based civilization management game that runs in the terminal. It uses a square-grid world, mouse-first curses interaction, and Unicode block elements for map rendering.
 
 ### Features
 
-- **Hexagonal Map System**: Procedurally generated maps with multiple terrain types (Plains, Forests, Mountains, Rivers, Wastelands)
-- **City Building**: Found cities, construct buildings (Farms, Lumber Mills, Mines, Libraries)
-- **Resource Management**: Balance Food, Wood, Ore, and Science across connected city networks
-- **Technology Tree**: Research Agriculture, Logging, Mining, and Education
-- **AI Opponents**: Baseline and Random AI policies for autonomous play
-- **Records System**: Local persistence of game results with CSV export
-- **Terminal UI**: Built with [Textual](https://textual.textualize.io/) for a rich terminal experience
+- Square-grid procedural map generation with plains, forests, mountains, rivers, and wastelands
+- City building, road networks, buildings, technologies, and score-based progression
+- Manual play and autoplay
+- Two autoplay AI policies: `Baseline` and `Random`
+- Local records with CSV export
+- Timing metrics for AI analysis: decision time, per-turn time, and full-session time
+
+## Requirements
+
+- Python 3.13 or higher
+- A terminal with Unicode color support
+- A terminal that supports mouse events in curses
 
 ## Installation
 
-### Requirements
-
-- Python 3.13 or higher
-- Terminal with Unicode and color support (Windows Terminal, iTerm2, GNOME Terminal, etc.)
-
-### Using uv (Recommended)
+### Using uv
 
 ```bash
-# Install uv if you haven't already
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Clone the repository
 git clone git@github.com:Zo-Live/microciv.git
 cd microciv
-
-# Create virtual environment and install dependencies
 uv venv
 uv sync
 ```
@@ -44,153 +35,69 @@ uv sync
 ### Using pip
 
 ```bash
-# Clone the repository
 git clone git@github.com:Zo-Live/microciv.git
 cd microciv
-
-# Create and activate virtual environment
 python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
+source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-## Usage
-
-### Start the Game
+## Run
 
 ```bash
-# Using uv
-uv run microciv
-
-# Or using the entry point
-python -m microciv
-
-# Or directly
 python main.py
 ```
 
-### Game Controls
+or
 
-| Key | Action |
-|-----|--------|
-| `Enter` / Click | Select menu items, confirm actions |
-| `q` | Quit current screen |
-| `m` | Open in-game menu |
-| Arrow keys / Mouse | Navigate and interact |
+```bash
+python -m microciv
+```
 
-### Game Flow
+## Controls
 
-1. **Main Menu**: Choose Play, Autoplay, Records, or Exit
-2. **Map Setup**: Select difficulty, map size, and turn limit
-3. **Gameplay**: 
-   - Click hexes to select terrain or cities
-   - Build cities on empty terrain
-   - Build roads to connect cities
-   - Construct buildings in cities
-   - Research technologies
-4. **Game Over**: View final score and statistics
+MicroCiv is primarily mouse-driven.
+
+- Left click: select tiles, buttons, buildings, technologies, records
+- Mouse wheel: scroll record pages
+- `m`: open in-game menu
+- `b`: trigger the first available build action
+- `t`: trigger the first available research action
+- `d`: show detail for the current selection
+- `q`: back / close current layer / return to menu
+- Arrow keys: move map selection or scroll record pages
 
 ## Project Structure
 
-```
+```text
 microciv/
 ├── src/microciv/
-│   ├── game/          # Core game logic
-│   │   ├── engine.py  # Game loop and action execution
-│   │   ├── models.py  # Game state and data structures
-│   │   ├── actions.py # Action validation
-│   │   ├── mapgen.py  # Map generation
-│   │   ├── resources.py  # Resource management
-│   │   ├── networks.py   # City network logic
-│   │   └── scoring.py    # Score calculation
-│   ├── tui/           # Terminal UI
-│   │   ├── screens/   # Game screens
-│   │   ├── widgets/   # UI components
-│   │   ├── renderers/ # Image rendering
-│   │   └── presenters/# State transformation
 │   ├── ai/            # AI policies
-│   │   ├── baseline.py
-│   │   └── random_policy.py
-│   ├── records/       # Persistence layer
-│   └── utils/         # Utilities
+│   ├── game/          # Core rules and state transitions
+│   ├── records/       # Local persistence and CSV export
+│   ├── session.py     # Runtime session helpers
+│   ├── curses_app.py  # curses controller and rendering
+│   └── app.py         # Entry point
+├── docs/              # Project documents
 ├── tests/             # Test suite
-├── docs/              # Documentation
-├── data/              # Runtime data (created automatically)
-└── exports/           # CSV exports (created automatically)
+├── data/              # Runtime records
+└── exports/           # CSV exports
 ```
 
 ## Development
 
-### Running Tests
+Run tests:
 
 ```bash
-# Run all tests
-uv run pytest
-
-# Run with coverage
-uv run pytest --cov=src/microciv
-
-# Run specific test file
-uv run pytest tests/test_engine.py
+.venv/bin/python -m pytest -q
 ```
 
-### Code Quality
+Run lint:
 
 ```bash
-# Format code
-uv run ruff format src/
-
-# Lint code
-uv run ruff check src/
-
-# Type check
-uv run mypy src/microciv
+.venv/bin/ruff check src tests
 ```
-
-### Project Structure Notes
-
-- **Logic Layer** (`game/`): Pure game logic, no UI dependencies
-- **TUI Layer** (`tui/`): Textual-based terminal interface
-- **AI Layer** (`ai/`): Policy implementations that interact only with the logic layer
-- **Records Layer** (`records/`): Local persistence and CSV export
-
-## Game Rules Summary
-
-### Terrain Types
-
-| Terrain | Base Yield |
-|---------|-----------|
-| Plains | 1 Food |
-| Forest | 1 Wood |
-| Mountain | 1 Ore |
-| River | 1 Science |
-| Wasteland | -1 Food |
-
-### Buildings
-
-| Building | Cost | Yield |
-|----------|------|-------|
-| Farm | 3 Food | +1 Food |
-| Lumber Mill | 3 Wood | +1 Wood |
-| Mine | 3 Ore | +1 Ore |
-| Library | 3 Science | +1 Science |
-
-### Network Rules
-
-- Cities connected by roads form a network
-- Resources and technologies are shared within a network
-- Networks can merge when cities are connected
-- Famine occurs if a network's total food production ≤ 0
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-Built with:
-- [Textual](https://textual.textualize.io/) - Terminal UI framework
-- [Pillow](https://python-pillow.org/) - Image rendering
-- [textual-image](https://github.com/adamchen123/textual-image) - Terminal image display
+MIT

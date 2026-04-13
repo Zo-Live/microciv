@@ -6,9 +6,18 @@ from datetime import datetime
 
 import microciv.records.store as record_store_module
 from microciv.game.enums import OccupantType, PlaybackMode, PolicyType, TechType, TerrainType
-from microciv.game.models import BuildingCounts, City, GameConfig, GameState, Network, ResourcePool, Road, Tile
+from microciv.game.models import (
+    BuildingCounts,
+    City,
+    GameConfig,
+    GameState,
+    Network,
+    ResourcePool,
+    Road,
+    Tile,
+)
 from microciv.records.export import export_records_csv
-from microciv.records.models import CSV_FIELD_ORDER, RecordEntry, RECORDS_SCHEMA_VERSION
+from microciv.records.models import CSV_FIELD_ORDER, RECORDS_SCHEMA_VERSION, RecordEntry
 from microciv.records.store import RecordStore
 
 
@@ -31,12 +40,14 @@ def test_record_entry_from_game_state_captures_frozen_fields() -> None:
     assert entry.city_count == 1
     assert entry.building_count == 2
     assert entry.tech_count == 2
-    assert entry.final_map[0].q == 0
+    assert entry.final_map[0].x == 0
     assert entry.final_map[0].occupant == "city"
     assert entry.cities[0].farm == 1
     assert entry.cities[0].library == 1
     assert entry.roads[0].road_id == 1
     assert entry.networks[0].unlocked_techs == ["agriculture", "education"]
+    assert entry.turn_elapsed_ms_total == 900
+    assert entry.session_elapsed_ms == 1200
 
 
 def test_record_store_persists_and_reloads_completed_games(tmp_path) -> None:
@@ -64,6 +75,21 @@ def test_record_store_persists_and_reloads_completed_games(tmp_path) -> None:
     assert len(reloaded.records) == 1
     assert reloaded.records[0].timestamp == "2026-04-09T12:00:00+08:00"
     assert reloaded.records[0].final_score == 111
+
+
+def test_record_store_resets_old_schema_file(tmp_path) -> None:
+    records_path = tmp_path / "data" / "records.json"
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    records_path.write_text(
+        json.dumps({"schema_version": 1, "next_record_id": 1, "records": []}), encoding="utf-8"
+    )
+
+    database = RecordStore(records_path).load()
+
+    assert database.schema_version == RECORDS_SCHEMA_VERSION
+    assert database.records == []
+    assert not records_path.exists()
+    assert records_path.with_suffix(".json.incompatible").exists()
 
 
 def test_record_store_fifo_trims_oldest_entries(monkeypatch, tmp_path) -> None:
@@ -110,7 +136,7 @@ def test_export_records_csv_uses_frozen_column_order_and_filename(tmp_path) -> N
     assert rows[1][0] == "1"
     assert rows[1][4] == "Human"
     assert rows[2][0] == "2"
-    assert rows[2][4] == "Baseline"
+    assert rows[2][4] == "Random"
     assert rows[2][6] == "speed"
 
 
@@ -147,6 +173,14 @@ def build_completed_state(*, seed: int = 7) -> GameState:
     state.stats.build_library_count = 1
     state.stats.research_agriculture_count = 1
     state.stats.research_education_count = 1
+    state.stats.decision_count = 12
+    state.stats.decision_time_ms_total = 240
+    state.stats.decision_time_ms_avg = 20
+    state.stats.decision_time_ms_max = 45
+    state.stats.turn_elapsed_ms_total = 900
+    state.stats.turn_elapsed_ms_avg = 30
+    state.stats.turn_elapsed_ms_max = 75
+    state.stats.session_elapsed_ms = 1200
     return state
 
 
@@ -154,7 +188,7 @@ def build_completed_autoplay_state(*, seed: int = 13) -> GameState:
     config = GameConfig.for_autoplay(
         turn_limit=30,
         seed=seed,
-        policy_type=PolicyType.BASELINE,
+        policy_type=PolicyType.RANDOM,
         playback_mode=PlaybackMode.SPEED,
     )
     state = GameState.empty(config)
@@ -185,4 +219,8 @@ def build_completed_autoplay_state(*, seed: int = 13) -> GameState:
     state.stats.decision_time_ms_total = 1234
     state.stats.decision_time_ms_avg = 41
     state.stats.decision_time_ms_max = 99
+    state.stats.turn_elapsed_ms_total = 1900
+    state.stats.turn_elapsed_ms_avg = 63
+    state.stats.turn_elapsed_ms_max = 144
+    state.stats.session_elapsed_ms = 2500
     return state

@@ -1,12 +1,16 @@
-"""Session helpers for the Textual application."""
+"""Runtime session helpers shared by the curses UI."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from time import perf_counter
 
 from microciv.ai.baseline import BaselinePolicy
 from microciv.ai.policy import Policy
+from microciv.ai.random_policy import RandomPolicy
+from microciv.game.actions import Action
 from microciv.game.engine import GameEngine
+from microciv.game.enums import PolicyType
 from microciv.game.mapgen import MapGenerator
 from microciv.game.models import GameConfig, GameState, Tile
 from microciv.records.models import RecordEntry
@@ -20,6 +24,22 @@ class GameSession:
     engine: GameEngine
     policy: Policy | None = None
     saved_record: RecordEntry | None = None
+    started_at: float = field(default_factory=perf_counter)
+
+    def apply_action(self, action: Action) -> None:
+        """Apply an action and refresh aggregate session timing when the game ends."""
+        self.engine.apply_action(action)
+        if self.state.is_game_over:
+            self.state.stats.session_elapsed_ms = int((perf_counter() - self.started_at) * 1000)
+
+    def step_autoplay(self) -> None:
+        """Advance a single autoplay turn and record decision timing."""
+        if self.policy is None or self.state.is_game_over:
+            return
+        decision_started_at = perf_counter()
+        action = self.policy.select_action(self.state)
+        self.state.stats.record_decision_time(int((perf_counter() - decision_started_at) * 1000))
+        self.apply_action(action)
 
 
 def create_game_session(config: GameConfig) -> GameSession:
@@ -27,8 +47,10 @@ def create_game_session(config: GameConfig) -> GameSession:
     state = build_state_from_config(config)
 
     policy: Policy | None = None
-    if config.mode.value == "autoplay":
+    if config.policy_type is PolicyType.BASELINE:
         policy = BaselinePolicy()
+    elif config.policy_type is PolicyType.RANDOM:
+        policy = RandomPolicy(seed=config.seed)
 
     return GameSession(state=state, engine=GameEngine(state), policy=policy)
 

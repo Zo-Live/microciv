@@ -17,8 +17,18 @@ def test_recompute_networks_merges_connected_networks_through_river() -> None:
         2: City(city_id=2, coord=(2, 0), founded_turn=1, network_id=2),
     }
     state.networks = {
-        5: Network(network_id=5, city_ids={1}, resources=ResourcePool(food=3), unlocked_techs={TechType.AGRICULTURE}),
-        2: Network(network_id=2, city_ids={2}, resources=ResourcePool(wood=4), unlocked_techs={TechType.LOGGING}),
+        5: Network(
+            network_id=5,
+            city_ids={1},
+            resources=ResourcePool(food=3),
+            unlocked_techs={TechType.AGRICULTURE},
+        ),
+        2: Network(
+            network_id=2,
+            city_ids={2},
+            resources=ResourcePool(wood=4),
+            unlocked_techs={TechType.LOGGING},
+        ),
     }
 
     rebuilt = recompute_networks(state)

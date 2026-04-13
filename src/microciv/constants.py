@@ -9,9 +9,9 @@ from microciv.game.enums import BuildingType, ResourceType, TechType, TerrainTyp
 APP_NAME = "MicroCiv"
 PROJECT_VERSION = "0.1.0"
 
-MIN_MAP_SIZE = 4
-DEFAULT_MAP_SIZE = 6
-MAX_MAP_SIZE = 10
+MIN_MAP_SIZE = 12
+DEFAULT_MAP_SIZE = 18
+MAX_MAP_SIZE = 24
 
 MIN_TURN_LIMIT = 30
 DEFAULT_TURN_LIMIT = 80
@@ -38,10 +38,10 @@ RESOURCE_TYPES: tuple[ResourceType, ...] = (
 
 TERRAIN_YIELDS = MappingProxyType(
     {
-        TerrainType.PLAIN: MappingProxyType({ResourceType.FOOD: 3}),
+        TerrainType.PLAIN: MappingProxyType({ResourceType.FOOD: 2}),
         TerrainType.FOREST: MappingProxyType({ResourceType.WOOD: 2}),
         TerrainType.MOUNTAIN: MappingProxyType({ResourceType.ORE: 2}),
-        TerrainType.RIVER: MappingProxyType({ResourceType.FOOD: 2, ResourceType.SCIENCE: 1}),
+        TerrainType.RIVER: MappingProxyType({ResourceType.FOOD: 1, ResourceType.SCIENCE: 1}),
         TerrainType.WASTELAND: MappingProxyType({}),
     }
 )

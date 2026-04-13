@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 
 from microciv.constants import BUILDING_COSTS, TECH_COSTS
 from microciv.game.actions import Action, validate_action
@@ -31,12 +32,13 @@ class EngineResult:
 
 
 class GameEngine:
-    """Own the phase-one state transitions and turn loop."""
+    """Own the state transitions and turn loop."""
 
     def __init__(self, state: GameState) -> None:
         self.state = state
 
     def apply_action(self, action: Action) -> EngineResult:
+        started_at = perf_counter()
         validation = validate_action(self.state, action)
         if not validation.is_valid:
             self.state.message = validation.message
@@ -68,6 +70,8 @@ class GameEngine:
         else:
             self.state.turn += 1
 
+        elapsed_ms = int((perf_counter() - started_at) * 1000)
+        self.state.stats.record_turn_time(elapsed_ms)
         return EngineResult(True, "", self.state, settlement)
 
     def _apply_build_city(self, action: Action) -> None:
@@ -108,7 +112,9 @@ class GameEngine:
         self.state.next_road_id += 1
 
         tile.occupant = OccupantType.ROAD
-        self.state.roads[road_id] = Road(road_id=road_id, coord=action.coord, built_turn=self.state.turn)
+        self.state.roads[road_id] = Road(
+            road_id=road_id, coord=action.coord, built_turn=self.state.turn
+        )
         recompute_networks(self.state)
 
         connected_network_id = map_passable_coords_to_networks(self.state)[action.coord]

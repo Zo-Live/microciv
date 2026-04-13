@@ -5,7 +5,7 @@ from microciv.game.enums import ActionType, Mode, PlaybackMode, PolicyType
 from microciv.game.models import GameConfig
 
 
-def test_default_game_config_matches_phase_one_defaults() -> None:
+def test_default_game_config_matches_new_defaults() -> None:
     config = GameConfig()
 
     assert config.mode is Mode.PLAY

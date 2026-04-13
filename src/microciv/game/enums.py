@@ -48,6 +48,7 @@ class Mode(StrEnum):
 class PolicyType(StrEnum):
     NONE = "none"
     BASELINE = "baseline"
+    RANDOM = "random"
     EXPERT = "expert"
     CUSTOM = "custom"
 

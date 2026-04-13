@@ -6,7 +6,7 @@ from collections import deque
 
 from microciv.game.enums import OccupantType, TerrainType
 from microciv.game.models import GameState, Network
-from microciv.utils.hexgrid import Coord, coord_sort_key, neighbors, sort_coords
+from microciv.utils.grid import Coord, cardinal_neighbors, coord_sort_key, sort_coords
 
 
 def is_network_passable(state: GameState, coord: Coord) -> bool:
@@ -14,7 +14,10 @@ def is_network_passable(state: GameState, coord: Coord) -> bool:
     tile = state.board.get(coord)
     if tile is None:
         return False
-    return tile.occupant in {OccupantType.CITY, OccupantType.ROAD} or tile.base_terrain is TerrainType.RIVER
+    return (
+        tile.occupant in {OccupantType.CITY, OccupantType.ROAD}
+        or tile.base_terrain is TerrainType.RIVER
+    )
 
 
 def recompute_networks(state: GameState) -> dict[int, Network]:
@@ -80,7 +83,7 @@ def map_passable_coords_to_networks(state: GameState) -> dict[Coord, int]:
         while queue:
             current = queue.popleft()
             mapping[current] = network_id
-            for neighbor in neighbors(current):
+            for neighbor in cardinal_neighbors(current):
                 if neighbor in seen or not is_network_passable(state, neighbor):
                     continue
                 seen.add(neighbor)
@@ -105,14 +108,16 @@ def _discover_city_components(
             city_id = coord_to_city_id.get(current)
             if city_id is not None:
                 component_city_ids.append(city_id)
-            for neighbor in neighbors(current):
+            for neighbor in cardinal_neighbors(current):
                 if neighbor in seen or not is_network_passable(state, neighbor):
                     continue
                 seen.add(neighbor)
                 queue.append(neighbor)
 
         components.append(
-            sorted(component_city_ids, key=lambda city_id: coord_sort_key(state.cities[city_id].coord))
+            sorted(
+                component_city_ids, key=lambda city_id: coord_sort_key(state.cities[city_id].coord)
+            )
         )
 
     return components

@@ -2,14 +2,28 @@ from __future__ import annotations
 
 from microciv.game.enums import TechType
 from microciv.game.models import BuildingCounts, City, GameConfig, GameState, Network, ResourcePool
-from microciv.game.scoring import building_count, calculate_score, city_count, tech_count, total_resources
+from microciv.game.scoring import (
+    building_count,
+    calculate_score,
+    city_count,
+    tech_count,
+    total_resources,
+)
 
 
 def test_scoring_uses_unique_techs_and_total_resources() -> None:
     state = GameState.empty(GameConfig.for_play())
     state.cities = {
-        1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1, buildings=BuildingCounts(farm=2)),
-        2: City(city_id=2, coord=(2, 0), founded_turn=2, network_id=2, buildings=BuildingCounts(library=1)),
+        1: City(
+            city_id=1, coord=(0, 0), founded_turn=1, network_id=1, buildings=BuildingCounts(farm=2)
+        ),
+        2: City(
+            city_id=2,
+            coord=(2, 0),
+            founded_turn=2,
+            network_id=2,
+            buildings=BuildingCounts(library=1),
+        ),
     }
     state.networks = {
         1: Network(

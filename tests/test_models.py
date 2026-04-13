@@ -26,11 +26,12 @@ from microciv.game.models import (
 )
 
 
-def test_game_config_factories_match_phase_one_mode_rules() -> None:
+def test_game_config_factories_follow_new_mode_rules() -> None:
     play_config = GameConfig.for_play(seed=7)
     autoplay_config = GameConfig.for_autoplay(
         map_difficulty=MapDifficulty.HARD,
         playback_mode=PlaybackMode.SPEED,
+        policy_type=PolicyType.RANDOM,
         seed=8,
     )
 
@@ -39,14 +40,14 @@ def test_game_config_factories_match_phase_one_mode_rules() -> None:
     assert play_config.playback_mode is PlaybackMode.NONE
 
     assert autoplay_config.mode is Mode.AUTOPLAY
-    assert autoplay_config.policy_type is PolicyType.BASELINE
+    assert autoplay_config.policy_type is PolicyType.RANDOM
     assert autoplay_config.playback_mode is PlaybackMode.SPEED
     assert autoplay_config.map_difficulty is MapDifficulty.HARD
 
 
 def test_game_config_rejects_invalid_ranges_and_mode_combinations() -> None:
     with pytest.raises(ValueError):
-        GameConfig(map_size=MIN_MAP_SIZE - 1)
+        GameConfig(map_size=MIN_MAP_SIZE - 2)
 
     with pytest.raises(ValueError):
         GameConfig(turn_limit=MAX_TURN_LIMIT + 1)
@@ -55,13 +56,19 @@ def test_game_config_rejects_invalid_ranges_and_mode_combinations() -> None:
         GameConfig(mode=Mode.PLAY, policy_type=PolicyType.BASELINE)
 
     with pytest.raises(ValueError):
-        GameConfig(mode=Mode.AUTOPLAY, policy_type=PolicyType.NONE, playback_mode=PlaybackMode.NORMAL)
+        GameConfig(
+            mode=Mode.AUTOPLAY, policy_type=PolicyType.NONE, playback_mode=PlaybackMode.NORMAL
+        )
 
     with pytest.raises(ValueError):
-        GameConfig(mode=Mode.AUTOPLAY, policy_type=PolicyType.BASELINE, playback_mode=PlaybackMode.NONE)
+        GameConfig(
+            mode=Mode.AUTOPLAY, policy_type=PolicyType.BASELINE, playback_mode=PlaybackMode.NONE
+        )
 
     with pytest.raises(ValueError):
-        GameConfig(mode=Mode.AUTOPLAY, policy_type=PolicyType.EXPERT, playback_mode=PlaybackMode.NORMAL)
+        GameConfig(
+            mode=Mode.AUTOPLAY, policy_type=PolicyType.EXPERT, playback_mode=PlaybackMode.NORMAL
+        )
 
 
 def test_resource_pool_supports_lookup_merge_and_spend() -> None:
@@ -104,7 +111,7 @@ def test_city_network_and_selection_helpers_behave_as_expected() -> None:
     city = City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1)
     network = Network(network_id=1, city_ids={1}, unlocked_techs={TechType.AGRICULTURE})
     other_network = Network(network_id=2, city_ids={2}, resources=ResourcePool(food=5))
-    selection = SelectionState(selected_coord=(1, -1), selected_city_id=1)
+    selection = SelectionState(selected_coord=(1, 1), selected_city_id=1)
 
     network.merge_from(other_network)
     selection.clear()
@@ -129,16 +136,23 @@ def test_game_state_defaults_and_sorted_city_ids_are_stable() -> None:
     assert state.sorted_city_ids() == [1, 3, 2]
 
 
-def test_stats_record_decision_time_updates_aggregates() -> None:
+def test_stats_record_decision_and_turn_time_updates_aggregates() -> None:
     stats = Stats()
 
     stats.record_decision_time(30)
     stats.record_decision_time(10)
+    stats.build_city_count = 1
+    stats.record_turn_time(40)
+    stats.skip_count = 1
+    stats.record_turn_time(20)
 
     assert stats.decision_count == 2
     assert stats.decision_time_ms_total == 40
     assert stats.decision_time_ms_avg == 20
     assert stats.decision_time_ms_max == 30
+    assert stats.turn_elapsed_ms_total == 60
+    assert stats.turn_elapsed_ms_avg == 30
+    assert stats.turn_elapsed_ms_max == 40
 
 
 def test_tile_occupancy_defaults_to_none() -> None:
