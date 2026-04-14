@@ -47,10 +47,8 @@ class Mode(StrEnum):
 
 class PolicyType(StrEnum):
     NONE = "none"
-    BASELINE = "baseline"
+    GREEDY = "greedy"
     RANDOM = "random"
-    EXPERT = "expert"
-    CUSTOM = "custom"
 
 
 class PlaybackMode(StrEnum):

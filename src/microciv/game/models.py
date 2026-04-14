@@ -272,8 +272,8 @@ class GameConfig:
         if self.mode is Mode.AUTOPLAY:
             if self.policy_type is PolicyType.NONE:
                 raise ValueError("Autoplay mode requires a concrete policy_type.")
-            if self.policy_type not in {PolicyType.BASELINE, PolicyType.RANDOM}:
-                raise ValueError("Autoplay mode only supports baseline or random policy types.")
+            if self.policy_type not in {PolicyType.GREEDY, PolicyType.RANDOM}:
+                raise ValueError("Autoplay mode only supports greedy or random policy types.")
             if self.playback_mode is PlaybackMode.NONE:
                 raise ValueError("Autoplay mode requires a playback_mode.")
 
@@ -303,7 +303,7 @@ class GameConfig:
         map_size: int = DEFAULT_MAP_SIZE,
         turn_limit: int = DEFAULT_TURN_LIMIT,
         map_difficulty: MapDifficulty = MapDifficulty.NORMAL,
-        policy_type: PolicyType = PolicyType.BASELINE,
+        policy_type: PolicyType = PolicyType.GREEDY,
         playback_mode: PlaybackMode = PlaybackMode.NORMAL,
         seed: int = 0,
     ) -> GameConfig:

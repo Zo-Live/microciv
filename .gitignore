@@ -209,7 +209,9 @@ exports/*
 .cursorignore
 .cursorindexingignore
 docs/*
-!docs/microciv.md
+!docs/阶段一项目规则与操作流程.md
+!docs/MicroCiv流程
+!docs/MicroCiv流程/**
 
 # Marimo
 marimo/_static/

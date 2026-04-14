@@ -31,16 +31,16 @@ ORDINARY_TERRAINS: tuple[TerrainType, ...] = (
 
 TARGET_TERRAIN_RATIOS: dict[MapDifficulty, dict[TerrainType, float]] = {
     MapDifficulty.NORMAL: {
-        TerrainType.PLAIN: 0.32,
-        TerrainType.FOREST: 0.24,
-        TerrainType.MOUNTAIN: 0.22,
-        TerrainType.WASTELAND: 0.22,
+        TerrainType.PLAIN: 0.40,
+        TerrainType.FOREST: 0.22,
+        TerrainType.MOUNTAIN: 0.18,
+        TerrainType.WASTELAND: 0.08,
     },
     MapDifficulty.HARD: {
-        TerrainType.PLAIN: 0.22,
-        TerrainType.FOREST: 0.24,
-        TerrainType.MOUNTAIN: 0.28,
-        TerrainType.WASTELAND: 0.26,
+        TerrainType.PLAIN: 0.28,
+        TerrainType.FOREST: 0.20,
+        TerrainType.MOUNTAIN: 0.24,
+        TerrainType.WASTELAND: 0.20,
     },
 }
 

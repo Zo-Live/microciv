@@ -16,7 +16,7 @@ from microciv.game.scoring import (
 )
 from microciv.utils.grid import Coord, coord_sort_key
 
-RECORDS_SCHEMA_VERSION = 2
+RECORDS_SCHEMA_VERSION = 3
 
 CSV_FIELD_ORDER: tuple[str, ...] = (
     "record_id",
@@ -350,14 +350,23 @@ class RecordEntry:
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordEntry:
+        mode = str(payload["mode"])
+        if mode not in {"play", "autoplay"}:
+            raise ValueError(f"Invalid mode: {mode}")
+        ai_type = str(payload["ai_type"])
+        if ai_type not in {"Human", "Greedy", "Random"}:
+            raise ValueError(f"Invalid ai_type: {ai_type}")
+        playback_mode = str(payload["playback_mode"])
+        if playback_mode not in {"", "normal", "speed"}:
+            raise ValueError(f"Invalid playback_mode: {playback_mode}")
         return cls(
             record_id=int(payload["record_id"]),
             timestamp=str(payload["timestamp"]),
             game_version=str(payload["game_version"]),
-            mode=str(payload["mode"]),
-            ai_type=str(payload["ai_type"]),
+            mode=mode,
+            ai_type=ai_type,
             custom_goal=str(payload["custom_goal"]),
-            playback_mode=str(payload["playback_mode"]),
+            playback_mode=playback_mode,
             seed=int(payload["seed"]),
             map_size=int(payload["map_size"]),
             map_difficulty=str(payload["map_difficulty"]),
@@ -428,9 +437,11 @@ class RecordDatabase:
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordDatabase:
+        if "schema_version" not in payload or "next_record_id" not in payload:
+            raise ValueError("Missing schema_version or next_record_id")
         return cls(
-            schema_version=int(payload.get("schema_version", RECORDS_SCHEMA_VERSION)),
-            next_record_id=int(payload.get("next_record_id", 1)),
+            schema_version=int(payload["schema_version"]),
+            next_record_id=int(payload["next_record_id"]),
             records=[RecordEntry.from_dict(item) for item in payload.get("records", [])],
         )
 
@@ -477,8 +488,8 @@ def _network_snapshots(state: GameState) -> list[RecordNetworkSnapshot]:
 def _ai_type_label(state: GameState) -> str:
     if state.config.mode is Mode.PLAY:
         return "Human"
-    if state.config.policy_type is PolicyType.BASELINE:
-        return "Baseline"
+    if state.config.policy_type is PolicyType.GREEDY:
+        return "Greedy"
     if state.config.policy_type is PolicyType.RANDOM:
         return "Random"
     return state.config.policy_type.value.title()

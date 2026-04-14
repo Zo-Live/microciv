@@ -63,6 +63,20 @@ class RecordStore:
         self.save(database)
         return entry
 
+    def delete_record(self, record_id: int) -> bool:
+        database = self.load()
+        remaining = [record for record in database.records if record.record_id != record_id]
+        if len(remaining) == len(database.records):
+            return False
+        database.records = remaining
+        self.save(database)
+        return True
+
+    def clear(self) -> None:
+        database = self.load()
+        database.records = []
+        self.save(database)
+
     def _empty_database(self) -> RecordDatabase:
         return RecordDatabase(schema_version=RECORDS_SCHEMA_VERSION, next_record_id=1, records=[])
 

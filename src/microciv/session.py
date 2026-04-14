@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from time import perf_counter
 
-from microciv.ai.baseline import BaselinePolicy
+from microciv.ai.greedy import GreedyPolicy
 from microciv.ai.policy import Policy
 from microciv.ai.random_policy import RandomPolicy
 from microciv.game.actions import Action
@@ -47,8 +47,8 @@ def create_game_session(config: GameConfig) -> GameSession:
     state = build_state_from_config(config)
 
     policy: Policy | None = None
-    if config.policy_type is PolicyType.BASELINE:
-        policy = BaselinePolicy()
+    if config.policy_type is PolicyType.GREEDY:
+        policy = GreedyPolicy()
     elif config.policy_type is PolicyType.RANDOM:
         policy = RandomPolicy(seed=config.seed)
 

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import csv
 import json
-from datetime import datetime
 
 import microciv.records.store as record_store_module
 from microciv.game.enums import OccupantType, PlaybackMode, PolicyType, TechType, TerrainType
@@ -16,8 +14,8 @@ from microciv.game.models import (
     Road,
     Tile,
 )
-from microciv.records.export import export_records_csv
-from microciv.records.models import CSV_FIELD_ORDER, RECORDS_SCHEMA_VERSION, RecordEntry
+from microciv.records.export import export_records_json
+from microciv.records.models import RECORDS_SCHEMA_VERSION, RecordDatabase, RecordEntry
 from microciv.records.store import RecordStore
 
 
@@ -92,6 +90,52 @@ def test_record_store_resets_old_schema_file(tmp_path) -> None:
     assert records_path.with_suffix(".json.incompatible").exists()
 
 
+def test_record_store_resets_schema_version_2(tmp_path) -> None:
+    records_path = tmp_path / "data" / "records.json"
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    records_path.write_text(
+        json.dumps({"schema_version": 2, "next_record_id": 1, "records": []}), encoding="utf-8"
+    )
+
+    database = RecordStore(records_path).load()
+
+    assert database.schema_version == RECORDS_SCHEMA_VERSION
+    assert database.records == []
+    assert records_path.with_suffix(".json.incompatible").exists()
+
+
+def test_record_store_resets_missing_top_level_fields(tmp_path) -> None:
+    records_path = tmp_path / "data" / "records.json"
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    records_path.write_text(
+        json.dumps({"records": []}), encoding="utf-8"
+    )
+
+    database = RecordStore(records_path).load()
+
+    assert database.schema_version == RECORDS_SCHEMA_VERSION
+    assert database.records == []
+    assert records_path.with_suffix(".json.incompatible").exists()
+
+
+def test_record_store_resets_baseline_ai_type(tmp_path) -> None:
+    records_path = tmp_path / "data" / "records.json"
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    record = build_completed_state()
+    entry = RecordEntry.from_game_state(record_id=1, timestamp="2026-04-09T12:00:00+08:00", state=record)
+    payload = entry.to_dict()
+    payload["ai_type"] = "baseline"
+    records_path.write_text(
+        json.dumps({"schema_version": RECORDS_SCHEMA_VERSION, "next_record_id": 2, "records": [payload]}), encoding="utf-8"
+    )
+
+    database = RecordStore(records_path).load()
+
+    assert database.schema_version == RECORDS_SCHEMA_VERSION
+    assert database.records == []
+    assert records_path.with_suffix(".json.incompatible").exists()
+
+
 def test_record_store_fifo_trims_oldest_entries(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(record_store_module, "MAX_RECORDS", 3)
     store = RecordStore(tmp_path / "data" / "records.json")
@@ -110,7 +154,7 @@ def test_record_store_fifo_trims_oldest_entries(monkeypatch, tmp_path) -> None:
     assert reloaded.next_record_id == 6
 
 
-def test_export_records_csv_uses_frozen_column_order_and_filename(tmp_path) -> None:
+def test_export_records_json_uses_fixed_filename_and_payload(tmp_path) -> None:
     play_record = RecordEntry.from_game_state(
         record_id=1,
         timestamp="2026-04-09T12:34:56+08:00",
@@ -122,22 +166,31 @@ def test_export_records_csv_uses_frozen_column_order_and_filename(tmp_path) -> N
         state=build_completed_autoplay_state(seed=22),
     )
 
-    output_path = export_records_csv(
-        [play_record, autoplay_record],
+    output_path = export_records_json(
+        RecordDatabase(records=[play_record, autoplay_record]),
         tmp_path / "exports",
-        now=datetime(2026, 4, 9, 10, 11, 12),
     )
 
-    with output_path.open("r", encoding="utf-8", newline="") as handle:
-        rows = list(csv.reader(handle))
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
 
-    assert output_path.name == "records-20260409-101112.csv"
-    assert rows[0] == list(CSV_FIELD_ORDER)
-    assert rows[1][0] == "1"
-    assert rows[1][4] == "Human"
-    assert rows[2][0] == "2"
-    assert rows[2][4] == "Random"
-    assert rows[2][6] == "speed"
+    assert output_path.name == "records_export.json"
+    assert payload["records"][0]["record_id"] == 1
+    assert payload["records"][0]["ai_type"] == "Human"
+    assert payload["records"][1]["record_id"] == 2
+    assert payload["records"][1]["ai_type"] == "Random"
+    assert payload["records"][1]["playback_mode"] == "speed"
+
+
+def test_record_store_can_delete_and_clear_records(tmp_path) -> None:
+    store = RecordStore(tmp_path / "data" / "records.json")
+    store.append_completed_game(build_completed_state(seed=1), timestamp="2026-04-09T12:00:00+08:00")
+    store.append_completed_game(build_completed_state(seed=2), timestamp="2026-04-09T12:01:00+08:00")
+
+    assert store.delete_record(1) is True
+    assert [record.record_id for record in store.load().records] == [2]
+
+    store.clear()
+    assert store.load().records == []
 
 
 def build_completed_state(*, seed: int = 7) -> GameState:
