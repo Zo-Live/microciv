@@ -477,8 +477,8 @@ def _network_snapshots(state: GameState) -> list[RecordNetworkSnapshot]:
 def _ai_type_label(state: GameState) -> str:
     if state.config.mode is Mode.PLAY:
         return "Human"
-    if state.config.policy_type is PolicyType.BASELINE:
-        return "Baseline"
+    if state.config.policy_type is PolicyType.GREEDY:
+        return "Greedy"
     if state.config.policy_type is PolicyType.RANDOM:
         return "Random"
     return state.config.policy_type.value.title()

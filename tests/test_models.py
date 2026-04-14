@@ -53,7 +53,7 @@ def test_game_config_rejects_invalid_ranges_and_mode_combinations() -> None:
         GameConfig(turn_limit=MAX_TURN_LIMIT + 1)
 
     with pytest.raises(ValueError):
-        GameConfig(mode=Mode.PLAY, policy_type=PolicyType.BASELINE)
+        GameConfig(mode=Mode.PLAY, policy_type=PolicyType.GREEDY)
 
     with pytest.raises(ValueError):
         GameConfig(
@@ -62,13 +62,11 @@ def test_game_config_rejects_invalid_ranges_and_mode_combinations() -> None:
 
     with pytest.raises(ValueError):
         GameConfig(
-            mode=Mode.AUTOPLAY, policy_type=PolicyType.BASELINE, playback_mode=PlaybackMode.NONE
+            mode=Mode.AUTOPLAY, policy_type=PolicyType.GREEDY, playback_mode=PlaybackMode.NONE
         )
 
     with pytest.raises(ValueError):
-        GameConfig(
-            mode=Mode.AUTOPLAY, policy_type=PolicyType.EXPERT, playback_mode=PlaybackMode.NORMAL
-        )
+        GameConfig(mode=Mode.AUTOPLAY, policy_type=PolicyType.NONE, playback_mode=PlaybackMode.NONE)
 
 
 def test_resource_pool_supports_lookup_merge_and_spend() -> None:

@@ -1,4 +1,4 @@
-"""Deterministic square-grid baseline policy."""
+"""Deterministic square-grid greedy policy."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ TECH_PRIORITY: tuple[TechType, ...] = (
 )
 
 
-class BaselinePolicy(Policy):
+class GreedyPolicy(Policy):
     """A deterministic rule-based policy used as the default benchmark."""
 
     def select_action(self, state: GameState) -> Action:

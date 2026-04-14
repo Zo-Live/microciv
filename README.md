@@ -11,8 +11,8 @@ MicroCiv is a turn-based civilization management game that runs in the terminal.
 - Square-grid procedural map generation with plains, forests, mountains, rivers, and wastelands
 - City building, road networks, buildings, technologies, and score-based progression
 - Manual play and autoplay
-- Two autoplay AI policies: `Baseline` and `Random`
-- Local records with CSV export
+- Two autoplay AI policies: `Greedy` and `Random`
+- Local records with JSON export
 - Timing metrics for AI analysis: decision time, per-turn time, and full-session time
 
 ## Requirements
@@ -61,10 +61,10 @@ MicroCiv is primarily mouse-driven.
 - Left click: select tiles, buttons, buildings, technologies, records
 - Mouse wheel: scroll record pages
 - `m`: open in-game menu
-- `b`: trigger the first available build action
-- `t`: trigger the first available research action
-- `d`: show detail for the current selection
-- `q`: back / close current layer / return to menu
+- `b`: return to the previous layer in records and in-game subpanels
+- `t`: jump to the top of the records list
+- `d`: jump to the bottom of the records list
+- `q`: exit the program
 - Arrow keys: move map selection or scroll record pages
 
 ## Project Structure
@@ -81,7 +81,7 @@ microciv/
 ├── docs/              # Project documents
 ├── tests/             # Test suite
 ├── data/              # Runtime records
-└── exports/           # CSV exports
+└── exports/           # JSON exports
 ```
 
 ## Development
