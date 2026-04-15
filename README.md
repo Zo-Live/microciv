@@ -75,7 +75,7 @@ microciv/
 ├── src/microciv/
 │   ├── ai/            # AI 策略（Greedy、Random）
 │   ├── game/          # 核心规则与状态机
-│   ├── records/       # 本地持久化与 CSV/JSON 导出
+│   ├── records/       # 本地持久化与 JSON 导出
 │   ├── tui/           # 终端 UI 组件（像素字体）
 │   ├── session.py     # 运行时会话辅助
 │   ├── curses_app.py  # curses 控制器与渲染
