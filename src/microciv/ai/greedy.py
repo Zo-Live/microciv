@@ -37,21 +37,21 @@ class GreedyPolicy(Policy):
         if food_rescue is not None:
             return food_rescue
 
-        connective_road = self._select_connective_road_action(state, legal_actions)
-        if connective_road is not None:
-            return connective_road
-
-        city_action = self._select_city_action(state, legal_actions)
-        if city_action is not None:
-            return city_action
+        building_action = self._select_building_action(state, legal_actions)
+        if building_action is not None:
+            return building_action
 
         tech_action = self._select_tech_action(state, legal_actions)
         if tech_action is not None:
             return tech_action
 
-        building_action = self._select_building_action(state, legal_actions)
-        if building_action is not None:
-            return building_action
+        city_action = self._select_city_action(state, legal_actions)
+        if city_action is not None:
+            return city_action
+
+        connective_road = self._select_connective_road_action(state, legal_actions)
+        if connective_road is not None:
+            return connective_road
 
         return Action.skip()
 
@@ -131,7 +131,7 @@ class GreedyPolicy(Policy):
             if best_key is None or candidate_key < best_key:
                 best_key = candidate_key
                 best_action = action
-        if best_key is not None and best_key[0] < 0:
+        if best_key is not None:
             return best_action
         return None
 

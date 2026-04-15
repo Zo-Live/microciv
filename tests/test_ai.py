@@ -96,3 +96,29 @@ def test_greedy_and_random_can_finish_full_games() -> None:
                 assert result.success, (seed, action, result.message)
 
             assert state.score >= 0
+
+
+def test_greedy_scores_reasonably_on_standard_settings() -> None:
+    for seed in range(1, 6):
+        config = GameConfig.for_autoplay(seed=seed, turn_limit=80, map_size=16)
+        generated = MapGenerator().generate(config)
+        state = GameState.empty(config)
+        state.board = {
+            coord: Tile(base_terrain=tile.base_terrain, occupant=tile.occupant)
+            for coord, tile in generated.board.items()
+        }
+        engine = GameEngine(state)
+        policy = GreedyPolicy()
+
+        while not state.is_game_over:
+            action = policy.select_action(state)
+            validation = validate_action(state, action)
+            assert validation.is_valid, (seed, action, validation.message)
+            result = engine.apply_action(action)
+            assert result.success, (seed, action, result.message)
+
+        city_count = len(state.cities)
+        building_count = sum(city.total_buildings for city in state.cities.values())
+        assert state.score >= 500, f"seed={seed} score={state.score} too low"
+        assert city_count > 1, f"seed={seed} only {city_count} city"
+        assert building_count > 0, f"seed={seed} no buildings"

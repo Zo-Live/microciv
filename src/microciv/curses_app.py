@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import curses
+import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -22,6 +23,16 @@ from microciv.game.enums import (
 from microciv.game.models import GameConfig, Tile
 from microciv.records import RecordDatabase, RecordEntry, RecordStore, export_records_json
 from microciv.session import GameSession, create_game_session, selected_city_id_for_coord
+from microciv.tui.pixel_font import (
+    GLYPH_HEIGHT,
+    GLYPH_STRIDE,
+)
+from microciv.tui.pixel_font import (
+    render_number as pixel_render_number,
+)
+from microciv.tui.pixel_font import (
+    render_text as pixel_render_text,
+)
 from microciv.utils.grid import Coord, coord_sort_key
 
 if TYPE_CHECKING:
@@ -31,6 +42,17 @@ if TYPE_CHECKING:
 BLOCK_FULL = "█"
 BLOCK_DARK = "▓"
 BLOCK_LIGHT = "░"
+
+TILE_WIDTH_COLS = 4
+TILE_HEIGHT_ROWS = 2
+
+PANEL_WIDTH = 34
+SCORE_LABEL_Y = 2
+SCORE_VALUE_Y = 3
+TURN_LABEL_Y = 9
+TURN_VALUE_Y = 10
+SUBPANEL_START_Y = 16
+
 RECORDS_COLS = 2
 RECORDS_ROWS = 4
 RECORDS_PAGE_SIZE = RECORDS_COLS * RECORDS_ROWS
@@ -395,6 +417,7 @@ class MicroCivController:
         return [record.record_id for record in self.visible_records()]
 
     def _go_back(self) -> None:
+        self.message = ""
         if self.current_route is ScreenRoute.RECORD_DETAIL_MAP:
             self.open_records()
         elif self.current_route in {ScreenRoute.RECORDS_GRID, ScreenRoute.NO_RECORDS}:
@@ -560,9 +583,11 @@ class MicroCivController:
             return
         if element_id == "settle-cancel":
             state.selection.clear()
+            self.message = ""
             self.current_route = ScreenRoute.MANUAL_GAME
 
     def _click_city_panel(self, element_id: str) -> None:
+        self.message = ""
         if element_id == "city-buildings":
             self.selected_building_type = BuildingType.FARM
             self.current_route = ScreenRoute.BUILD_SUBPANEL
@@ -591,6 +616,7 @@ class MicroCivController:
                 self.current_route = ScreenRoute.CITY_PANEL
             return
         if element_id == "build-cancel":
+            self.message = ""
             self.current_route = ScreenRoute.CITY_PANEL
 
     def _click_tech_subpanel(self, element_id: str) -> None:
@@ -617,6 +643,7 @@ class MicroCivController:
                 self.current_route = ScreenRoute.CITY_PANEL
             return
         if element_id == "tech-cancel":
+            self.message = ""
             self.current_route = ScreenRoute.CITY_PANEL
 
     def _apply_action(self, action: Action) -> None:
@@ -629,6 +656,7 @@ class MicroCivController:
         self.active_session.apply_action(action)
         self.active_session.state.selection.clear()
         self._reset_subpanel_selections()
+        self.message = ""
         self.current_route = ScreenRoute.MANUAL_GAME
         self._complete_session_if_needed()
 
@@ -678,6 +706,22 @@ class MicroCivController:
             or validate_action(state, Action.build_road(coord)).is_valid
         )
 
+    def _can_build_city_at_selection(self) -> bool:
+        if self.active_session is None:
+            return False
+        coord = self.active_session.state.selection.selected_coord
+        if coord is None:
+            return False
+        return validate_action(self.active_session.state, Action.build_city(coord)).is_valid
+
+    def _can_build_road_at_selection(self) -> bool:
+        if self.active_session is None:
+            return False
+        coord = self.active_session.state.selection.selected_coord
+        if coord is None:
+            return False
+        return validate_action(self.active_session.state, Action.build_road(coord)).is_valid
+
     def available_game_actions(self) -> list[str]:
         if self.active_session is None:
             return []
@@ -705,6 +749,7 @@ class CursesMicroCivApp:
         self._color_pairs: dict[str, int] = {}
         self._blink_visible = True
         self._frame_counter = 0
+        self._last_step_time = 0.0
 
     def run(self) -> None:
         curses.wrapper(self._main)
@@ -725,12 +770,17 @@ class CursesMicroCivApp:
                 self.controller.current_route is ScreenRoute.AUTOPLAY_GAME
                 and self.controller.active_session is not None
             ):
-                max_steps = (
-                    8
-                    if self.controller.active_session.state.config.playback_mode is PlaybackMode.SPEED
-                    else 1
-                )
-                self.controller.advance_autoplay(max_steps=max_steps)
+                now = time.monotonic()
+                playback = self.controller.active_session.state.config.playback_mode
+                if playback is PlaybackMode.SPEED:
+                    self.controller.advance_autoplay(max_steps=1)
+                else:
+                    if now - self._last_step_time >= 0.20:
+                        self.controller.advance_autoplay(max_steps=1)
+                        self._last_step_time = now
+                key = stdscr.getch()
+                if key != -1:
+                    self._handle_input(key)
                 continue
             key = stdscr.getch()
             if key == -1:
@@ -739,12 +789,12 @@ class CursesMicroCivApp:
 
     def _init_colors(self) -> None:
         pairs = {
-            "plain": (curses.COLOR_BLACK, curses.COLOR_GREEN),
+            "plain": (curses.COLOR_GREEN, curses.COLOR_GREEN),
             "forest": (curses.COLOR_BLACK, curses.COLOR_GREEN),
-            "mountain": (curses.COLOR_BLACK, curses.COLOR_WHITE),
-            "river": (curses.COLOR_BLACK, curses.COLOR_CYAN),
-            "wasteland": (curses.COLOR_BLACK, curses.COLOR_YELLOW),
-            "city": (curses.COLOR_BLACK, curses.COLOR_RED),
+            "mountain": (curses.COLOR_WHITE, curses.COLOR_BLACK),
+            "river": (curses.COLOR_BLUE, curses.COLOR_BLUE),
+            "wasteland": (curses.COLOR_YELLOW, curses.COLOR_YELLOW),
+            "city": (curses.COLOR_RED, curses.COLOR_RED),
             "road": (curses.COLOR_BLACK, curses.COLOR_YELLOW),
             "selected": (curses.COLOR_BLACK, curses.COLOR_WHITE),
             "text": (curses.COLOR_WHITE, -1),
@@ -752,6 +802,7 @@ class CursesMicroCivApp:
             "dim_text": (curses.COLOR_WHITE, -1),
             "highlight_text": (curses.COLOR_YELLOW, -1),
             "button_border": (curses.COLOR_WHITE, -1),
+            "pixel_red": (curses.COLOR_RED, -1),
         }
         pair_id = 1
         for name, (fg, bg) in pairs.items():
@@ -828,14 +879,6 @@ class CursesMicroCivApp:
         elif route is ScreenRoute.NO_RECORDS:
             self._render_no_records(stdscr, width, height)
 
-        if self.controller.message:
-            self._safe_addstr(
-                stdscr,
-                height - 2,
-                max(width - 42, 2),
-                self.controller.message[: max(width - 4, 0)],
-                "accent",
-            )
         stdscr.refresh()
 
     def _safe_addstr(
@@ -900,17 +943,17 @@ class CursesMicroCivApp:
         self.render_state.button_regions[option_id] = Rect(x, y, w, h)
 
     def _render_main_menu(self, stdscr: CursesWindow, width: int, height: int) -> None:
-        title_w = min(74, max(width - 10, 30))
-        title_x = max((width - title_w) // 2, 2)
+        title_text = "MICROCIV"
+        title_pixel_w = len(title_text) * GLYPH_STRIDE
+        title_x = max((width - title_pixel_w) // 2, 2)
         title_y = 2
-        self._draw_box(stdscr, title_x, title_y, title_w, 5)
-        self._safe_addstr(stdscr, title_y + 2, title_x + max((title_w - 8) // 2, 1), "MicroCiv", "accent", curses.A_BOLD)
+        pixel_render_text(stdscr, title_x, title_y, title_text, self._attr("pixel_red"))
 
         btn_w = 26
         btn_h = 4
         left_x = max(width // 2 - btn_w - 4, 4)
         right_x = min(width - btn_w - 4, width // 2 + 4)
-        top_y = 10
+        top_y = title_y + GLYPH_HEIGHT + 3
         bottom_y = top_y + btn_h + 3
         self._draw_box_button(stdscr, "menu-play", "Play", left_x, top_y, btn_w, btn_h)
         self._draw_box_button(stdscr, "menu-autoplay", "AutoPlay", right_x, top_y, btn_w, btn_h)
@@ -920,19 +963,17 @@ class CursesMicroCivApp:
     def _render_setup(self, stdscr: CursesWindow, width: int, height: int) -> None:
         config = self.controller.setup_state.config
         is_auto = self.controller.setup_state.autoplay
-        map_box_x = 3
-        map_box_y = 2
-        map_box_w = min(max(config.map_size * 2 + 8, 34), max(width // 2, 34))
-        map_box_h = min(max(config.map_size + 8, 18), max(height - 8, 18))
-        self._draw_box(stdscr, map_box_x, map_box_y, map_box_w, map_box_h)
+        panel_x = width - PANEL_WIDTH
+        panel_w = 28
+
+        map_display_w = config.map_size * TILE_WIDTH_COLS
+        map_display_h = config.map_size * TILE_HEIGHT_ROWS
+        board_x = max((panel_x - map_display_w) // 2, 1)
+        board_y = max((height - map_display_h) // 2, 1)
         board = self.controller.preview_board()
-        board_x = map_box_x + max((map_box_w - config.map_size * 2) // 2, 1)
-        board_y = map_box_y + max((map_box_h - config.map_size) // 2, 1)
         self._render_board(stdscr, board, board_x, board_y, None)
 
-        panel_x = min(width - 32, map_box_x + map_box_w + 4)
         panel_y = 2
-        panel_w = 28
         panel_h = 3
         gap = 1
         params: list[tuple[str, str]] = [
@@ -944,12 +985,14 @@ class CursesMicroCivApp:
             params.append(("setup-playback", f"Playback : {config.playback_mode.value.title()}"))
             params.append(("setup-ai-type", f"AI Type : {_policy_label(config.policy_type)}"))
         for idx, (button_id, label) in enumerate(params):
-            self._draw_box_button(stdscr, button_id, label, panel_x, panel_y + idx * (panel_h + gap), panel_w, panel_h)
+            btn_y = panel_y + idx * (panel_h + gap)
+            self._draw_box_button(
+                stdscr, button_id, label, panel_x, btn_y, panel_w, panel_h,
+            )
 
-        bottom_y = height - 5
-        self._draw_box_button(stdscr, "setup-menu", "Menu", 4, bottom_y, 14, 3)
-        self._draw_box_button(stdscr, "setup-recreate", "Recreate", max((width - 16) // 2, 20), bottom_y, 16, 3)
-        self._draw_box_button(stdscr, "setup-start", "Start", max(width - 18, 20), bottom_y, 14, 3)
+        self._draw_box_button(stdscr, "setup-menu", "Menu", panel_x, height - 12, panel_w, 3)
+        self._draw_box_button(stdscr, "setup-recreate", "Recreate", panel_x, height - 8, panel_w, 3)
+        self._draw_box_button(stdscr, "setup-start", "Start", panel_x, height - 4, panel_w, 3)
 
     def _render_manual_game(self, stdscr: CursesWindow, width: int, height: int) -> None:
         self._render_game_shell(stdscr, width, height)
@@ -957,70 +1000,92 @@ class CursesMicroCivApp:
             return
         state = self.controller.active_session.state
         selection = state.selection
-        if selection.selected_coord is not None and selection.selected_city_id is None and self.controller._has_valid_settlement_actions(selection.selected_coord):
-            self._render_settlement_panel(stdscr, width)
+        panel_x = width - PANEL_WIDTH
+        has_settlement = (
+            selection.selected_coord is not None
+            and selection.selected_city_id is None
+            and self.controller._has_valid_settlement_actions(selection.selected_coord)
+        )
+        if has_settlement:
+            self._render_settlement_panel(stdscr, width, height)
         else:
-            self._draw_box_button(stdscr, "game-skip", "Skip", width - 22, 16, 12, 3)
+            self._draw_box_button(stdscr, "game-skip", "Skip", panel_x, height - 7, 30, 3)
+        if self.controller.message:
+            self._safe_addstr(stdscr, height - 3, panel_x, self.controller.message[:30], "accent")
 
     def _render_autoplay_game(self, stdscr: CursesWindow, width: int, height: int) -> None:
         self._render_game_shell(stdscr, width, height)
         if self.controller.active_session is None:
             return
         state = self.controller.active_session.state
-        panel_x = width - 34
+        panel_x = width - PANEL_WIDTH
         self._safe_addstr(
-            stdscr,
-            height - 6,
-            panel_x,
-            f"AI Type : {_policy_label(state.config.policy_type)}",
-            "accent",
+            stdscr, height - 4, panel_x,
+            f"AI Type : {_policy_label(state.config.policy_type)}", "accent",
         )
         self._safe_addstr(
-            stdscr,
-            height - 5,
-            panel_x,
-            f"Playback : {state.config.playback_mode.value.title()}",
-            "accent",
+            stdscr, height - 3, panel_x,
+            f"Playback : {state.config.playback_mode.value.title()}", "accent",
         )
+
+    def _render_game_map_only(self, stdscr: CursesWindow, width: int, height: int) -> None:
+        """Render only the map, without Score/Turn."""
+        if self.controller.active_session is None:
+            return
+        state = self.controller.active_session.state
+        panel_x = width - PANEL_WIDTH
+        map_display_w = state.config.map_size * TILE_WIDTH_COLS
+        map_display_h = state.config.map_size * TILE_HEIGHT_ROWS
+        board_x = max((panel_x - map_display_w) // 2, 1)
+        board_y = max((height - map_display_h) // 2, 1)
+        self._render_board(stdscr, state.board, board_x, board_y, state.selection.selected_coord)
 
     def _render_game_shell(self, stdscr: CursesWindow, width: int, height: int) -> None:
         if self.controller.active_session is None:
             return
         state = self.controller.active_session.state
-        board_x = 4
-        board_y = 3
+        panel_x = width - PANEL_WIDTH
+        map_display_w = state.config.map_size * TILE_WIDTH_COLS
+        map_display_h = state.config.map_size * TILE_HEIGHT_ROWS
+        board_x = max((panel_x - map_display_w) // 2, 1)
+        board_y = max((height - map_display_h) // 2, 1)
         self._render_board(stdscr, state.board, board_x, board_y, state.selection.selected_coord)
-        panel_x = width - 34
-        self._safe_addstr(stdscr, 4, panel_x, "Score", "text")
-        self._safe_addstr(stdscr, 5, panel_x, str(state.score), "accent", curses.A_BOLD)
-        self._safe_addstr(stdscr, 8, panel_x, "Turn", "text")
-        self._safe_addstr(stdscr, 9, panel_x, str(state.turn), "accent", curses.A_BOLD)
-        self._draw_box(stdscr, panel_x - 2, height - 7, 30, 4)
+        self._safe_addstr(stdscr, SCORE_LABEL_Y, panel_x, "Score", "text")
+        pixel_render_number(
+            stdscr, panel_x, SCORE_VALUE_Y, state.score, 4,
+            color_pair=self._attr("pixel_red"),
+        )
+        self._safe_addstr(stdscr, TURN_LABEL_Y, panel_x, "Turn", "text")
+        pixel_render_number(
+            stdscr, panel_x, TURN_VALUE_Y, state.turn, 3,
+            color_pair=self._attr("pixel_red"),
+        )
 
-    def _render_settlement_panel(self, stdscr: CursesWindow, width: int) -> None:
-        panel_x = width - 34
-        panel_y = 12
+    def _render_settlement_panel(self, stdscr: CursesWindow, width: int, height: int) -> None:
+        panel_x = width - PANEL_WIDTH
+        panel_y = SUBPANEL_START_Y
         option_w = 14
-        self._draw_option(
-            stdscr,
-            "settle-city",
-            "City",
-            panel_x,
-            panel_y,
-            option_w,
-            3,
-            selected=self.controller.selected_settlement_type is SettlementType.CITY,
-        )
-        self._draw_option(
-            stdscr,
-            "settle-road",
-            "Road",
-            panel_x + option_w + 2,
-            panel_y,
-            option_w,
-            3,
-            selected=self.controller.selected_settlement_type is SettlementType.ROAD,
-        )
+        can_city = self.controller._can_build_city_at_selection()
+        can_road = self.controller._can_build_road_at_selection()
+        if can_city and can_road:
+            self._draw_option(
+                stdscr, "settle-city", "City", panel_x, panel_y, option_w, 3,
+                selected=self.controller.selected_settlement_type is SettlementType.CITY,
+            )
+            self._draw_option(
+                stdscr, "settle-road", "Road", panel_x + option_w + 2, panel_y, option_w, 3,
+                selected=self.controller.selected_settlement_type is SettlementType.ROAD,
+            )
+        elif can_city:
+            self.controller.selected_settlement_type = SettlementType.CITY
+            self._draw_option(
+                stdscr, "settle-city", "City", panel_x, panel_y, option_w, 3, selected=True,
+            )
+        elif can_road:
+            self.controller.selected_settlement_type = SettlementType.ROAD
+            self._draw_option(
+                stdscr, "settle-road", "Road", panel_x, panel_y, option_w, 3, selected=True,
+            )
         self._draw_box_button(stdscr, "settle-build", "Build", panel_x, panel_y + 5, 30, 3)
         self._draw_box_button(stdscr, "settle-cancel", "Cancel", panel_x, panel_y + 9, 30, 3)
 
@@ -1034,7 +1099,7 @@ class CursesMicroCivApp:
             self.controller.current_route = ScreenRoute.MANUAL_GAME
             return
         network = state.networks[state.cities[city_id].network_id]
-        panel_x = width - 34
+        panel_x = width - PANEL_WIDTH
         resources = [
             ("Food", network.resources.food),
             ("Wood", network.resources.wood),
@@ -1045,13 +1110,19 @@ class CursesMicroCivApp:
             row = idx // 2
             col = idx % 2
             x = panel_x + col * 16
-            y = 12 + row * 3
+            y = SUBPANEL_START_Y + row * 3
             self._safe_addstr(stdscr, y, x, f"{label} : {amount}", "text")
-        self._draw_box_button(stdscr, "city-buildings", "Buildings", panel_x, 20, 30, 3)
-        self._draw_box_button(stdscr, "city-technologies", "Technologies", panel_x, 24, 30, 3)
+        bld_y = SUBPANEL_START_Y + 8
+        self._draw_box_button(stdscr, "city-buildings", "Buildings", panel_x, bld_y, 30, 3)
+        tech_y = SUBPANEL_START_Y + 12
+        self._draw_box_button(
+            stdscr, "city-technologies", "Technologies", panel_x, tech_y, 30, 3,
+        )
+        if self.controller.message:
+            self._safe_addstr(stdscr, height - 3, panel_x, self.controller.message[:30], "accent")
 
     def _render_build_subpanel(self, stdscr: CursesWindow, width: int, height: int) -> None:
-        self._render_game_shell(stdscr, width, height)
+        self._render_game_map_only(stdscr, width, height)
         if self.controller.active_session is None:
             return
         state = self.controller.active_session.state
@@ -1060,7 +1131,7 @@ class CursesMicroCivApp:
             self.controller.current_route = ScreenRoute.MANUAL_GAME
             return
         city = state.cities[city_id]
-        panel_x = width - 34
+        panel_x = width - PANEL_WIDTH
         labels = [
             (BuildingType.FARM, f"Farm : {city.buildings.farm}"),
             (BuildingType.LUMBER_MILL, f"Lumberyard : {city.buildings.lumber_mill}"),
@@ -1080,9 +1151,14 @@ class CursesMicroCivApp:
             )
         self._draw_box_button(stdscr, "build-build", "Build", panel_x, 21, 30, 3)
         self._draw_box_button(stdscr, "build-cancel", "Cancel", panel_x, 25, 30, 3)
+        if self.controller.message:
+            self._safe_addstr(
+                stdscr, height - 3, panel_x,
+                self.controller.message[:30], "accent",
+            )
 
     def _render_tech_subpanel(self, stdscr: CursesWindow, width: int, height: int) -> None:
-        self._render_game_shell(stdscr, width, height)
+        self._render_game_map_only(stdscr, width, height)
         if self.controller.active_session is None:
             return
         state = self.controller.active_session.state
@@ -1091,7 +1167,7 @@ class CursesMicroCivApp:
             self.controller.current_route = ScreenRoute.MANUAL_GAME
             return
         unlocked = state.networks[state.cities[city_id].network_id].unlocked_techs
-        panel_x = width - 34
+        panel_x = width - PANEL_WIDTH
         items = [
             (TechType.AGRICULTURE, "Agriculture"),
             (TechType.LOGGING, "Logging"),
@@ -1104,7 +1180,10 @@ class CursesMicroCivApp:
             x = panel_x + col * 16
             y = 4 + row * 4
             if tech_type in unlocked:
-                self._safe_addstr(stdscr, y + 1, x + 1, label, "highlight_text", curses.A_BOLD)
+                self._safe_addstr(
+                    stdscr, y + 1, x + 1, label,
+                    "highlight_text", curses.A_BOLD | curses.A_STANDOUT,
+                )
             else:
                 self._draw_option(
                     stdscr,
@@ -1118,18 +1197,23 @@ class CursesMicroCivApp:
                 )
         self._draw_box_button(stdscr, "tech-research", "Research", panel_x, 13, 30, 3)
         self._draw_box_button(stdscr, "tech-cancel", "Cancel", panel_x, 17, 30, 3)
+        if self.controller.message:
+            self._safe_addstr(
+                stdscr, height - 3, panel_x,
+                self.controller.message[:30], "accent",
+            )
 
     def _render_game_menu(self, stdscr: CursesWindow, width: int, height: int) -> None:
-        title_w = min(74, max(width - 10, 30))
-        title_x = max((width - title_w) // 2, 2)
+        title_text = "MICROCIV"
+        title_pixel_w = len(title_text) * GLYPH_STRIDE
+        title_x = max((width - title_pixel_w) // 2, 2)
         title_y = 2
-        self._draw_box(stdscr, title_x, title_y, title_w, 5)
-        self._safe_addstr(stdscr, title_y + 2, title_x + max((title_w - 8) // 2, 1), "MicroCiv", "accent", curses.A_BOLD)
+        pixel_render_text(stdscr, title_x, title_y, title_text, self._attr("pixel_red"))
         btn_w = 26
         btn_h = 4
         left_x = max(width // 2 - btn_w - 4, 4)
         right_x = min(width - btn_w - 4, width // 2 + 4)
-        top_y = 10
+        top_y = title_y + GLYPH_HEIGHT + 3
         bottom_y = top_y + btn_h + 3
         self._draw_box_button(stdscr, "game-menu-main", "Menu", left_x, top_y, btn_w, btn_h)
         self._draw_box_button(stdscr, "game-menu-resume", "Resume", right_x, top_y, btn_w, btn_h)
@@ -1141,18 +1225,23 @@ class CursesMicroCivApp:
             return
         state = self.controller.active_session.state
         record = self.controller.active_session.saved_record
-        board_x = 4
-        board_y = 3
+        panel_x = width - PANEL_WIDTH
+        map_display_w = state.config.map_size * TILE_WIDTH_COLS
+        map_display_h = state.config.map_size * TILE_HEIGHT_ROWS
+        board_x = max((panel_x - map_display_w) // 2, 1)
+        board_y = max((height - map_display_h) // 2, 1)
         self._render_board(stdscr, state.board, board_x, board_y, None)
-        panel_x = width - 34
         final_score = record.final_score if record is not None else state.score
-        self._safe_addstr(stdscr, 4, panel_x, "Score", "text")
-        self._safe_addstr(stdscr, 5, panel_x, str(final_score), "accent", curses.A_BOLD)
-        y = 10
+        self._safe_addstr(stdscr, 2, panel_x, "Score", "text")
+        pixel_render_number(
+            stdscr, panel_x, 3, final_score, 4,
+            color_pair=self._attr("pixel_red"),
+        )
+        y = 3 + GLYPH_HEIGHT + 2
         if is_auto and record is not None:
-            self._safe_addstr(stdscr, height - 6, panel_x, f"AI Type : {record.ai_type}", "accent")
+            self._safe_addstr(stdscr, height - 4, panel_x, f"AI Type : {record.ai_type}", "accent")
             playback_label = record.playback_mode.title() if record.playback_mode else "Normal"
-            self._safe_addstr(stdscr, height - 5, panel_x, f"Playback : {playback_label}", "accent")
+            self._safe_addstr(stdscr, height - 3, panel_x, f"Playback : {playback_label}", "accent")
         self._draw_box_button(stdscr, "final-restart", "Restart", panel_x, y, 30, 3)
         self._draw_box_button(stdscr, "final-menu", "Menu", panel_x, y + 4, 30, 3)
         self._draw_box_button(stdscr, "final-exit", "Exit", panel_x, y + 8, 30, 3)
@@ -1187,17 +1276,26 @@ class CursesMicroCivApp:
             self.controller.open_records()
             return
         board = _board_from_record(record)
-        board_x = 4
-        board_y = 3
-        self._render_board(stdscr, board, board_x, board_y, None)
         panel_x = width - 38
+        map_size = record.map_size
+        map_display_w = map_size * TILE_WIDTH_COLS
+        map_display_h = map_size * TILE_HEIGHT_ROWS
+        board_x = max((panel_x - map_display_w) // 2, 1)
+        board_y = max((height - map_display_h) // 2, 1)
+        self._render_board(stdscr, board, board_x, board_y, None)
         lines = _record_detail_lines(record)
         for idx, line in enumerate(lines):
             self._safe_addstr(stdscr, 4 + idx, panel_x, line, "text")
-        bottom_y = height - 5
-        self._draw_box_button(stdscr, "record-detail-back", "Back", panel_x, bottom_y - 4, 16, 3)
-        self._draw_box_button(stdscr, "record-detail-menu", "Menu", panel_x, bottom_y, 16, 3)
-        self._draw_box_button(stdscr, "record-detail-delete", "Delete", panel_x, bottom_y + 4, 16, 3)
+        btn_w = min(16, width - panel_x - 1)
+        self._draw_box_button(
+            stdscr, "record-detail-back", "Back", panel_x, height - 12, btn_w, 3,
+        )
+        self._draw_box_button(
+            stdscr, "record-detail-menu", "Menu", panel_x, height - 8, btn_w, 3,
+        )
+        self._draw_box_button(
+            stdscr, "record-detail-delete", "Delete", panel_x, height - 4, btn_w, 3,
+        )
 
     def _render_no_records(self, stdscr: CursesWindow, width: int, height: int) -> None:
         text = "No records"
@@ -1213,30 +1311,31 @@ class CursesMicroCivApp:
         selected_coord: Coord | None,
     ) -> None:
         for coord in sorted(board, key=coord_sort_key):
-            screen_x = origin_x + coord[0] * 2
-            screen_y = origin_y + coord[1]
+            screen_x = origin_x + coord[0] * TILE_WIDTH_COLS
+            screen_y = origin_y + coord[1] * TILE_HEIGHT_ROWS
             selected = coord == selected_coord and self._blink_visible
             glyph, color_name = _style_for_tile(board[coord], selected=selected)
-            self._safe_addstr(stdscr, screen_y, screen_x, glyph, color_name)
-            self.render_state.map_regions[coord] = Rect(screen_x, screen_y, 2)
-            if selected:
-                self._draw_box(stdscr, screen_x - 1, screen_y - 1, 4, 3)
+            for dy in range(TILE_HEIGHT_ROWS):
+                self._safe_addstr(stdscr, screen_y + dy, screen_x, glyph, color_name)
+            self.render_state.map_regions[coord] = Rect(
+                screen_x, screen_y, TILE_WIDTH_COLS, TILE_HEIGHT_ROWS,
+            )
 
 
 def _style_for_tile(tile: Tile, *, selected: bool) -> tuple[str, str]:
     if tile.occupant is OccupantType.CITY:
-        return BLOCK_FULL * 2, "selected" if selected else "city"
+        return BLOCK_FULL * TILE_WIDTH_COLS, "selected" if selected else "city"
     if tile.occupant is OccupantType.ROAD:
-        return BLOCK_DARK * 2, "selected" if selected else "road"
+        return BLOCK_DARK * TILE_WIDTH_COLS, "selected" if selected else "road"
     if tile.base_terrain is TerrainType.PLAIN:
-        return BLOCK_FULL * 2, "selected" if selected else "plain"
+        return BLOCK_FULL * TILE_WIDTH_COLS, "selected" if selected else "plain"
     if tile.base_terrain is TerrainType.FOREST:
-        return BLOCK_DARK * 2, "selected" if selected else "forest"
+        return BLOCK_DARK * TILE_WIDTH_COLS, "selected" if selected else "forest"
     if tile.base_terrain is TerrainType.MOUNTAIN:
-        return BLOCK_LIGHT * 2, "selected" if selected else "mountain"
+        return BLOCK_LIGHT * TILE_WIDTH_COLS, "selected" if selected else "mountain"
     if tile.base_terrain is TerrainType.RIVER:
-        return "▄▄", "selected" if selected else "river"
-    return "..", "selected" if selected else "wasteland"
+        return BLOCK_FULL * TILE_WIDTH_COLS, "selected" if selected else "river"
+    return BLOCK_FULL * TILE_WIDTH_COLS, "selected" if selected else "wasteland"
 
 
 def _cycle_option(current: int, options: tuple[int, ...]) -> int:

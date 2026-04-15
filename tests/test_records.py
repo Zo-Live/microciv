@@ -90,6 +90,52 @@ def test_record_store_resets_old_schema_file(tmp_path) -> None:
     assert records_path.with_suffix(".json.incompatible").exists()
 
 
+def test_record_store_resets_schema_version_2(tmp_path) -> None:
+    records_path = tmp_path / "data" / "records.json"
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    records_path.write_text(
+        json.dumps({"schema_version": 2, "next_record_id": 1, "records": []}), encoding="utf-8"
+    )
+
+    database = RecordStore(records_path).load()
+
+    assert database.schema_version == RECORDS_SCHEMA_VERSION
+    assert database.records == []
+    assert records_path.with_suffix(".json.incompatible").exists()
+
+
+def test_record_store_resets_missing_top_level_fields(tmp_path) -> None:
+    records_path = tmp_path / "data" / "records.json"
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    records_path.write_text(
+        json.dumps({"records": []}), encoding="utf-8"
+    )
+
+    database = RecordStore(records_path).load()
+
+    assert database.schema_version == RECORDS_SCHEMA_VERSION
+    assert database.records == []
+    assert records_path.with_suffix(".json.incompatible").exists()
+
+
+def test_record_store_resets_baseline_ai_type(tmp_path) -> None:
+    records_path = tmp_path / "data" / "records.json"
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    record = build_completed_state()
+    entry = RecordEntry.from_game_state(record_id=1, timestamp="2026-04-09T12:00:00+08:00", state=record)
+    payload = entry.to_dict()
+    payload["ai_type"] = "baseline"
+    records_path.write_text(
+        json.dumps({"schema_version": RECORDS_SCHEMA_VERSION, "next_record_id": 2, "records": [payload]}), encoding="utf-8"
+    )
+
+    database = RecordStore(records_path).load()
+
+    assert database.schema_version == RECORDS_SCHEMA_VERSION
+    assert database.records == []
+    assert records_path.with_suffix(".json.incompatible").exists()
+
+
 def test_record_store_fifo_trims_oldest_entries(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(record_store_module, "MAX_RECORDS", 3)
     store = RecordStore(tmp_path / "data" / "records.json")

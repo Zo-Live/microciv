@@ -1,29 +1,30 @@
 # MicroCiv
 
-A terminal-based micro strategy civilization simulator built with Python and curses.
+基于终端的微型文明模拟器，使用 Python 与 curses 构建。
 
-## Overview
+## 项目简介
 
-MicroCiv is a turn-based civilization management game that runs in the terminal. It uses a square-grid world, mouse-first curses interaction, and Unicode block elements for map rendering.
+MicroCiv 是一款回合制文明经营游戏，运行在终端中。游戏以方格网格为地图，采用鼠标优先的 curses 交互方式，地图格以 Unicode 块字符渲染。
 
-### Features
+### 功能特性
 
-- Square-grid procedural map generation with plains, forests, mountains, rivers, and wastelands
-- City building, road networks, buildings, technologies, and score-based progression
-- Manual play and autoplay
-- Two autoplay AI policies: `Greedy` and `Random`
-- Local records with JSON export
-- Timing metrics for AI analysis: decision time, per-turn time, and full-session time
+- 正方形网格随机地图生成，包含平原、森林、山地、河流、荒地五种地形
+- 城市建设、道路网络、建筑建造、科技研究与评分系统
+- 手动游玩（Play）与自动演示（Autoplay）两种模式
+- 两种 Autoplay AI 策略：`Greedy`（贪心）与 `Random`（随机）
+- 本地 Records 记录系统，支持 JSON 导出
+- 像素字体渲染（标题、分数、回合数）
+- AI 决策计时指标：决策时间、单回合耗时、全局会话耗时
 
-## Requirements
+## 系统要求
 
-- Python 3.13 or higher
-- A terminal with Unicode color support
-- A terminal that supports mouse events in curses
+- Python 3.13 或更高版本
+- 支持 Unicode 与颜色的终端
+- 支持 curses 鼠标事件的终端
 
-## Installation
+## 安装
 
-### Using uv
+### 使用 uv（推荐）
 
 ```bash
 git clone git@github.com:Zo-Live/microciv.git
@@ -32,7 +33,7 @@ uv venv
 uv sync
 ```
 
-### Using pip
+### 使用 pip
 
 ```bash
 git clone git@github.com:Zo-Live/microciv.git
@@ -42,62 +43,63 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-## Run
+## 运行
 
 ```bash
 python main.py
 ```
 
-or
+或
 
 ```bash
 python -m microciv
 ```
 
-## Controls
+## 操作说明
 
-MicroCiv is primarily mouse-driven.
+MicroCiv 以鼠标为主要输入方式。
 
-- Left click: select tiles, buttons, buildings, technologies, records
-- Mouse wheel: scroll record pages
-- `m`: open in-game menu
-- `b`: return to the previous layer in records and in-game subpanels
-- `t`: jump to the top of the records list
-- `d`: jump to the bottom of the records list
-- `q`: exit the program
-- Arrow keys: move map selection or scroll record pages
+- **左键单击**：选择地图格、点击按钮、选择建筑/科技/Records 条目
+- **滚轮**：在 Records 列表中滚动翻页
+- `m`：打开游戏内菜单
+- `b`：返回上一层（Records 详情→列表，Records 列表/空页→主菜单，子面板→上级面板）
+- `t`：跳转到 Records 列表顶部
+- `d`：跳转到 Records 列表底部
+- `q`：退出程序
+- 方向键：移动地图选中格或滚动 Records
 
-## Project Structure
+## 项目结构
 
-```text
+```
 microciv/
 ├── src/microciv/
-│   ├── ai/            # AI policies
-│   ├── game/          # Core rules and state transitions
-│   ├── records/       # Local persistence and CSV export
-│   ├── session.py     # Runtime session helpers
-│   ├── curses_app.py  # curses controller and rendering
-│   └── app.py         # Entry point
-├── docs/              # Project documents
-├── tests/             # Test suite
-├── data/              # Runtime records
-└── exports/           # JSON exports
+│   ├── ai/            # AI 策略（Greedy、Random）
+│   ├── game/          # 核心规则与状态机
+│   ├── records/       # 本地持久化与 CSV/JSON 导出
+│   ├── tui/           # 终端 UI 组件（像素字体）
+│   ├── session.py     # 运行时会话辅助
+│   ├── curses_app.py  # curses 控制器与渲染
+│   └── app.py         # 程序入口
+├── docs/              # 项目文档与流程图
+├── tests/             # 测试套件
+├── data/              # 运行时 Records 数据
+└── exports/           # JSON 导出
 ```
 
-## Development
+## 开发
 
-Run tests:
+运行测试：
 
 ```bash
 .venv/bin/python -m pytest -q
 ```
 
-Run lint:
+运行 lint：
 
 ```bash
 .venv/bin/ruff check src tests
 ```
 
-## License
+## 许可证
 
 MIT
