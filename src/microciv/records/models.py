@@ -274,13 +274,13 @@ class RecordEntry:
     research_education_count: int
     skip_count: int
     decision_count: int
-    decision_time_ms_total: int
-    decision_time_ms_avg: int
-    decision_time_ms_max: int
-    turn_elapsed_ms_total: int
-    turn_elapsed_ms_avg: int
-    turn_elapsed_ms_max: int
-    session_elapsed_ms: int
+    decision_time_ms_total: float
+    decision_time_ms_avg: float
+    decision_time_ms_max: float
+    turn_elapsed_ms_total: float
+    turn_elapsed_ms_avg: float
+    turn_elapsed_ms_max: float
+    session_elapsed_ms: float
     final_map: list[RecordTileSnapshot] = field(default_factory=list)
     cities: list[RecordCitySnapshot] = field(default_factory=list)
     roads: list[RecordRoadSnapshot] = field(default_factory=list)
@@ -392,13 +392,13 @@ class RecordEntry:
             research_education_count=int(payload["research_education_count"]),
             skip_count=int(payload["skip_count"]),
             decision_count=int(payload["decision_count"]),
-            decision_time_ms_total=int(payload["decision_time_ms_total"]),
-            decision_time_ms_avg=int(payload["decision_time_ms_avg"]),
-            decision_time_ms_max=int(payload["decision_time_ms_max"]),
-            turn_elapsed_ms_total=int(payload["turn_elapsed_ms_total"]),
-            turn_elapsed_ms_avg=int(payload["turn_elapsed_ms_avg"]),
-            turn_elapsed_ms_max=int(payload["turn_elapsed_ms_max"]),
-            session_elapsed_ms=int(payload["session_elapsed_ms"]),
+            decision_time_ms_total=float(payload["decision_time_ms_total"]),
+            decision_time_ms_avg=float(payload["decision_time_ms_avg"]),
+            decision_time_ms_max=float(payload["decision_time_ms_max"]),
+            turn_elapsed_ms_total=float(payload["turn_elapsed_ms_total"]),
+            turn_elapsed_ms_avg=float(payload["turn_elapsed_ms_avg"]),
+            turn_elapsed_ms_max=float(payload["turn_elapsed_ms_max"]),
+            session_elapsed_ms=float(payload["session_elapsed_ms"]),
             final_map=[RecordTileSnapshot.from_dict(item) for item in payload.get("final_map", [])],
             cities=[RecordCitySnapshot.from_dict(item) for item in payload.get("cities", [])],
             roads=[RecordRoadSnapshot.from_dict(item) for item in payload.get("roads", [])],

@@ -70,7 +70,7 @@ class GameEngine:
         else:
             self.state.turn += 1
 
-        elapsed_ms = int((perf_counter() - started_at) * 1000)
+        elapsed_ms = (perf_counter() - started_at) * 1000
         self.state.stats.record_turn_time(elapsed_ms)
         return EngineResult(True, "", self.state, settlement)
 

@@ -145,12 +145,12 @@ def test_stats_record_decision_and_turn_time_updates_aggregates() -> None:
     stats.record_turn_time(20)
 
     assert stats.decision_count == 2
-    assert stats.decision_time_ms_total == 40
-    assert stats.decision_time_ms_avg == 20
-    assert stats.decision_time_ms_max == 30
-    assert stats.turn_elapsed_ms_total == 60
-    assert stats.turn_elapsed_ms_avg == 30
-    assert stats.turn_elapsed_ms_max == 40
+    assert stats.decision_time_ms_total == 40.0
+    assert stats.decision_time_ms_avg == 20.0
+    assert stats.decision_time_ms_max == 30.0
+    assert stats.turn_elapsed_ms_total == 60.0
+    assert stats.turn_elapsed_ms_avg == 30.0
+    assert stats.turn_elapsed_ms_max == 40.0
 
 
 def test_tile_occupancy_defaults_to_none() -> None:
