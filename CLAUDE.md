@@ -16,6 +16,12 @@ python -m microciv
 # Batch AI data collection
 python scripts/batch_autoplay.py -n 100 --policy greedy
 
+# Large-scale param-grid dataset generation
+python scripts/generate_dataset.py -n 10
+
+# Generate diagnostic Markdown report from dataset
+python scripts/analyze_batch.py --input exports/dataset/dataset.json --output exports/dataset/report.md
+
 # Tests
 python -m pytest -q                       # all tests
 python -m pytest tests/test_engine.py -q  # single module
@@ -53,7 +59,11 @@ Install with `uv sync` (preferred) or `pip install -e ".[dev]"`.
 
 **Persistence**: `records/models.py` defines `RecordEntry` and snapshot dataclasses (`RecordTileSnapshot`, `RecordCitySnapshot`, etc.) with `from_dict`/`to_dict` round-trip serialization. `records/store.py` handles JSON file I/O. `records/export.py` handles CSV export.
 
-**Batch runner**: `scripts/batch_autoplay.py` runs headless autoplay games in bulk and exports results as JSON and CSV. It uses `create_game_session()` and `GameSession.step_autoplay()` to advance turns without the curses UI.
+**Batch runners**: 
+- `scripts/batch_autoplay.py` runs headless autoplay games in bulk and exports results as JSON and CSV.
+- `scripts/generate_dataset.py` sweeps a parameter grid (policy × map_size × turn_limit × difficulty) to build a large labeled dataset.
+- `scripts/analyze_batch.py` consumes the dataset JSON and emits a diagnostic Markdown report with aggregated metrics, behavior patterns, and actionable hypotheses.
+Both runners use `create_game_session()` and `GameSession.step_autoplay()` to advance turns without the curses UI.
 
 **UI**: `curses_app.py` is the main curses controller with mouse-driven interaction. `tui/` contains UI component helpers.
 
