@@ -119,12 +119,12 @@ def test_app_mouse_dispatch_uses_rendered_hitboxes_and_wheel(tmp_path: Path) -> 
     app = CursesMicroCivApp(paths=build_app_paths(tmp_path))
     app.render_state.button_regions["menu-play"] = Rect(10, 5, 8)
 
-    app._handle_mouse(11, 5, 1)
+    app._handle_mouse(11, 5, curses.BUTTON1_PRESSED)
 
     assert app.controller.current_route is ScreenRoute.SETUP_PLAY
 
     app.controller.current_route = ScreenRoute.RECORDS_GRID
-    app.controller.records = RecordDatabase(records=[make_record(idx, f"2026-04-09T1{idx}:00:00+08:00") for idx in range(1, 10)])
+    app.controller.records = RecordDatabase(records=[make_record(idx, f"2026-04-09T{idx:02d}:00:00+08:00") for idx in range(1, 14)])
     app._handle_mouse(0, 0, getattr(curses, "BUTTON5_PRESSED", 0))
     assert app.controller.records_scroll == 1
 
@@ -179,11 +179,11 @@ def make_record(record_id: int, timestamp: str) -> RecordEntry:
         research_education_count=0,
         skip_count=0,
         decision_count=0,
-        decision_time_ms_total=0,
-        decision_time_ms_avg=0,
-        decision_time_ms_max=0,
-        turn_elapsed_ms_total=0,
-        turn_elapsed_ms_avg=0,
-        turn_elapsed_ms_max=0,
-        session_elapsed_ms=0,
+        decision_time_ms_total=0.0,
+        decision_time_ms_avg=0.0,
+        decision_time_ms_max=0.0,
+        turn_elapsed_ms_total=0.0,
+        turn_elapsed_ms_avg=0.0,
+        turn_elapsed_ms_max=0.0,
+        session_elapsed_ms=0.0,
     )

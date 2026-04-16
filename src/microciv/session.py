@@ -30,7 +30,7 @@ class GameSession:
         """Apply an action and refresh aggregate session timing when the game ends."""
         self.engine.apply_action(action)
         if self.state.is_game_over:
-            self.state.stats.session_elapsed_ms = int((perf_counter() - self.started_at) * 1000)
+            self.state.stats.session_elapsed_ms = (perf_counter() - self.started_at) * 1000
 
     def step_autoplay(self) -> None:
         """Advance a single autoplay turn and record decision timing."""
@@ -38,7 +38,7 @@ class GameSession:
             return
         decision_started_at = perf_counter()
         action = self.policy.select_action(self.state)
-        self.state.stats.record_decision_time(int((perf_counter() - decision_started_at) * 1000))
+        self.state.stats.record_decision_time((perf_counter() - decision_started_at) * 1000)
         self.apply_action(action)
 
 

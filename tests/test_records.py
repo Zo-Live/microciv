@@ -44,8 +44,8 @@ def test_record_entry_from_game_state_captures_frozen_fields() -> None:
     assert entry.cities[0].library == 1
     assert entry.roads[0].road_id == 1
     assert entry.networks[0].unlocked_techs == ["agriculture", "education"]
-    assert entry.turn_elapsed_ms_total == 900
-    assert entry.session_elapsed_ms == 1200
+    assert entry.turn_elapsed_ms_total == 900.0
+    assert entry.session_elapsed_ms == 1200.0
 
 
 def test_record_store_persists_and_reloads_completed_games(tmp_path) -> None:
@@ -227,13 +227,13 @@ def build_completed_state(*, seed: int = 7) -> GameState:
     state.stats.research_agriculture_count = 1
     state.stats.research_education_count = 1
     state.stats.decision_count = 12
-    state.stats.decision_time_ms_total = 240
-    state.stats.decision_time_ms_avg = 20
-    state.stats.decision_time_ms_max = 45
-    state.stats.turn_elapsed_ms_total = 900
-    state.stats.turn_elapsed_ms_avg = 30
-    state.stats.turn_elapsed_ms_max = 75
-    state.stats.session_elapsed_ms = 1200
+    state.stats.decision_time_ms_total = 240.0
+    state.stats.decision_time_ms_avg = 20.0
+    state.stats.decision_time_ms_max = 45.0
+    state.stats.turn_elapsed_ms_total = 900.0
+    state.stats.turn_elapsed_ms_avg = 30.0
+    state.stats.turn_elapsed_ms_max = 75.0
+    state.stats.session_elapsed_ms = 1200.0
     return state
 
 
@@ -269,11 +269,11 @@ def build_completed_autoplay_state(*, seed: int = 13) -> GameState:
     state.stats.build_mine_count = 1
     state.stats.research_mining_count = 1
     state.stats.decision_count = 30
-    state.stats.decision_time_ms_total = 1234
-    state.stats.decision_time_ms_avg = 41
-    state.stats.decision_time_ms_max = 99
-    state.stats.turn_elapsed_ms_total = 1900
-    state.stats.turn_elapsed_ms_avg = 63
-    state.stats.turn_elapsed_ms_max = 144
-    state.stats.session_elapsed_ms = 2500
+    state.stats.decision_time_ms_total = 1234.0
+    state.stats.decision_time_ms_avg = 41.0
+    state.stats.decision_time_ms_max = 99.0
+    state.stats.turn_elapsed_ms_total = 1900.0
+    state.stats.turn_elapsed_ms_avg = 63.0
+    state.stats.turn_elapsed_ms_max = 144.0
+    state.stats.session_elapsed_ms = 2500.0
     return state
