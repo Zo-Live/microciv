@@ -70,7 +70,7 @@ python main.py
 # 批量 AI 数据收集
 python scripts/batch_autoplay.py -n 100 --policy greedy
 
-# 大规模参数网格数据集生成
+# 大规模参数网格数据集生成（同时导出 JSON 和 CSV）
 python scripts/generate_dataset.py -n 10
 
 # 生成诊断报告（需安装 pandas + tabulate）

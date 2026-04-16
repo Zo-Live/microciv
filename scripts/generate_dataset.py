@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from datetime import UTC, datetime
@@ -17,7 +18,7 @@ if str(SRC) not in sys.path:
 
 from microciv.game.enums import MapDifficulty, PlaybackMode, PolicyType  # noqa: E402
 from microciv.game.models import GameConfig  # noqa: E402
-from microciv.records.models import RecordDatabase, RecordEntry  # noqa: E402
+from microciv.records.models import CSV_FIELD_ORDER, RecordDatabase, RecordEntry  # noqa: E402
 from microciv.session import create_game_session  # noqa: E402
 
 PARAM_GRID = {
@@ -135,12 +136,21 @@ def main() -> int:
     )
 
     database = RecordDatabase(records=records)
-    output_path = output_dir / "dataset.json"
-    output_path.write_text(
+
+    json_path = output_dir / "dataset.json"
+    json_path.write_text(
         json.dumps(database.to_dict(), ensure_ascii=True, indent=2) + "\n",
         encoding="utf-8",
     )
-    print(f"Dataset exported: {output_path}", file=sys.stderr)
+    print(f"Dataset JSON exported: {json_path}", file=sys.stderr)
+
+    csv_path = output_dir / "dataset.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(CSV_FIELD_ORDER))
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record.to_csv_row())
+    print(f"Dataset CSV exported: {csv_path}", file=sys.stderr)
     return 0
 
 

@@ -16,7 +16,7 @@ python -m microciv
 # Batch AI data collection
 python scripts/batch_autoplay.py -n 100 --policy greedy
 
-# Large-scale param-grid dataset generation
+# Large-scale param-grid dataset generation (exports both JSON and CSV)
 python scripts/generate_dataset.py -n 10
 
 # Generate diagnostic Markdown report from dataset (requires pandas + tabulate)
