@@ -70,6 +70,12 @@ python main.py
 # 批量 AI 数据收集
 python scripts/batch_autoplay.py -n 100 --policy greedy
 
+# 大规模参数网格数据集生成
+python scripts/generate_dataset.py -n 10
+
+# 生成诊断报告
+python scripts/analyze_batch.py --input exports/dataset/dataset.json --output exports/dataset/report.md
+
 # 运行全部测试
 python -m pytest -q
 
@@ -122,6 +128,9 @@ microciv/
 │   ├── config.py            # 路径配置
 │   └── constants.py         # 全局常量与平衡参数
 ├── scripts/                 # 批量运行与数据分析脚本
+│   ├── batch_autoplay.py    # 单一配置批量运行
+│   ├── generate_dataset.py  # 参数网格数据集生成
+│   └── analyze_batch.py     # 数据集诊断报告生成
 ├── tests/                   # 测试套件（pytest）
 ├── data/                    # 运行时 Records 数据 (records.json)
 ├── exports/                 # JSON 导出目录
@@ -268,5 +277,6 @@ GameConfig
 - **策略调整**: `ai/greedy.py` + `ai/policy.py`
 - **UI 路由与渲染**: `curses_app.py`
 - **平衡参数调整**: `constants.py`（注意同步测试中的硬编码断言）
-- **批量运行脚本**: `scripts/batch_autoplay.py`
+- **批量运行脚本**: `scripts/batch_autoplay.py`、`scripts/generate_dataset.py`
+- **数据分析脚本**: `scripts/analyze_batch.py`
 - **Records 模型扩展**: `records/models.py`（新增字段需同步更新 `CSV_FIELD_ORDER` 与 `from_dict`/`to_dict`）

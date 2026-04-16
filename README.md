@@ -55,23 +55,29 @@ python main.py
 python -m microciv
 ```
 
-### 批量 AI 数据收集
+### 批量 AI 数据收集与分析
 
 项目提供了无界面的批量运行脚本，用于让 AI 自动执行大量局数并导出结果（JSON + CSV）：
 
 ```bash
+# 快速批量运行（单一参数配置）
 python scripts/batch_autoplay.py -n 100 --policy greedy
+
+# 大规模参数网格数据集生成
+python scripts/generate_dataset.py -n 10
+
+# 生成诊断报告
+python scripts/analyze_batch.py --input exports/dataset/dataset.json --output exports/dataset/report.md
 ```
 
 常用参数：
-- `-n`：局数（默认 100）
+- `-n` / `--games-per-combo`：每参数组合局数
 - `--policy`：`greedy` 或 `random`
-- `--map-size`：地图尺寸（默认 16）
-- `--turn-limit`：回合上限（默认 80）
-- `--seed-start`：起始种子（默认 1）
-- `--output-dir`：输出目录（默认 `exports/batch`）
+- `--map-size`：地图尺寸
+- `--turn-limit`：回合上限
+- `--seed-start`：起始种子
 
-详细参数请使用 `python scripts/batch_autoplay.py --help` 查看。
+详细参数请使用 `--help` 查看。
 
 ## 操作说明
 
