@@ -108,8 +108,12 @@ def _discover_city_components(
             city_id = coord_to_city_id.get(current)
             if city_id is not None:
                 component_city_ids.append(city_id)
+            current_is_city = current in coord_to_city_id
             for neighbor in cardinal_neighbors(current):
                 if neighbor in seen or not is_network_passable(state, neighbor):
+                    continue
+                ntile = state.board[neighbor]
+                if current_is_city and ntile.occupant is OccupantType.CITY:
                     continue
                 seen.add(neighbor)
                 queue.append(neighbor)

@@ -21,3 +21,7 @@ class RandomPolicy(Policy):
         if not legal_actions:
             return Action.skip()
         return self._rng.choice(legal_actions)
+
+    def explain_decision(self, state: GameState) -> dict[str, object]:
+        legal_actions = get_legal_actions(state)
+        return {"legal_actions_count": len(legal_actions)}

@@ -213,6 +213,9 @@ class Stats:
     turn_elapsed_ms_avg: float = 0.0
     turn_elapsed_ms_max: float = 0.0
     session_elapsed_ms: float = 0.0
+    action_log: list[dict[str, object]] = field(default_factory=list)
+    turn_snapshots: list[dict[str, object]] = field(default_factory=list)
+    decision_contexts: list[dict[str, object]] = field(default_factory=list)
 
     def record_decision_time(self, duration_ms: float) -> None:
         if duration_ms < 0:
@@ -242,6 +245,84 @@ class Stats:
         self.turn_elapsed_ms_total += duration_ms
         self.turn_elapsed_ms_max = max(self.turn_elapsed_ms_max, duration_ms)
         self.turn_elapsed_ms_avg = self.turn_elapsed_ms_total / turn_count
+
+    def record_action(self, turn: int, action: object) -> None:
+        from microciv.game.actions import Action
+
+        if not isinstance(action, Action):
+            return
+        entry: dict[str, object] = {
+            "turn": turn,
+            "action_type": action.action_type.value,
+        }
+        if action.coord is not None:
+            entry["x"] = action.coord[0]
+            entry["y"] = action.coord[1]
+        if action.city_id is not None:
+            entry["city_id"] = action.city_id
+        if action.building_type is not None:
+            entry["building_type"] = action.building_type.value
+        if action.tech_type is not None:
+            entry["tech_type"] = action.tech_type.value
+        self.action_log.append(entry)
+
+    def record_turn_snapshot(
+        self,
+        *,
+        turn: int,
+        score: int,
+        food: int,
+        wood: int,
+        ore: int,
+        science: int,
+        city_count: int,
+        building_count: int,
+        tech_count: int,
+        road_count: int,
+        network_count: int,
+        legal_actions_count: int,
+    ) -> None:
+        self.turn_snapshots.append(
+            {
+                "turn": turn,
+                "score": score,
+                "food": food,
+                "wood": wood,
+                "ore": ore,
+                "science": science,
+                "city_count": city_count,
+                "building_count": building_count,
+                "tech_count": tech_count,
+                "road_count": road_count,
+                "network_count": network_count,
+                "legal_actions_count": legal_actions_count,
+            }
+        )
+
+    def record_decision_context(
+        self,
+        *,
+        turn: int,
+        legal_actions_count: int,
+        legal_build_city_count: int,
+        legal_build_road_count: int,
+        legal_build_building_count: int,
+        legal_research_tech_count: int,
+        legal_skip_count: int,
+        policy_context: dict[str, object] | None = None,
+    ) -> None:
+        ctx: dict[str, object] = {
+            "turn": turn,
+            "legal_actions_count": legal_actions_count,
+            "legal_build_city_count": legal_build_city_count,
+            "legal_build_road_count": legal_build_road_count,
+            "legal_build_building_count": legal_build_building_count,
+            "legal_research_tech_count": legal_research_tech_count,
+            "legal_skip_count": legal_skip_count,
+        }
+        if policy_context:
+            ctx.update(policy_context)
+        self.decision_contexts.append(ctx)
 
 
 @dataclass(slots=True)

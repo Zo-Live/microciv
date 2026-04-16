@@ -16,7 +16,7 @@ from microciv.game.scoring import (
 )
 from microciv.utils.grid import Coord, coord_sort_key
 
-RECORDS_SCHEMA_VERSION = 3
+RECORDS_SCHEMA_VERSION = 4
 
 CSV_FIELD_ORDER: tuple[str, ...] = (
     "record_id",
@@ -238,6 +238,142 @@ class RecordNetworkSnapshot:
         }
 
 
+@dataclass(slots=True, frozen=True)
+class RecordActionLogEntry:
+    """Serializable action taken during a match."""
+
+    turn: int
+    action_type: str
+    x: int | None = None
+    y: int | None = None
+    city_id: int | None = None
+    building_type: str | None = None
+    tech_type: str | None = None
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> RecordActionLogEntry:
+        return cls(
+            turn=int(payload["turn"]),
+            action_type=str(payload["action_type"]),
+            x=int(payload["x"]) if "x" in payload else None,
+            y=int(payload["y"]) if "y" in payload else None,
+            city_id=int(payload["city_id"]) if "city_id" in payload else None,
+            building_type=str(payload["building_type"]) if "building_type" in payload else None,
+            tech_type=str(payload["tech_type"]) if "tech_type" in payload else None,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        result: dict[str, object] = {
+            "turn": self.turn,
+            "action_type": self.action_type,
+        }
+        if self.x is not None:
+            result["x"] = self.x
+        if self.y is not None:
+            result["y"] = self.y
+        if self.city_id is not None:
+            result["city_id"] = self.city_id
+        if self.building_type is not None:
+            result["building_type"] = self.building_type
+        if self.tech_type is not None:
+            result["tech_type"] = self.tech_type
+        return result
+
+
+@dataclass(slots=True, frozen=True)
+class RecordTurnSnapshot:
+    """Serializable snapshot of game state at the start of a turn."""
+
+    turn: int
+    score: int
+    food: int
+    wood: int
+    ore: int
+    science: int
+    city_count: int
+    building_count: int
+    tech_count: int
+    road_count: int
+    network_count: int
+    legal_actions_count: int
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> RecordTurnSnapshot:
+        return cls(
+            turn=int(payload["turn"]),
+            score=int(payload["score"]),
+            food=int(payload["food"]),
+            wood=int(payload["wood"]),
+            ore=int(payload["ore"]),
+            science=int(payload["science"]),
+            city_count=int(payload["city_count"]),
+            building_count=int(payload["building_count"]),
+            tech_count=int(payload["tech_count"]),
+            road_count=int(payload["road_count"]),
+            network_count=int(payload["network_count"]),
+            legal_actions_count=int(payload["legal_actions_count"]),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "turn": self.turn,
+            "score": self.score,
+            "food": self.food,
+            "wood": self.wood,
+            "ore": self.ore,
+            "science": self.science,
+            "city_count": self.city_count,
+            "building_count": self.building_count,
+            "tech_count": self.tech_count,
+            "road_count": self.road_count,
+            "network_count": self.network_count,
+            "legal_actions_count": self.legal_actions_count,
+        }
+
+
+@dataclass(slots=True, frozen=True)
+class RecordDecisionContext:
+    """Serializable decision context for a single turn."""
+
+    turn: int
+    legal_actions_count: int
+    legal_build_city_count: int
+    legal_build_road_count: int
+    legal_build_building_count: int
+    legal_research_tech_count: int
+    legal_skip_count: int
+    greedy_priority: str | None = None
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> RecordDecisionContext:
+        return cls(
+            turn=int(payload["turn"]),
+            legal_actions_count=int(payload["legal_actions_count"]),
+            legal_build_city_count=int(payload.get("legal_build_city_count", 0)),
+            legal_build_road_count=int(payload.get("legal_build_road_count", 0)),
+            legal_build_building_count=int(payload.get("legal_build_building_count", 0)),
+            legal_research_tech_count=int(payload.get("legal_research_tech_count", 0)),
+            legal_skip_count=int(payload.get("legal_skip_count", 0)),
+            greedy_priority=(
+                str(payload["greedy_priority"]) if "greedy_priority" in payload else None
+            ),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        result: dict[str, object] = {
+            "turn": self.turn,
+            "legal_actions_count": self.legal_actions_count,
+            "legal_build_city_count": self.legal_build_city_count,
+            "legal_build_road_count": self.legal_build_road_count,
+            "legal_build_building_count": self.legal_build_building_count,
+            "legal_research_tech_count": self.legal_research_tech_count,
+            "legal_skip_count": self.legal_skip_count,
+        }
+        if self.greedy_priority is not None:
+            result["greedy_priority"] = self.greedy_priority
+        return result
+
+
 @dataclass(slots=True)
 class RecordEntry:
     """Persisted result for a completed match."""
@@ -285,6 +421,9 @@ class RecordEntry:
     cities: list[RecordCitySnapshot] = field(default_factory=list)
     roads: list[RecordRoadSnapshot] = field(default_factory=list)
     networks: list[RecordNetworkSnapshot] = field(default_factory=list)
+    action_log: list[RecordActionLogEntry] = field(default_factory=list)
+    turn_snapshots: list[RecordTurnSnapshot] = field(default_factory=list)
+    decision_contexts: list[RecordDecisionContext] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.record_id < 1:
@@ -346,6 +485,16 @@ class RecordEntry:
             cities=_city_snapshots(state),
             roads=_road_snapshots(state),
             networks=_network_snapshots(state),
+            action_log=[
+                RecordActionLogEntry.from_dict(item) for item in state.stats.action_log
+            ],
+            turn_snapshots=[
+                RecordTurnSnapshot.from_dict(item) for item in state.stats.turn_snapshots
+            ],
+            decision_contexts=[
+                RecordDecisionContext.from_dict(item)
+                for item in state.stats.decision_contexts
+            ],
         )
 
     @classmethod
@@ -405,6 +554,16 @@ class RecordEntry:
             networks=[
                 RecordNetworkSnapshot.from_dict(item) for item in payload.get("networks", [])
             ],
+            action_log=[
+                RecordActionLogEntry.from_dict(item) for item in payload.get("action_log", [])
+            ],
+            turn_snapshots=[
+                RecordTurnSnapshot.from_dict(item) for item in payload.get("turn_snapshots", [])
+            ],
+            decision_contexts=[
+                RecordDecisionContext.from_dict(item)
+                for item in payload.get("decision_contexts", [])
+            ],
         )
 
     def to_csv_row(self) -> dict[str, object]:
@@ -418,6 +577,9 @@ class RecordEntry:
                 "cities": [city.to_dict() for city in self.cities],
                 "roads": [road.to_dict() for road in self.roads],
                 "networks": [network.to_dict() for network in self.networks],
+                "action_log": [entry.to_dict() for entry in self.action_log],
+                "turn_snapshots": [snapshot.to_dict() for snapshot in self.turn_snapshots],
+                "decision_contexts": [ctx.to_dict() for ctx in self.decision_contexts],
             }
         )
         return payload

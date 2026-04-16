@@ -75,6 +75,7 @@ class RecordStore:
     def clear(self) -> None:
         database = self.load()
         database.records = []
+        database.next_record_id = 1
         self.save(database)
 
     def _empty_database(self) -> RecordDatabase:

@@ -13,6 +13,9 @@ MicroCiv is a terminal-based, turn-based civilization simulator built with Pytho
 python main.py
 python -m microciv
 
+# Batch AI data collection
+python scripts/batch_autoplay.py -n 100 --policy greedy
+
 # Tests
 python -m pytest -q                       # all tests
 python -m pytest tests/test_engine.py -q  # single module
@@ -49,6 +52,8 @@ Install with `uv sync` (preferred) or `pip install -e ".[dev]"`.
 - `simulate_action()` deep-copies state for lookahead.
 
 **Persistence**: `records/models.py` defines `RecordEntry` and snapshot dataclasses (`RecordTileSnapshot`, `RecordCitySnapshot`, etc.) with `from_dict`/`to_dict` round-trip serialization. `records/store.py` handles JSON file I/O. `records/export.py` handles CSV export.
+
+**Batch runner**: `scripts/batch_autoplay.py` runs headless autoplay games in bulk and exports results as JSON and CSV. It uses `create_game_session()` and `GameSession.step_autoplay()` to advance turns without the curses UI.
 
 **UI**: `curses_app.py` is the main curses controller with mouse-driven interaction. `tui/` contains UI component helpers.
 

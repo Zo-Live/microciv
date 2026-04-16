@@ -90,11 +90,11 @@ def test_record_store_resets_old_schema_file(tmp_path) -> None:
     assert records_path.with_suffix(".json.incompatible").exists()
 
 
-def test_record_store_resets_schema_version_2(tmp_path) -> None:
+def test_record_store_resets_schema_version_3(tmp_path) -> None:
     records_path = tmp_path / "data" / "records.json"
     records_path.parent.mkdir(parents=True, exist_ok=True)
     records_path.write_text(
-        json.dumps({"schema_version": 2, "next_record_id": 1, "records": []}), encoding="utf-8"
+        json.dumps({"schema_version": 3, "next_record_id": 1, "records": []}), encoding="utf-8"
     )
 
     database = RecordStore(records_path).load()

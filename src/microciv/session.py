@@ -28,6 +28,7 @@ class GameSession:
 
     def apply_action(self, action: Action) -> None:
         """Apply an action and refresh aggregate session timing when the game ends."""
+        self.state.stats.record_action(self.state.turn, action)
         self.engine.apply_action(action)
         if self.state.is_game_over:
             self.state.stats.session_elapsed_ms = (perf_counter() - self.started_at) * 1000
@@ -36,6 +37,51 @@ class GameSession:
         """Advance a single autoplay turn and record decision timing."""
         if self.policy is None or self.state.is_game_over:
             return
+        from microciv.game.actions import ActionType, list_legal_actions
+        from microciv.game.scoring import building_count, city_count, tech_count, total_resources
+
+        legal_actions = list_legal_actions(self.state)
+        resources = total_resources(self.state)
+        self.state.stats.record_turn_snapshot(
+            turn=self.state.turn,
+            score=self.state.score,
+            food=resources.food,
+            wood=resources.wood,
+            ore=resources.ore,
+            science=resources.science,
+            city_count=city_count(self.state),
+            building_count=building_count(self.state),
+            tech_count=tech_count(self.state),
+            road_count=len(self.state.roads),
+            network_count=len(self.state.networks),
+            legal_actions_count=len(legal_actions),
+        )
+        policy_context = (
+            self.policy.explain_decision(self.state)
+            if hasattr(self.policy, "explain_decision")
+            else None
+        )
+        self.state.stats.record_decision_context(
+            turn=self.state.turn,
+            legal_actions_count=len(legal_actions),
+            legal_build_city_count=sum(
+                1 for a in legal_actions if a.action_type is ActionType.BUILD_CITY
+            ),
+            legal_build_road_count=sum(
+                1 for a in legal_actions if a.action_type is ActionType.BUILD_ROAD
+            ),
+            legal_build_building_count=sum(
+                1 for a in legal_actions if a.action_type is ActionType.BUILD_BUILDING
+            ),
+            legal_research_tech_count=sum(
+                1 for a in legal_actions if a.action_type is ActionType.RESEARCH_TECH
+            ),
+            legal_skip_count=sum(
+                1 for a in legal_actions if a.action_type is ActionType.SKIP
+            ),
+            policy_context=policy_context,
+        )
+
         decision_started_at = perf_counter()
         action = self.policy.select_action(self.state)
         self.state.stats.record_decision_time((perf_counter() - decision_started_at) * 1000)

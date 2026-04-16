@@ -54,7 +54,7 @@ TURN_VALUE_Y = 10
 SUBPANEL_START_Y = 16
 
 RECORDS_COLS = 2
-RECORDS_ROWS = 4
+RECORDS_ROWS = 6
 RECORDS_PAGE_SIZE = RECORDS_COLS * RECORDS_ROWS
 MAP_SIZE_OPTIONS = (12, 16, 20, 24)
 TURN_LIMIT_OPTIONS = (30, 50, 80, 100, 150)
@@ -832,6 +832,13 @@ class CursesMicroCivApp:
         if bstate & getattr(curses, "BUTTON5_PRESSED", 0):
             self.controller.scroll_records(1)
             return
+        if (
+            self.controller.current_route is ScreenRoute.RECORDS_GRID
+            and self.controller.message
+        ):
+            self.controller.message = ""
+        if not (bstate & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED)):
+            return
         for button_id, rect in self.render_state.button_regions.items():
             if rect.contains(mouse_x, mouse_y):
                 self.controller.click(button_id)
@@ -1262,13 +1269,19 @@ class CursesMicroCivApp:
                 continue
             record = visible[idx]
             self._draw_box(stdscr, x, y, slot_w, slot_h)
-            label = _record_list_label(record)
+            rank = self.controller.records_scroll * RECORDS_COLS + idx + 1
+            label = _record_list_label(record, rank)
             self._safe_addstr(stdscr, y + 2, x + 1, label[: slot_w - 2], "text")
             self.render_state.button_regions[f"record-slot-{idx}"] = Rect(x, y, slot_w, slot_h)
         bottom_y = height - 5
         self._draw_box_button(stdscr, "records-delete-all", "Delete All", 6, bottom_y, 14, 3)
-        self._draw_box_button(stdscr, "records-export", "Export", max((width - 14) // 2, 22), bottom_y, 14, 3)
+        export_x = max((width - 14) // 2, 22)
+        self._draw_box_button(stdscr, "records-export", "Export", export_x, bottom_y, 14, 3)
         self._draw_box_button(stdscr, "records-back", "Back", max(width - 20, 24), bottom_y, 14, 3)
+        if self.controller.message:
+            msg = self.controller.message[:40]
+            msg_x = max((width - len(msg)) // 2, 0)
+            self._safe_addstr(stdscr, bottom_y - 2, msg_x, msg, "accent")
 
     def _render_record_detail(self, stdscr: CursesWindow, width: int, height: int) -> None:
         record = self.controller.selected_record
@@ -1354,10 +1367,10 @@ def _policy_label(policy_type: PolicyType) -> str:
     return policy_type.value.title()
 
 
-def _record_list_label(record: RecordEntry) -> str:
+def _record_list_label(record: RecordEntry, display_rank: int) -> str:
     actor = record.ai_type if record.mode == "autoplay" else "Human"
     timestamp = record.timestamp.replace("T", " ")[:16]
-    return f"#{record.record_id}  {timestamp}  {actor}  score={record.final_score}"
+    return f"#{display_rank}  {timestamp}  {actor}  score={record.final_score}"
 
 
 def _board_from_record(record: RecordEntry) -> dict[Coord, Tile]:
@@ -1392,8 +1405,15 @@ def _record_detail_lines(record: RecordEntry) -> list[str]:
             [
                 f"AI Type: {record.ai_type}",
                 f"Playback: {record.playback_mode or 'normal'}",
-                f"Turn Time Total: {record.turn_elapsed_ms_total} ms",
-                f"Step Avg: {record.turn_elapsed_ms_avg} ms",
+                f"Turn Time Total: {_fmt_sig3(float(record.turn_elapsed_ms_total))} ms",
+                f"Step Avg: {_fmt_sig3(record.turn_elapsed_ms_total / max(record.actual_turns, 1))} ms",
             ]
         )
     return lines
+
+
+def _fmt_sig3(value: float) -> str:
+    """Format a value with at least 3 significant digits."""
+    if value == 0:
+        return "0"
+    return f"{value:.3g}"
