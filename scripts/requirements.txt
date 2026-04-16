@@ -1,0 +1,5 @@
+# Extra dependencies for data analysis scripts in this directory.
+# The main game has zero runtime dependencies (standard library only).
+
+pandas>=2.0
+tabulate>=0.9

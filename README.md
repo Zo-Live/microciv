@@ -66,8 +66,16 @@ python scripts/batch_autoplay.py -n 100 --policy greedy
 # 大规模参数网格数据集生成
 python scripts/generate_dataset.py -n 10
 
-# 生成诊断报告
+# 生成诊断报告（需要 pandas + tabulate）
 python scripts/analyze_batch.py --input exports/dataset/dataset.json --output exports/dataset/report.md
+```
+
+数据分析脚本依赖 `pandas` 和 `tabulate`，可通过以下方式安装：
+
+```bash
+uv add --dev pandas tabulate
+# 或
+pip install pandas tabulate
 ```
 
 常用参数：

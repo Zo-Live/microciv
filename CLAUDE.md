@@ -19,7 +19,7 @@ python scripts/batch_autoplay.py -n 100 --policy greedy
 # Large-scale param-grid dataset generation
 python scripts/generate_dataset.py -n 10
 
-# Generate diagnostic Markdown report from dataset
+# Generate diagnostic Markdown report from dataset (requires pandas + tabulate)
 python scripts/analyze_batch.py --input exports/dataset/dataset.json --output exports/dataset/report.md
 
 # Tests

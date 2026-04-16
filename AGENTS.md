@@ -73,7 +73,7 @@ python scripts/batch_autoplay.py -n 100 --policy greedy
 # 大规模参数网格数据集生成
 python scripts/generate_dataset.py -n 10
 
-# 生成诊断报告
+# 生成诊断报告（需安装 pandas + tabulate）
 python scripts/analyze_batch.py --input exports/dataset/dataset.json --output exports/dataset/report.md
 
 # 运行全部测试
