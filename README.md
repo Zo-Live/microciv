@@ -63,7 +63,7 @@ python -m microciv
 # 快速批量运行（单一参数配置）
 python scripts/batch_autoplay.py -n 100 --policy greedy
 
-# 大规模参数网格数据集生成
+# 大规模参数网格数据集生成（同时导出 JSON 和 CSV）
 python scripts/generate_dataset.py -n 10
 
 # 生成诊断报告（需要 pandas + tabulate）
