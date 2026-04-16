@@ -20,7 +20,7 @@ python scripts/batch_autoplay.py -n 100 --policy greedy
 python scripts/generate_dataset.py -n 10
 
 # Generate diagnostic Markdown report from dataset (requires pandas + tabulate)
-python scripts/analyze_batch.py --input exports/dataset/dataset.json --output exports/dataset/report.md
+python scripts/analyze_batch.py --input exports/dataset/dataset.json --output docs/report.md
 
 # Tests
 python -m pytest -q                       # all tests
