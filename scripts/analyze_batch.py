@@ -29,7 +29,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=ROOT / "exports" / "dataset" / "report.md",
+        default=ROOT / "docs" / "report.md",
         help="Path to output Markdown report.",
     )
     return parser.parse_args()

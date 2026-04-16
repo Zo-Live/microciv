@@ -67,7 +67,7 @@ python scripts/batch_autoplay.py -n 100 --policy greedy
 python scripts/generate_dataset.py -n 10
 
 # 生成诊断报告（需要 pandas + tabulate）
-python scripts/analyze_batch.py --input exports/dataset/dataset.json --output exports/dataset/report.md
+python scripts/analyze_batch.py --input exports/dataset/dataset.json --output docs/report.md
 ```
 
 数据分析脚本依赖 `pandas` 和 `tabulate`，可通过以下方式安装：
