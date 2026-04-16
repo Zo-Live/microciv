@@ -67,6 +67,9 @@ python main.py
 # 运行游戏
 python main.py
 
+# 批量 AI 数据收集
+python scripts/batch_autoplay.py -n 100 --policy greedy
+
 # 运行全部测试
 python -m pytest -q
 
@@ -118,6 +121,7 @@ microciv/
 │   ├── session.py           # 运行时会话辅助
 │   ├── config.py            # 路径配置
 │   └── constants.py         # 全局常量与平衡参数
+├── scripts/                 # 批量运行与数据分析脚本
 ├── tests/                   # 测试套件（pytest）
 ├── data/                    # 运行时 Records 数据 (records.json)
 ├── exports/                 # JSON 导出目录
@@ -264,3 +268,5 @@ GameConfig
 - **策略调整**: `ai/greedy.py` + `ai/policy.py`
 - **UI 路由与渲染**: `curses_app.py`
 - **平衡参数调整**: `constants.py`（注意同步测试中的硬编码断言）
+- **批量运行脚本**: `scripts/batch_autoplay.py`
+- **Records 模型扩展**: `records/models.py`（新增字段需同步更新 `CSV_FIELD_ORDER` 与 `from_dict`/`to_dict`）

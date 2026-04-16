@@ -55,6 +55,28 @@ class GreedyPolicy(Policy):
 
         return Action.skip()
 
+    def explain_decision(self, state: GameState) -> dict[str, object]:
+        legal_actions = get_legal_actions(state)
+        return {
+            "greedy_priority": self._determine_priority(state, legal_actions),
+            "legal_actions_count": len(legal_actions),
+        }
+
+    def _determine_priority(self, state: GameState, legal_actions: list[Action]) -> str:
+        if not legal_actions:
+            return "no_legal_actions"
+        if self._select_food_rescue_action(state, legal_actions) is not None:
+            return "food_rescue"
+        if self._select_building_action(state, legal_actions) is not None:
+            return "building"
+        if self._select_tech_action(state, legal_actions) is not None:
+            return "tech"
+        if self._select_city_action(state, legal_actions) is not None:
+            return "city"
+        if self._select_connective_road_action(state, legal_actions) is not None:
+            return "connective_road"
+        return "skip"
+
     def _select_food_rescue_action(
         self, state: GameState, legal_actions: list[Action]
     ) -> Action | None:

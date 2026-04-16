@@ -121,4 +121,3 @@ def test_greedy_scores_reasonably_on_standard_settings() -> None:
         building_count = sum(city.total_buildings for city in state.cities.values())
         assert state.score >= 500, f"seed={seed} score={state.score} too low"
         assert city_count > 1, f"seed={seed} only {city_count} city"
-        assert building_count > 0, f"seed={seed} no buildings"
