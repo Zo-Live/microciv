@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
-from statistics import mean, stdev
+
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -34,59 +35,30 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _mean_std(values: list[float]) -> tuple[float, float]:
-    if not values:
-        return 0.0, 0.0
-    m = mean(values)
-    s = stdev(values) if len(values) > 1 else 0.0
-    return m, s
+def make_table(df: pd.DataFrame, floatfmt: str = ".1f") -> str:
+    """Render a pandas DataFrame as a Markdown table."""
+    return df.to_markdown(floatfmt=floatfmt)
 
 
-def _fmt_ms(m: float, s: float) -> str:
-    return f"{m:.1f} ± {s:.1f}"
-
-
-def summarize(records: list[dict]) -> dict:
-    """Return nested summary dict."""
-    overall = {"greedy": [], "random": []}
-    by_size: dict[tuple, list] = defaultdict(list)
-    by_turn: dict[tuple, list] = defaultdict(list)
-    by_diff: dict[tuple, list] = defaultdict(list)
-
+def build_macro_df(records: list[dict]) -> pd.DataFrame:
+    """Build DataFrame of top-level record fields."""
+    rows = []
     for r in records:
-        policy = r["ai_type"].lower()
-        overall[policy].append(r)
-        by_size[(policy, r["map_size"])].append(r)
-        by_turn[(policy, r["turn_limit"])].append(r)
-        by_diff[(policy, r["map_difficulty"])].append(r)
-
-    return {
-        "overall": overall,
-        "by_size": dict(by_size),
-        "by_turn": dict(by_turn),
-        "by_diff": dict(by_diff),
-    }
-
-
-def make_table(rows: list[list[str]]) -> str:
-    """Simple Markdown table."""
-    lines = ["| " + " | ".join(rows[0]) + " |"]
-    lines.append("| " + " | ".join(["---"] * len(rows[0])) + " |")
-    for row in rows[1:]:
-        lines.append("| " + " | ".join(row) + " |")
-    return "\n".join(lines)
-
-
-def metric_table(grouped: dict[str, list[dict]], keys: list[str]) -> str:
-    rows = [["Group"] + keys]
-    for label, recs in grouped.items():
-        row = [label]
-        for k in keys:
-            vals = [float(r[k]) for r in recs]
-            m, s = _mean_std(vals)
-            row.append(f"{m:.1f} ± {s:.1f}")
-        rows.append(row)
-    return make_table(rows)
+        rows.append(
+            {
+                "ai_type": r["ai_type"],
+                "map_size": r["map_size"],
+                "turn_limit": r["turn_limit"],
+                "map_difficulty": r["map_difficulty"],
+                "final_score": r["final_score"],
+                "city_count": r["city_count"],
+                "building_count": r["building_count"],
+                "tech_count": r["tech_count"],
+                "skip_count": r["skip_count"],
+                "actual_turns": r["actual_turns"],
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def behavior_analysis(records: list[dict]) -> dict:
@@ -95,89 +67,89 @@ def behavior_analysis(records: list[dict]) -> dict:
     random_records = [r for r in records if r["ai_type"] == "Random"]
 
     # action type distribution
-    g_action_counts: Counter[str] = Counter()
-    r_action_counts: Counter[str] = Counter()
-    g_total_actions = 0
-    r_total_actions = 0
-
+    g_actions = Counter()
+    r_actions = Counter()
     for r in greedy_records:
-        for entry in r.get("action_log", []):
-            g_action_counts[entry["action_type"]] += 1
-            g_total_actions += 1
+        g_actions.update(entry["action_type"] for entry in r.get("action_log", []))
     for r in random_records:
-        for entry in r.get("action_log", []):
-            r_action_counts[entry["action_type"]] += 1
-            r_total_actions += 1
+        r_actions.update(entry["action_type"] for entry in r.get("action_log", []))
+
+    g_total = sum(g_actions.values())
+    r_total = sum(r_actions.values())
 
     # greedy priority distribution
-    g_priority_counts: Counter[str] = Counter()
-    g_priority_total = 0
+    g_priorities = Counter()
     for r in greedy_records:
-        for ctx in r.get("decision_contexts", []):
-            prio = ctx.get("greedy_priority", "unknown")
-            g_priority_counts[prio] += 1
-            g_priority_total += 1
+        g_priorities.update(
+            ctx.get("greedy_priority", "unknown")
+            for ctx in r.get("decision_contexts", [])
+        )
+    p_total = sum(g_priorities.values())
 
-    # legal actions decay (sample mid and late)
-    g_legal_early = []
-    g_legal_mid = []
-    g_legal_late = []
+    # legal actions decay
+    g_legal = []
     for r in greedy_records:
         contexts = r.get("decision_contexts", [])
         if contexts:
-            g_legal_early.append(contexts[0]["legal_actions_count"])
-            mid_idx = len(contexts) // 2
-            g_legal_mid.append(contexts[mid_idx]["legal_actions_count"])
-            g_legal_late.append(contexts[-1]["legal_actions_count"])
+            g_legal.append(
+                {
+                    "phase": "early",
+                    "legal_actions_count": contexts[0]["legal_actions_count"],
+                }
+            )
+            g_legal.append(
+                {
+                    "phase": "mid",
+                    "legal_actions_count": contexts[len(contexts) // 2][
+                        "legal_actions_count"
+                    ],
+                }
+            )
+            g_legal.append(
+                {
+                    "phase": "late",
+                    "legal_actions_count": contexts[-1]["legal_actions_count"],
+                }
+            )
+    legal_df = pd.DataFrame(g_legal)
+    legal_stats = (
+        legal_df.groupby("phase")["legal_actions_count"].agg(["mean", "std"]).to_dict("index")
+        if not legal_df.empty
+        else {}
+    )
 
     return {
         "g_action_pct": {
-            k: g_action_counts[k] / g_total_actions * 100 if g_total_actions else 0
-            for k in g_action_counts
+            k: v / g_total * 100 for k, v in g_actions.items()
         },
         "r_action_pct": {
-            k: r_action_counts[k] / r_total_actions * 100 if r_total_actions else 0
-            for k in r_action_counts
+            k: v / r_total * 100 for k, v in r_actions.items()
         },
         "g_priority_pct": {
-            k: g_priority_counts[k] / g_priority_total * 100 if g_priority_total else 0
-            for k in g_priority_counts
+            k: v / p_total * 100 for k, v in g_priorities.items()
         },
-        "g_legal": {
-            "early": _mean_std([float(v) for v in g_legal_early]),
-            "mid": _mean_std([float(v) for v in g_legal_mid]),
-            "late": _mean_std([float(v) for v in g_legal_late]),
-        },
+        "g_legal": legal_stats,
     }
 
 
 def map_analysis(records: list[dict]) -> dict:
-    """Analyze map-related observations."""
-    # terrain prevalence by difficulty
-    normal_terrains: Counter[str] = Counter()
-    hard_terrains: Counter[str] = Counter()
-    normal_cells = 0
-    hard_cells = 0
-
+    """Analyze map-related observations using pandas."""
+    tiles = []
     for r in records:
-        tiles = r.get("final_map", [])
-        if r["map_difficulty"] == "normal":
-            for t in tiles:
-                normal_terrains[t["base_terrain"]] += 1
-                normal_cells += 1
-        else:
-            for t in tiles:
-                hard_terrains[t["base_terrain"]] += 1
-                hard_cells += 1
+        difficulty = r["map_difficulty"]
+        for t in r.get("final_map", []):
+            tiles.append({"difficulty": difficulty, "terrain": t["base_terrain"]})
+    df = pd.DataFrame(tiles)
+    if df.empty:
+        return {"normal_pct": {}, "hard_pct": {}}
 
-    def pct(counter: Counter, total: int) -> dict[str, float]:
-        if not total:
-            return {}
-        return {k: counter[k] / total * 100 for k in counter}
+    total_by_diff = df.groupby("difficulty").size()
+    counts = df.groupby(["difficulty", "terrain"]).size().unstack(fill_value=0)
+    pct = counts.div(total_by_diff, axis=0) * 100
 
     return {
-        "normal_pct": pct(normal_terrains, normal_cells),
-        "hard_pct": pct(hard_terrains, hard_cells),
+        "normal_pct": pct.loc["normal"].to_dict() if "normal" in pct.index else {},
+        "hard_pct": pct.loc["hard"].to_dict() if "hard" in pct.index else {},
     }
 
 
@@ -197,32 +169,43 @@ def anomalies(records: list[dict]) -> list[dict]:
         best_r = max(random, key=lambda r: r["final_score"])
         picks.append({"label": "Random highest score", "record": best_r})
 
-    # find random beats greedy with same config
+    # random beats greedy same config
     if greedy and random:
-        g_by_config = defaultdict(list)
-        r_by_config = defaultdict(list)
-        for r in greedy:
-            g_by_config[(r["map_size"], r["turn_limit"], r["map_difficulty"])].append(r)
-        for r in random:
-            r_by_config[(r["map_size"], r["turn_limit"], r["map_difficulty"])].append(r)
-
-        for cfg, g_list in g_by_config.items():
-            r_list = r_by_config.get(cfg, [])
-            if not r_list:
-                continue
-            g_mean = mean(x["final_score"] for x in g_list)
-            r_mean = mean(x["final_score"] for x in r_list)
-            if r_mean > g_mean:
+        df_g = build_macro_df(greedy)
+        df_r = build_macro_df(random)
+        g_mean = (
+            df_g.groupby(["map_size", "turn_limit", "map_difficulty"])
+            ["final_score"]
+            .mean()
+            .reset_index()
+            .rename(columns={"final_score": "g_mean"})
+        )
+        r_mean = (
+            df_r.groupby(["map_size", "turn_limit", "map_difficulty"])
+            ["final_score"]
+            .mean()
+            .reset_index()
+            .rename(columns={"final_score": "r_mean"})
+        )
+        merged = pd.merge(g_mean, r_mean, on=["map_size", "turn_limit", "map_difficulty"])
+        merged = merged[merged["r_mean"] > merged["g_mean"]]
+        if not merged.empty:
+            row = merged.iloc[0]
+            cfg = (int(row["map_size"]), int(row["turn_limit"]), str(row["map_difficulty"]))
+            r_candidates = [
+                r for r in random
+                if (r["map_size"], r["turn_limit"], r["map_difficulty"]) == cfg
+            ]
+            if r_candidates:
+                best_c = max(r_candidates, key=lambda r: r["final_score"])
                 picks.append(
                     {
                         "label": f"Random beats Greedy on {cfg}",
-                        "record": max(r_list, key=lambda x: x["final_score"]),
-                        "g_mean": g_mean,
-                        "r_mean": r_mean,
+                        "record": best_c,
+                        "g_mean": float(row["g_mean"]),
+                        "r_mean": float(row["r_mean"]),
                     }
                 )
-                break  # one example enough
-
     return picks
 
 
@@ -244,7 +227,7 @@ def _clip_turn_log(record: dict, max_turns: int = 20) -> str:
 
 
 def generate_report(records: list[dict]) -> str:
-    summary = summarize(records)
+    df = build_macro_df(records)
     behavior = behavior_analysis(records)
     map_stats = map_analysis(records)
     outlier_games = anomalies(records)
@@ -258,47 +241,64 @@ def generate_report(records: list[dict]) -> str:
     # Overall comparison
     lines.append("## 1. 宏观指标对比 (Greedy vs Random)")
     lines.append("")
-    lines.append(
-        metric_table(
-            summary["overall"],
-            [
-                "final_score",
-                "city_count",
-                "building_count",
-                "tech_count",
-                "skip_count",
-                "actual_turns",
-            ],
-        )
+    overall = (
+        df.groupby("ai_type")
+        .agg({
+            "final_score": ["mean", "std"],
+            "city_count": ["mean", "std"],
+            "building_count": ["mean", "std"],
+            "tech_count": ["mean", "std"],
+            "skip_count": ["mean", "std"],
+            "actual_turns": ["mean", "std"],
+        })
+        .transpose()
     )
+    overall.columns = [f"{c[0]} ({c[1]})" for c in overall.columns]
+    overall = overall.reset_index()
+    overall.columns = ["指标"] + list(overall.columns[1:])
+    lines.append(make_table(overall))
     lines.append("")
 
     # By map size
     lines.append("## 2. 按地图尺寸细分")
     lines.append("")
-    size_grouped = defaultdict(list)
-    for (p, s), recs in summary["by_size"].items():
-        size_grouped[f"{p}/{s}"] = recs
-    lines.append(
-        metric_table(
-            dict(size_grouped),
-            ["final_score", "city_count", "building_count", "tech_count", "skip_count"],
+    size_df = (
+        df.groupby(["ai_type", "map_size"])
+        .agg(
+            final_score=("final_score", "mean"),
+            city_count=("city_count", "mean"),
+            building_count=("building_count", "mean"),
+            tech_count=("tech_count", "mean"),
+            skip_count=("skip_count", "mean"),
         )
+        .reset_index()
     )
+    size_df["group"] = size_df["ai_type"] + "/" + size_df["map_size"].astype(str)
+    size_df = size_df[
+        ["group", "final_score", "city_count", "building_count", "tech_count", "skip_count"]
+    ]
+    lines.append(make_table(size_df))
     lines.append("")
 
     # By turn limit
     lines.append("## 3. 按回合上限细分")
     lines.append("")
-    turn_grouped = defaultdict(list)
-    for (p, t), recs in summary["by_turn"].items():
-        turn_grouped[f"{p}/{t}"] = recs
-    lines.append(
-        metric_table(
-            dict(turn_grouped),
-            ["final_score", "city_count", "building_count", "tech_count", "skip_count"],
+    turn_df = (
+        df.groupby(["ai_type", "turn_limit"])
+        .agg(
+            final_score=("final_score", "mean"),
+            city_count=("city_count", "mean"),
+            building_count=("building_count", "mean"),
+            tech_count=("tech_count", "mean"),
+            skip_count=("skip_count", "mean"),
         )
+        .reset_index()
     )
+    turn_df["group"] = turn_df["ai_type"] + "/" + turn_df["turn_limit"].astype(str)
+    turn_df = turn_df[
+        ["group", "final_score", "city_count", "building_count", "tech_count", "skip_count"]
+    ]
+    lines.append(make_table(turn_df))
     lines.append("")
 
     # Behavior patterns
@@ -323,8 +323,10 @@ def generate_report(records: list[dict]) -> str:
 
     lines.append("### 4.3 合法动作数衰减 (Greedy)")
     lines.append("")
-    for phase, (m, s) in behavior["g_legal"].items():
-        lines.append(f"- {phase}: {m:.1f} ± {s:.1f}")
+    for phase in ["early", "mid", "late"]:
+        stats = behavior["g_legal"].get(phase, {})
+        if stats:
+            lines.append(f"- {phase}: {stats['mean']:.1f} ± {stats['std']:.1f}")
     lines.append("")
 
     # Map analysis
@@ -363,7 +365,6 @@ def generate_report(records: list[dict]) -> str:
     lines.append("## 7. 自动检测到的可疑模式与诊断假设")
     lines.append("")
 
-    # auto-detect building neglect
     g_building_rate = behavior["g_action_pct"].get("build_building", 0)
     r_building_rate = behavior["r_action_pct"].get("build_building", 0)
     lines.append(
@@ -373,16 +374,15 @@ def generate_report(records: list[dict]) -> str:
     )
     lines.append("")
 
-    # tech neglect
     g_tech_rate = behavior["g_action_pct"].get("research_tech", 0)
     r_tech_rate = behavior["r_action_pct"].get("research_tech", 0)
     lines.append(
-        f"2. **科技荒废**: Greedy 科技动作仅占 {g_tech_rate:.2f}%，Random 为 {r_tech_rate:.2f}%。"
+        f"2. **科技荒废**: Greedy 科技动作仅占 {g_tech_rate:.2f}%，"
+        f"Random 为 {r_tech_rate:.2f}%。"
         "假设：科技收益（解锁建筑）对 Greedy 吸引力不足，或 science 产出和存储过低。"
     )
     lines.append("")
 
-    # skip explosion
     g_skip_rate = behavior["g_action_pct"].get("skip", 0)
     lines.append(
         f"3. **Skip 陷阱**: Greedy skip 动作占 {g_skip_rate:.1f}%。"
@@ -390,21 +390,16 @@ def generate_report(records: list[dict]) -> str:
     )
     lines.append("")
 
-    # map difficulty weak differentiation
-    diff_score_normal_g = mean(
-        [r["final_score"] for r in summary["overall"]["greedy"] if r["map_difficulty"] == "normal"]
-    )
-    diff_score_hard_g = mean(
-        [r["final_score"] for r in summary["overall"]["greedy"] if r["map_difficulty"] == "hard"]
-    )
+    diff_g = df[df["ai_type"] == "Greedy"]
+    diff_score_normal = diff_g[diff_g["map_difficulty"] == "normal"]["final_score"].mean()
+    diff_score_hard = diff_g[diff_g["map_difficulty"] == "hard"]["final_score"].mean()
     lines.append(
-        f"4. **地图难度区分度弱**: Greedy 在 normal 的平均得分 {diff_score_normal_g:.1f}，"
-        f"hard 为 {diff_score_hard_g:.1f}，差距可能不够显著。"
+        f"4. **地图难度区分度弱**: Greedy 在 normal 的平均得分 {diff_score_normal:.1f}，"
+        f"hard 为 {diff_score_hard:.1f}，差距可能不够显著。"
         "假设：Hard 地图的地形分布（如荒地、河流比例）调整幅度不足，或未对 AI 产生足够惩罚。"
     )
     lines.append("")
 
-    # network rule impact
     lines.append(
         "5. **网络规则后遗症**: 相邻城市不再连通后，"
         "Greedy 的 `_city_action_key` 中仍有 'connection_bonus' 评分项，"
