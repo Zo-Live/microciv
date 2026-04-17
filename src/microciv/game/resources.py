@@ -7,7 +7,8 @@ from dataclasses import dataclass
 
 from microciv.constants import (
     BUILDING_YIELDS,
-    COVER_REWARD_AMOUNT,
+    CITY_CENTER_YIELDS,
+    COVER_REWARDS,
     FOOD_CONSUMPTION_PER_CITY,
     RIVER_ROAD_ORE_COST,
     RIVER_ROAD_WOOD_COST,
@@ -44,15 +45,8 @@ def cover_reward_for_tile(tile: Tile | TerrainType) -> ResourcePool:
     """Return the one-time cover reward for building over a terrain."""
     terrain = tile.base_terrain if isinstance(tile, Tile) else tile
     reward = ResourcePool()
-    if terrain is TerrainType.PLAIN:
-        reward.food = COVER_REWARD_AMOUNT
-    elif terrain is TerrainType.FOREST:
-        reward.wood = COVER_REWARD_AMOUNT
-    elif terrain is TerrainType.MOUNTAIN:
-        reward.ore = COVER_REWARD_AMOUNT
-    elif terrain is TerrainType.RIVER:
-        reward.food = COVER_REWARD_AMOUNT
-        reward.science = COVER_REWARD_AMOUNT
+    for resource_type, amount in COVER_REWARDS[terrain].items():
+        reward.add(resource_type, amount)
     return reward
 
 
@@ -154,6 +148,12 @@ def calculate_terrain_yields(
             if famine_snapshot.get(network_id, False) and resource_type is not ResourceType.FOOD:
                 continue
             amount = TERRAIN_YIELDS[tile.base_terrain][resource_type]
+            yields[network_id].add(resource_type, amount)
+
+    for city in state.cities.values():
+        network_id = city.network_id
+        terrain = state.board[city.coord].base_terrain
+        for resource_type, amount in CITY_CENTER_YIELDS[terrain].items():
             yields[network_id].add(resource_type, amount)
     return yields
 

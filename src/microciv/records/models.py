@@ -295,6 +295,10 @@ class RecordTurnSnapshot:
     tech_count: int
     road_count: int
     network_count: int
+    connected_city_count: int
+    isolated_city_count: int
+    largest_network_size: int
+    starving_network_count: int
     legal_actions_count: int
 
     @classmethod
@@ -311,6 +315,10 @@ class RecordTurnSnapshot:
             tech_count=int(payload["tech_count"]),
             road_count=int(payload["road_count"]),
             network_count=int(payload["network_count"]),
+            connected_city_count=int(payload.get("connected_city_count", 0)),
+            isolated_city_count=int(payload.get("isolated_city_count", 0)),
+            largest_network_size=int(payload.get("largest_network_size", 0)),
+            starving_network_count=int(payload.get("starving_network_count", 0)),
             legal_actions_count=int(payload["legal_actions_count"]),
         )
 
@@ -327,6 +335,10 @@ class RecordTurnSnapshot:
             "tech_count": self.tech_count,
             "road_count": self.road_count,
             "network_count": self.network_count,
+            "connected_city_count": self.connected_city_count,
+            "isolated_city_count": self.isolated_city_count,
+            "largest_network_size": self.largest_network_size,
+            "starving_network_count": self.starving_network_count,
             "legal_actions_count": self.legal_actions_count,
         }
 
@@ -342,7 +354,11 @@ class RecordDecisionContext:
     legal_build_building_count: int
     legal_research_tech_count: int
     legal_skip_count: int
+    chosen_action_type: str | None = None
     greedy_priority: str | None = None
+    greedy_best_action_type: str | None = None
+    greedy_best_score: float | None = None
+    random_type_weights: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordDecisionContext:
@@ -354,9 +370,24 @@ class RecordDecisionContext:
             legal_build_building_count=int(payload.get("legal_build_building_count", 0)),
             legal_research_tech_count=int(payload.get("legal_research_tech_count", 0)),
             legal_skip_count=int(payload.get("legal_skip_count", 0)),
+            chosen_action_type=(
+                str(payload["chosen_action_type"]) if "chosen_action_type" in payload else None
+            ),
             greedy_priority=(
                 str(payload["greedy_priority"]) if "greedy_priority" in payload else None
             ),
+            greedy_best_action_type=(
+                str(payload["greedy_best_action_type"])
+                if "greedy_best_action_type" in payload
+                else None
+            ),
+            greedy_best_score=(
+                float(payload["greedy_best_score"]) if "greedy_best_score" in payload else None
+            ),
+            random_type_weights={
+                str(key): float(value)
+                for key, value in dict(payload.get("random_type_weights", {})).items()
+            },
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -369,8 +400,16 @@ class RecordDecisionContext:
             "legal_research_tech_count": self.legal_research_tech_count,
             "legal_skip_count": self.legal_skip_count,
         }
+        if self.chosen_action_type is not None:
+            result["chosen_action_type"] = self.chosen_action_type
         if self.greedy_priority is not None:
             result["greedy_priority"] = self.greedy_priority
+        if self.greedy_best_action_type is not None:
+            result["greedy_best_action_type"] = self.greedy_best_action_type
+        if self.greedy_best_score is not None:
+            result["greedy_best_score"] = self.greedy_best_score
+        if self.random_type_weights:
+            result["random_type_weights"] = self.random_type_weights
         return result
 
 

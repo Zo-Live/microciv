@@ -44,9 +44,24 @@ def test_build_city_success_adds_cover_reward_and_same_turn_city_yield() -> None
     assert len(state.cities) == 1
     assert state.networks[1].resources.food == 4
     assert state.networks[1].resources.wood == 2
-    assert state.score == 20
+    assert state.score == 18
     assert state.stats.build_city_count == 1
     assert state.stats.turn_elapsed_ms_total >= 0
+
+
+def test_build_city_on_forest_adds_stronger_wood_reward() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.FOREST),
+    }
+    engine = GameEngine(state)
+
+    result = engine.apply_action(Action.build_city((0, 0)))
+
+    assert result.success
+    assert state.turn == 2
+    assert state.networks[1].resources.food == -4
+    assert state.networks[1].resources.wood == 18
 
 
 def test_build_road_success_adds_cover_reward_and_advances_turn() -> None:
@@ -95,7 +110,7 @@ def test_build_building_succeeds_and_new_building_produces_same_turn() -> None:
         1: Network(
             network_id=1,
             city_ids={1},
-            resources=ResourcePool(food=4, wood=5),
+            resources=ResourcePool(food=4, wood=10),
             unlocked_techs={TechType.AGRICULTURE},
         )
     }
@@ -108,7 +123,7 @@ def test_build_building_succeeds_and_new_building_produces_same_turn() -> None:
     assert state.cities[1].buildings.farm == 1
     assert state.networks[1].resources.food == 3
     assert state.networks[1].resources.wood == 0
-    assert state.score == 65
+    assert state.score == 170
     assert state.stats.build_farm_count == 1
 
 
@@ -117,7 +132,7 @@ def test_research_tech_succeeds_and_does_not_generate_immediate_resources() -> N
     state.board = {(0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY)}
     state.cities = {1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1)}
     state.networks = {
-        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=4, science=6))
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=4, science=8))
     }
     engine = GameEngine(state)
 

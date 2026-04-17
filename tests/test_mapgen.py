@@ -58,14 +58,82 @@ def test_generated_maps_satisfy_new_quality_rules() -> None:
                 assert tile is None or tile.base_terrain is not TerrainType.WASTELAND
 
 
-def test_hard_maps_generate_two_rivers_while_normal_maps_generate_one() -> None:
+def test_normal_and_hard_can_both_generate_one_or_two_rivers() -> None:
     generator = MapGenerator()
-    normal = generator.generate(
-        GameConfig.for_play(map_size=18, seed=23, map_difficulty=MapDifficulty.NORMAL)
-    )
-    hard = generator.generate(
-        GameConfig.for_play(map_size=18, seed=23, map_difficulty=MapDifficulty.HARD)
-    )
+    for difficulty in (MapDifficulty.NORMAL, MapDifficulty.HARD):
+        counts = {
+            len(
+                generator.generate(
+                    GameConfig.for_play(map_size=18, seed=seed, map_difficulty=difficulty)
+                ).river_paths
+            )
+            for seed in range(20)
+        }
+        assert counts == {1, 2}
 
-    assert len(normal.river_paths) == 1
-    assert len(hard.river_paths) == 2
+
+def test_double_river_layouts_include_crossing_and_non_crossing_patterns() -> None:
+    generator = MapGenerator()
+    found_crossing = False
+    found_non_crossing = False
+    found_length_gap = False
+
+    for difficulty in (MapDifficulty.NORMAL, MapDifficulty.HARD):
+        for seed in range(20):
+            generated = generator.generate(
+                GameConfig.for_play(map_size=18, seed=seed, map_difficulty=difficulty)
+            )
+            if len(generated.river_paths) != 2:
+                continue
+            first, second = generated.river_paths
+            if set(first) & set(second):
+                found_crossing = True
+            else:
+                found_non_crossing = True
+            lengths = sorted((len(first), len(second)), reverse=True)
+            if lengths[0] - lengths[1] >= 6:
+                found_length_gap = True
+
+    assert found_crossing
+    assert found_non_crossing
+    assert found_length_gap
+
+
+def test_generated_rivers_meander_more_than_before() -> None:
+    generator = MapGenerator()
+    curvature_scores = []
+    span_ratios = []
+    coverage_ratios = []
+    reversal_ratios = []
+    for seed in range(1, 11):
+        generated = generator.generate(
+            GameConfig.for_play(map_size=16, seed=seed, map_difficulty=MapDifficulty.NORMAL)
+        )
+        metrics = generated.river_metrics()
+        curvature_scores.append(metrics.curvature_score)
+        span_ratios.append(metrics.secondary_span_ratio)
+        coverage_ratios.append(metrics.secondary_coverage_ratio)
+        reversal_ratios.append(metrics.secondary_reversal_ratio)
+
+    assert sum(curvature_scores) / len(curvature_scores) >= 0.5
+    assert sum(span_ratios) / len(span_ratios) >= 0.4
+    assert sum(coverage_ratios) / len(coverage_ratios) >= 0.38
+    assert sum(reversal_ratios) / len(reversal_ratios) >= 0.45
+
+
+def test_hard_maps_are_structurally_less_buildable_than_normal_maps() -> None:
+    generator = MapGenerator()
+    normal_ratios = []
+    hard_ratios = []
+
+    for seed in range(1, 11):
+        normal = generator.generate(
+            GameConfig.for_play(map_size=16, seed=seed, map_difficulty=MapDifficulty.NORMAL)
+        )
+        hard = generator.generate(
+            GameConfig.for_play(map_size=16, seed=seed, map_difficulty=MapDifficulty.HARD)
+        )
+        normal_ratios.append(normal.buildable_ratio())
+        hard_ratios.append(hard.buildable_ratio())
+
+    assert sum(normal_ratios) / len(normal_ratios) > sum(hard_ratios) / len(hard_ratios)

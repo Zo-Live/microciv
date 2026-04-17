@@ -280,6 +280,10 @@ class Stats:
         tech_count: int,
         road_count: int,
         network_count: int,
+        connected_city_count: int,
+        isolated_city_count: int,
+        largest_network_size: int,
+        starving_network_count: int,
         legal_actions_count: int,
     ) -> None:
         self.turn_snapshots.append(
@@ -295,6 +299,10 @@ class Stats:
                 "tech_count": tech_count,
                 "road_count": road_count,
                 "network_count": network_count,
+                "connected_city_count": connected_city_count,
+                "isolated_city_count": isolated_city_count,
+                "largest_network_size": largest_network_size,
+                "starving_network_count": starving_network_count,
                 "legal_actions_count": legal_actions_count,
             }
         )
@@ -309,6 +317,7 @@ class Stats:
         legal_build_building_count: int,
         legal_research_tech_count: int,
         legal_skip_count: int,
+        chosen_action_type: str | None = None,
         policy_context: dict[str, object] | None = None,
     ) -> None:
         ctx: dict[str, object] = {
@@ -320,6 +329,8 @@ class Stats:
             "legal_research_tech_count": legal_research_tech_count,
             "legal_skip_count": legal_skip_count,
         }
+        if chosen_action_type is not None:
+            ctx["chosen_action_type"] = chosen_action_type
         if policy_context:
             ctx.update(policy_context)
         self.decision_contexts.append(ctx)

@@ -23,7 +23,6 @@ DEFAULT_AUTOPLAY_INTERVAL_MS = 300
 
 BUILDING_LIMIT_PER_CITY = 6
 FOOD_CONSUMPTION_PER_CITY = 4
-COVER_REWARD_AMOUNT = 8
 RIVER_ROAD_WOOD_COST = 3
 RIVER_ROAD_ORE_COST = 2
 
@@ -46,21 +45,41 @@ TERRAIN_YIELDS = MappingProxyType(
     }
 )
 
+COVER_REWARDS = MappingProxyType(
+    {
+        TerrainType.PLAIN: MappingProxyType({ResourceType.FOOD: 8}),
+        TerrainType.FOREST: MappingProxyType({ResourceType.WOOD: 16}),
+        TerrainType.MOUNTAIN: MappingProxyType({ResourceType.ORE: 16}),
+        TerrainType.RIVER: MappingProxyType({ResourceType.FOOD: 8, ResourceType.SCIENCE: 8}),
+        TerrainType.WASTELAND: MappingProxyType({}),
+    }
+)
+
+CITY_CENTER_YIELDS = MappingProxyType(
+    {
+        TerrainType.PLAIN: MappingProxyType({}),
+        TerrainType.FOREST: MappingProxyType({ResourceType.WOOD: 2}),
+        TerrainType.MOUNTAIN: MappingProxyType({ResourceType.ORE: 2}),
+        TerrainType.RIVER: MappingProxyType({}),
+        TerrainType.WASTELAND: MappingProxyType({}),
+    }
+)
+
 TECH_COSTS = MappingProxyType(
     {
-        TechType.AGRICULTURE: 6,
-        TechType.LOGGING: 12,
-        TechType.MINING: 20,
-        TechType.EDUCATION: 20,
+        TechType.AGRICULTURE: 8,
+        TechType.LOGGING: 18,
+        TechType.MINING: 30,
+        TechType.EDUCATION: 30,
     }
 )
 
 BUILDING_COSTS = MappingProxyType(
     {
-        BuildingType.FARM: MappingProxyType({ResourceType.WOOD: 5}),
-        BuildingType.LUMBER_MILL: MappingProxyType({ResourceType.WOOD: 5}),
-        BuildingType.MINE: MappingProxyType({ResourceType.WOOD: 6, ResourceType.ORE: 4}),
-        BuildingType.LIBRARY: MappingProxyType({ResourceType.WOOD: 6, ResourceType.ORE: 4}),
+        BuildingType.FARM: MappingProxyType({ResourceType.WOOD: 10}),
+        BuildingType.LUMBER_MILL: MappingProxyType({ResourceType.WOOD: 10}),
+        BuildingType.MINE: MappingProxyType({ResourceType.WOOD: 12, ResourceType.ORE: 8}),
+        BuildingType.LIBRARY: MappingProxyType({ResourceType.WOOD: 12, ResourceType.ORE: 8}),
     }
 )
 
@@ -82,16 +101,36 @@ TECH_UNLOCKS = MappingProxyType(
     }
 )
 
-SCORE_CITY_WEIGHT = 20
-SCORE_BUILDING_WEIGHT = 15
-SCORE_TECH_WEIGHT = 30
+SCORE_CITY_EARLY_WEIGHT = 14
+SCORE_CITY_MID_WEIGHT = 8
+SCORE_CITY_LATE_WEIGHT = 3
+SCORE_CONNECTED_CITY_WEIGHT = 6
+SCORE_RESOURCE_RING_TILE_WEIGHT = 4
+SCORE_RESOURCE_RING_RIVER_WEIGHT = 2
+SCORE_RESOURCE_RING_MIX_WEIGHT = 5
+SCORE_RESOURCE_RING_DENSE_WEIGHT = 4
+SCORE_BUILDING_WEIGHT = 18
+SCORE_TECH_WEIGHT = 120
+SCORE_TECH_UTILIZATION_WEIGHT = 18
+SCORE_STARVING_NETWORK_PENALTY = 140
+SCORE_FRAGMENTED_NETWORK_PENALTY = 10
+SCORE_UNPRODUCTIVE_ROAD_PENALTY = 4
 
 RESOURCE_SCORE_DIVISORS = MappingProxyType(
     {
-        ResourceType.FOOD: 10,
+        ResourceType.FOOD: 16,
         ResourceType.WOOD: 5,
         ResourceType.ORE: 5,
-        ResourceType.SCIENCE: 20,
+        ResourceType.SCIENCE: 24,
+    }
+)
+
+NEGATIVE_RESOURCE_SCORE_DIVISORS = MappingProxyType(
+    {
+        ResourceType.FOOD: 2,
+        ResourceType.WOOD: 5,
+        ResourceType.ORE: 5,
+        ResourceType.SCIENCE: 24,
     }
 )
 
