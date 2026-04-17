@@ -14,18 +14,18 @@ python main.py
 python -m microciv
 
 # Batch AI data collection
-python scripts/batch_autoplay.py -n 100 --policy greedy
+python scripts/batch_autoplay.py -n <games> --policy <policy>
 
-# Large-scale param-grid dataset generation (exports both JSON and CSV)
-python scripts/generate_dataset.py -n 10
+# Large-scale param-grid dataset generation
+python scripts/generate_dataset.py -n <games-per-combo>
 
 # Generate diagnostic Markdown report from dataset (requires pandas + tabulate)
-python scripts/analyze_batch.py --input exports/dataset/dataset.json --output docs/report.md
+python scripts/analyze_batch.py --input <dataset.json> --output <report.md>
 
 # Tests
-python -m pytest -q                       # all tests
-python -m pytest tests/test_engine.py -q  # single module
-python -m pytest tests/test_engine.py::test_name -q  # single test
+python -m pytest -q                                  # all tests
+python -m pytest tests/<module>.py -q                # single module
+python -m pytest tests/<module>.py::<test_name> -q  # single test
 
 # Lint
 ruff check src tests
