@@ -14,7 +14,10 @@ from microciv.constants import (
     SCORE_CONNECTED_CITY_WEIGHT,
     SCORE_FRAGMENTED_NETWORK_PENALTY,
     SCORE_RESOURCE_RING_DENSE_WEIGHT,
-    SCORE_RESOURCE_RING_MIX_WEIGHT,
+    SCORE_RESOURCE_RING_MIX_PLAIN_WEIGHT,
+    SCORE_RESOURCE_RING_MIX_RESOURCE_ONLY_WEIGHT,
+    SCORE_RESOURCE_RING_MIX_RIVER_WEIGHT,
+    SCORE_RESOURCE_RING_PLAIN_WEIGHT,
     SCORE_RESOURCE_RING_RIVER_WEIGHT,
     SCORE_RESOURCE_RING_TILE_WEIGHT,
     SCORE_STARVING_NETWORK_PENALTY,
@@ -45,6 +48,7 @@ class ScoreBreakdown:
     wood_score: int
     ore_score: int
     science_score: int
+    excess_science_penalty: int
     starving_network_penalty: int
     fragmented_network_penalty: int
     unproductive_road_penalty: int
@@ -63,6 +67,7 @@ class ScoreBreakdown:
             + self.tech_score
             + self.tech_utilization_score
             + self.resource_score
+            - self.excess_science_penalty
             - self.starving_network_penalty
             - self.fragmented_network_penalty
             - self.unproductive_road_penalty
@@ -84,6 +89,7 @@ def score_breakdown(state: GameState) -> ScoreBreakdown:
         wood_score=_resource_stock_score(resources.wood, ResourceType.WOOD),
         ore_score=_resource_stock_score(resources.ore, ResourceType.ORE),
         science_score=_resource_stock_score(resources.science, ResourceType.SCIENCE),
+        excess_science_penalty=max(0, resources.science - 60) // 4,
         starving_network_penalty=starvation_count * SCORE_STARVING_NETWORK_PENALTY,
         fragmented_network_penalty=fragmentation * SCORE_FRAGMENTED_NETWORK_PENALTY,
         unproductive_road_penalty=(
@@ -132,9 +138,14 @@ def city_resource_ring_score(state: GameState) -> int:
         forest_neighbors = 0
         mountain_neighbors = 0
         river_neighbors = 0
+        plain_neighbors = 0
+        occupied_neighbors = 0
         for neighbor in moore_neighbors(city.coord):
             tile = state.board.get(neighbor)
-            if tile is None or tile.occupant is not OccupantType.NONE:
+            if tile is None:
+                continue
+            if tile.occupant is not OccupantType.NONE:
+                occupied_neighbors += 1
                 continue
             if tile.base_terrain is TerrainType.FOREST:
                 forest_neighbors += 1
@@ -142,11 +153,20 @@ def city_resource_ring_score(state: GameState) -> int:
                 mountain_neighbors += 1
             elif tile.base_terrain is TerrainType.RIVER:
                 river_neighbors += 1
+            elif tile.base_terrain is TerrainType.PLAIN:
+                plain_neighbors += 1
         resource_neighbors = forest_neighbors + mountain_neighbors
         ring_neighbors = resource_neighbors + river_neighbors
         score += resource_neighbors * SCORE_RESOURCE_RING_TILE_WEIGHT
-        score += river_neighbors * SCORE_RESOURCE_RING_RIVER_WEIGHT
-        score += min(forest_neighbors, mountain_neighbors) * SCORE_RESOURCE_RING_MIX_WEIGHT
+        score += plain_neighbors * SCORE_RESOURCE_RING_PLAIN_WEIGHT
+        if resource_neighbors >= 4 and occupied_neighbors <= 4:
+            mix = min(forest_neighbors, mountain_neighbors)
+            if river_neighbors == 0 and plain_neighbors == 0:
+                score += mix * SCORE_RESOURCE_RING_MIX_RESOURCE_ONLY_WEIGHT
+            elif river_neighbors == 0 and plain_neighbors > 0:
+                score += mix * SCORE_RESOURCE_RING_MIX_PLAIN_WEIGHT
+            elif river_neighbors > 0:
+                score += mix * SCORE_RESOURCE_RING_MIX_RIVER_WEIGHT
         score += max(0, ring_neighbors - 3) * SCORE_RESOURCE_RING_DENSE_WEIGHT
     return score
 

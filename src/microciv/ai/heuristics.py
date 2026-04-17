@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 
 from microciv.constants import FOOD_CONSUMPTION_PER_CITY, TECH_COSTS
 from microciv.game.actions import Action
-from microciv.game.enums import ActionType, BuildingType, ResourceType, TechType, TerrainType
+from microciv.game.enums import ActionType, BuildingType, OccupantType, ResourceType, TechType, TerrainType
 from microciv.game.models import City, GameState, Network
 from microciv.game.networks import map_passable_coords_to_networks
 from microciv.game.scoring import total_resources
@@ -46,13 +46,18 @@ def city_terrain_counts(state: GameState) -> Counter[TerrainType]:
     return counts
 
 
-def resource_ring_counts(state: GameState, coord: Coord) -> tuple[int, int, int]:
+def resource_ring_counts(state: GameState, coord: Coord) -> tuple[int, int, int, int, int]:
     forest_neighbors = 0
     mountain_neighbors = 0
     river_neighbors = 0
+    plain_neighbors = 0
+    occupied_neighbors = 0
     for neighbor in moore_neighbors(coord):
         tile = state.board.get(neighbor)
-        if tile is None or tile.occupant.value != "none":
+        if tile is None:
+            continue
+        if tile.occupant.value != "none":
+            occupied_neighbors += 1
             continue
         if tile.base_terrain is TerrainType.FOREST:
             forest_neighbors += 1
@@ -60,7 +65,9 @@ def resource_ring_counts(state: GameState, coord: Coord) -> tuple[int, int, int]
             mountain_neighbors += 1
         elif tile.base_terrain is TerrainType.RIVER:
             river_neighbors += 1
-    return forest_neighbors, mountain_neighbors, river_neighbors
+        elif tile.base_terrain is TerrainType.PLAIN:
+            plain_neighbors += 1
+    return forest_neighbors, mountain_neighbors, river_neighbors, plain_neighbors, occupied_neighbors
 
 
 def resource_ring_bonus(state: GameState, coord: Coord) -> int:
@@ -68,7 +75,9 @@ def resource_ring_bonus(state: GameState, coord: Coord) -> int:
     wood_target, ore_target = material_targets(state)
     food_pressure = max(0, len(state.cities) * FOOD_CONSUMPTION_PER_CITY * 2 - resources.food)
     science_need = max(0, 14 + (len(state.networks) * 3) - resources.science)
-    forest_neighbors, mountain_neighbors, river_neighbors = resource_ring_counts(state, coord)
+    forest_neighbors, mountain_neighbors, river_neighbors, plain_neighbors, occupied_neighbors = resource_ring_counts(
+        state, coord
+    )
     resource_neighbors = forest_neighbors + mountain_neighbors
     ring_neighbors = resource_neighbors + river_neighbors
     wood_shortage = max(0, wood_target - resources.wood)
@@ -78,9 +87,17 @@ def resource_ring_bonus(state: GameState, coord: Coord) -> int:
         + mountain_neighbors * min(ore_shortage, 16) * 5
     )
     river_bonus = river_neighbors * (
-        16 + (min(food_pressure, 16) * 2) + science_need
+        8 + min(food_pressure, 12) + science_need // 2
     )
-    mixed_bonus = min(forest_neighbors, mountain_neighbors) * 36
+    mix = min(forest_neighbors, mountain_neighbors)
+    mixed_bonus = 0
+    if resource_neighbors >= 4 and occupied_neighbors <= 4:
+        if river_neighbors == 0 and plain_neighbors == 0:
+            mixed_bonus = mix * 56
+        elif river_neighbors == 0 and plain_neighbors > 0:
+            mixed_bonus = mix * 36
+        elif river_neighbors > 0:
+            mixed_bonus = mix * 36
     dense_bonus = max(0, ring_neighbors - 3) * 48
     interior_bonus = 0
     terrain = state.board[coord].base_terrain
@@ -91,8 +108,9 @@ def resource_ring_bonus(state: GameState, coord: Coord) -> int:
     if terrain in {TerrainType.FOREST, TerrainType.MOUNTAIN} and river_neighbors > 0:
         interior_bonus += 40
     return (
-        (resource_neighbors * 28)
-        + (river_neighbors * 12)
+        (resource_neighbors * 36)
+        + (river_neighbors * 4)
+        + (plain_neighbors * 6)
         + mixed_bonus
         + dense_bonus
         + shortage_bonus
@@ -176,6 +194,8 @@ def city_site_score(state: GameState, coord: Coord) -> int:
             and (wood_shortage >= 8 or ore_shortage >= 6)
         ):
             terrain_bias -= min(140, max(wood_shortage * 5, ore_shortage * 6))
+        if food_pressure >= 8:
+            terrain_bias += min(120, food_pressure * 4)
 
     return (
         (food * food_weight)
@@ -206,7 +226,8 @@ def city_expansion_score(state: GameState, coord: Coord) -> int:
         shortage_boost += max(0, ore_target - resources.ore) * 30
         shortage_boost += max(0, 4 - terrain_counts[TerrainType.MOUNTAIN]) * 44
     elif tile.base_terrain is TerrainType.PLAIN:
-        shortage_boost += max(0, len(state.cities) * FOOD_CONSUMPTION_PER_CITY - resources.food) * 4
+        shortage_boost += max(0, len(state.cities) * FOOD_CONSUMPTION_PER_CITY - resources.food) * 8
+        shortage_boost += max(0, 4 - terrain_counts[TerrainType.PLAIN]) * 36
         if resources.food >= len(state.cities) * FOOD_CONSUMPTION_PER_CITY * 4 and (
             resources.wood < wood_target or resources.ore < ore_target
         ):
@@ -279,18 +300,32 @@ def road_site_score(state: GameState, coord: Coord) -> int:
     adjacency_bonus = (adjacent_city_count * 18) + (adjacent_road_count * 6)
     river_bridge_bonus = 18 if state.board[coord].base_terrain is TerrainType.RIVER else 0
 
+    resource_frontier = 0
+    for neighbor in moore_neighbors(coord):
+        tile = state.board.get(neighbor)
+        if tile is not None and tile.occupant is OccupantType.NONE and tile.base_terrain in {
+            TerrainType.FOREST, TerrainType.MOUNTAIN
+        }:
+            resource_frontier += 1
+    frontier_bonus = resource_frontier * 22
+    if resource_frontier >= 4:
+        frontier_bonus += 90
+
     dead_end_penalty = 40 if resulting_degree <= 1 else 0
     sprawl_penalty = 0
     if len(adjacent_network_ids) <= 1 and nearest_foreign_city > 5:
         sprawl_penalty += 35
     if adjacent_city_count == 0 and adjacent_road_count <= 1:
         sprawl_penalty += 20
+    if resource_frontier >= 4:
+        sprawl_penalty = max(0, sprawl_penalty - 35)
 
     return (
         merge_bonus
         + target_city_bonus
         + adjacency_bonus
         + river_bridge_bonus
+        + frontier_bonus
         - dead_end_penalty
         - sprawl_penalty
     )

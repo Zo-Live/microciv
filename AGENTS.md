@@ -102,6 +102,7 @@ microciv/
 │   ├── ai/                  # AI strategies
 │   │   ├── policy.py        # Policy Protocol
 │   │   ├── greedy.py        # GreedyPolicy
+│   │   ├── heuristics.py    # City/road site scoring and resource ring helpers
 │   │   ├── random_policy.py # RandomPolicy
 │   │   └── custom.py        # Custom strategy placeholder
 │   ├── game/                # Core game rules and state machine
@@ -223,6 +224,9 @@ GameConfig
 - `GreedyPolicy().select_action(state) -> Action`
 - `RandomPolicy(seed).select_action(state) -> Action`
 - `simulate_action(state, action) -> GameState` (deepcopy lookahead)
+- `resource_ring_counts(state, coord) -> tuple[forest, mountain, river, plain, occupied]` — neighbor terrain analysis used by both scoring and AI
+- `city_site_score(state, coord) -> int` — heuristic city placement score
+- `road_site_score(state, coord) -> int` — heuristic road placement score
 
 **Records**:
 - `RecordEntry.from_game_state(record_id=..., timestamp=..., state=...)`
@@ -277,6 +281,8 @@ If you need to extend functionality, prioritize these files:
 - **Strategy adjustments**: `ai/greedy.py` + `ai/policy.py`
 - **UI routing and rendering**: `curses_app.py`
 - **Balance parameter tweaks**: `constants.py` (watch out for hardcoded assertions in tests)
+- **Scoring formula changes**: `game/scoring.py` (new fields like `excess_science_penalty` or Mix logic changes will break `test_scoring.py` assertions)
+- **AI heuristic changes**: `ai/heuristics.py` (changes to `resource_ring_counts`, `city_site_score`, `road_site_score` propagate to Greedy behavior and may affect `test_ai.py` baselines)
 - **Batch runners**: `scripts/batch_autoplay.py`, `scripts/generate_dataset.py`
 - **Data analysis scripts**: `scripts/analyze_batch.py`
 - **Records model extensions**: `records/models.py` (new fields must be updated in sync in `CSV_FIELD_ORDER` and `from_dict`/`to_dict`)

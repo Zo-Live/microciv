@@ -53,8 +53,9 @@ Install with `uv sync` (preferred) or `pip install -e ".[dev]"`.
 - `constants.py` — All balance tuning: costs, yields, weights, limits.
 
 **AI system**: Protocol-based in `ai/policy.py`. `Policy.select_action(state) -> Action`. Two implementations:
-- `GreedyPolicy` — deterministic rule-based (food rescue -> buildings -> tech -> cities -> roads).
+- `GreedyPolicy` — one-step lookahead greedy: simulates each candidate action, scores the resulting state via `score_breakdown()`, and picks the highest-value action. Uses `city_site_score`, `road_site_score`, and `resource_ring_bonus` heuristics from `ai/heuristics.py`.
 - `RandomPolicy` — stochastic baseline with seeded RNG.
+- `ai/heuristics.py` — `city_site_score()`, `city_expansion_score()`, `road_site_score()`, `resource_ring_counts()`, `resource_ring_bonus()`. These determine how Greedy ranks city/road sites and resource-ring quality.
 - `simulate_action()` deep-copies state for lookahead.
 
 **Persistence**: `records/models.py` defines `RecordEntry` and snapshot dataclasses (`RecordTileSnapshot`, `RecordCitySnapshot`, etc.) with `from_dict`/`to_dict` round-trip serialization. `records/store.py` handles JSON file I/O. `records/export.py` handles CSV export.
