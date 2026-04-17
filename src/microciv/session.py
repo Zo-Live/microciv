@@ -38,7 +38,16 @@ class GameSession:
         if self.policy is None or self.state.is_game_over:
             return
         from microciv.game.actions import ActionType, list_legal_actions
-        from microciv.game.scoring import building_count, city_count, tech_count, total_resources
+        from microciv.game.scoring import (
+            building_count,
+            city_count,
+            connected_city_count,
+            isolated_city_count,
+            largest_network_size,
+            starving_network_count,
+            tech_count,
+            total_resources,
+        )
 
         legal_actions = list_legal_actions(self.state)
         resources = total_resources(self.state)
@@ -54,6 +63,10 @@ class GameSession:
             tech_count=tech_count(self.state),
             road_count=len(self.state.roads),
             network_count=len(self.state.networks),
+            connected_city_count=connected_city_count(self.state),
+            isolated_city_count=isolated_city_count(self.state),
+            largest_network_size=largest_network_size(self.state),
+            starving_network_count=starving_network_count(self.state),
             legal_actions_count=len(legal_actions),
         )
         policy_context = (
@@ -85,6 +98,8 @@ class GameSession:
         decision_started_at = perf_counter()
         action = self.policy.select_action(self.state)
         self.state.stats.record_decision_time((perf_counter() - decision_started_at) * 1000)
+        if self.state.stats.decision_contexts:
+            self.state.stats.decision_contexts[-1]["chosen_action_type"] = action.action_type.value
         self.apply_action(action)
 
 

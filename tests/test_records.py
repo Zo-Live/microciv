@@ -34,7 +34,7 @@ def test_record_entry_from_game_state_captures_frozen_fields() -> None:
     assert entry.ai_type == "Human"
     assert entry.playback_mode == ""
     assert entry.actual_turns == 30
-    assert entry.final_score == 111
+    assert entry.final_score == 326
     assert entry.city_count == 1
     assert entry.building_count == 2
     assert entry.tech_count == 2
@@ -72,7 +72,7 @@ def test_record_store_persists_and_reloads_completed_games(tmp_path) -> None:
     assert reloaded.next_record_id == 2
     assert len(reloaded.records) == 1
     assert reloaded.records[0].timestamp == "2026-04-09T12:00:00+08:00"
-    assert reloaded.records[0].final_score == 111
+    assert reloaded.records[0].final_score == 326
 
 
 def test_record_store_resets_old_schema_file(tmp_path) -> None:
@@ -122,11 +122,22 @@ def test_record_store_resets_baseline_ai_type(tmp_path) -> None:
     records_path = tmp_path / "data" / "records.json"
     records_path.parent.mkdir(parents=True, exist_ok=True)
     record = build_completed_state()
-    entry = RecordEntry.from_game_state(record_id=1, timestamp="2026-04-09T12:00:00+08:00", state=record)
+    entry = RecordEntry.from_game_state(
+        record_id=1,
+        timestamp="2026-04-09T12:00:00+08:00",
+        state=record,
+    )
     payload = entry.to_dict()
     payload["ai_type"] = "baseline"
     records_path.write_text(
-        json.dumps({"schema_version": RECORDS_SCHEMA_VERSION, "next_record_id": 2, "records": [payload]}), encoding="utf-8"
+        json.dumps(
+            {
+                "schema_version": RECORDS_SCHEMA_VERSION,
+                "next_record_id": 2,
+                "records": [payload],
+            }
+        ),
+        encoding="utf-8",
     )
 
     database = RecordStore(records_path).load()
@@ -183,8 +194,14 @@ def test_export_records_json_uses_fixed_filename_and_payload(tmp_path) -> None:
 
 def test_record_store_can_delete_and_clear_records(tmp_path) -> None:
     store = RecordStore(tmp_path / "data" / "records.json")
-    store.append_completed_game(build_completed_state(seed=1), timestamp="2026-04-09T12:00:00+08:00")
-    store.append_completed_game(build_completed_state(seed=2), timestamp="2026-04-09T12:01:00+08:00")
+    store.append_completed_game(
+        build_completed_state(seed=1),
+        timestamp="2026-04-09T12:00:00+08:00",
+    )
+    store.append_completed_game(
+        build_completed_state(seed=2),
+        timestamp="2026-04-09T12:01:00+08:00",
+    )
 
     assert store.delete_record(1) is True
     assert [record.record_id for record in store.load().records] == [2]

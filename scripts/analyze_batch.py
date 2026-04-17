@@ -15,7 +15,18 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from microciv.records.models import RecordDatabase  # noqa: E402
+from microciv.constants import APP_NAME  # noqa: E402
+from microciv.game.enums import TechType  # noqa: E402
+from microciv.game.models import (  # noqa: E402
+    BuildingCounts,
+    City,
+    GameConfig,
+    GameState,
+    Network,
+    ResourcePool,
+)
+from microciv.game.scoring import score_breakdown  # noqa: E402
+from microciv.records.models import RecordDatabase, RecordEntry  # noqa: E402
 
 
 def _parse_args() -> argparse.Namespace:
@@ -37,378 +48,437 @@ def _parse_args() -> argparse.Namespace:
 
 def make_table(df: pd.DataFrame, floatfmt: str = ".1f") -> str:
     """Render a pandas DataFrame as a Markdown table."""
-    return df.to_markdown(floatfmt=floatfmt)
+    return df.to_markdown(index=False, floatfmt=floatfmt)
 
 
-def build_macro_df(records: list[dict]) -> pd.DataFrame:
-    """Build DataFrame of top-level record fields."""
+def build_macro_df(records: list[RecordEntry]) -> pd.DataFrame:
     rows = []
-    for r in records:
+    for record in records:
+        first_negative_food_turn = next(
+            (snap.turn for snap in record.turn_snapshots if snap.food < 0),
+            None,
+        )
         rows.append(
             {
-                "ai_type": r["ai_type"],
-                "map_size": r["map_size"],
-                "turn_limit": r["turn_limit"],
-                "map_difficulty": r["map_difficulty"],
-                "final_score": r["final_score"],
-                "city_count": r["city_count"],
-                "building_count": r["building_count"],
-                "tech_count": r["tech_count"],
-                "skip_count": r["skip_count"],
-                "actual_turns": r["actual_turns"],
+                "ai_type": record.ai_type,
+                "map_size": record.map_size,
+                "turn_limit": record.turn_limit,
+                "map_difficulty": record.map_difficulty,
+                "final_score": record.final_score,
+                "city_count": record.city_count,
+                "road_count": len(record.roads),
+                "building_count": record.building_count,
+                "tech_count": record.tech_count,
+                "network_count": len(record.networks),
+                "starving_network_count": sum(
+                    1 for network in record.networks if network.food <= 0
+                ),
+                "food": record.food,
+                "wood": record.wood,
+                "ore": record.ore,
+                "science": record.science,
+                "skip_count": record.skip_count,
+                "actual_turns": record.actual_turns,
+                "first_negative_food_turn": first_negative_food_turn,
             }
         )
     return pd.DataFrame(rows)
 
 
-def behavior_analysis(records: list[dict]) -> dict:
-    """Aggregate action logs and decision contexts."""
-    greedy_records = [r for r in records if r["ai_type"] == "Greedy"]
-    random_records = [r for r in records if r["ai_type"] == "Random"]
-
-    # action type distribution
-    g_actions = Counter()
-    r_actions = Counter()
-    for r in greedy_records:
-        g_actions.update(entry["action_type"] for entry in r.get("action_log", []))
-    for r in random_records:
-        r_actions.update(entry["action_type"] for entry in r.get("action_log", []))
-
-    g_total = sum(g_actions.values())
-    r_total = sum(r_actions.values())
-
-    # greedy priority distribution
-    g_priorities = Counter()
-    for r in greedy_records:
-        g_priorities.update(
-            ctx.get("greedy_priority", "unknown")
-            for ctx in r.get("decision_contexts", [])
+def build_score_breakdown_df(records: list[RecordEntry]) -> pd.DataFrame:
+    rows = []
+    for record in records:
+        breakdown = score_breakdown(record_to_state(record))
+        rows.append(
+            {
+                "ai_type": record.ai_type,
+                "city_score": breakdown.city_score,
+                "connected_city_score": breakdown.connected_city_score,
+                "resource_ring_score": breakdown.resource_ring_score,
+                "building_score": breakdown.building_score,
+                "tech_score": breakdown.tech_score,
+                "tech_utilization_score": breakdown.tech_utilization_score,
+                "resource_score": breakdown.resource_score,
+                "starving_penalty": breakdown.starving_network_penalty,
+                "fragmentation_penalty": breakdown.fragmented_network_penalty,
+                "total_score": breakdown.total,
+            }
         )
-    p_total = sum(g_priorities.values())
+    return pd.DataFrame(rows)
 
-    # legal actions decay
-    g_legal = []
-    for r in greedy_records:
-        contexts = r.get("decision_contexts", [])
-        if contexts:
-            g_legal.append(
-                {
-                    "phase": "early",
-                    "legal_actions_count": contexts[0]["legal_actions_count"],
-                }
+
+def build_behavior_df(records: list[RecordEntry]) -> pd.DataFrame:
+    rows = []
+    for record in records:
+        action_counts = Counter(entry.action_type for entry in record.action_log)
+        total_actions = sum(action_counts.values()) or 1
+        legal_denominator = sum(ctx.legal_actions_count for ctx in record.decision_contexts) or 1
+        rows.append(
+            {
+                "ai_type": record.ai_type,
+                "chosen_city_pct": action_counts["build_city"] / total_actions * 100,
+                "chosen_road_pct": action_counts["build_road"] / total_actions * 100,
+                "chosen_building_pct": action_counts["build_building"] / total_actions * 100,
+                "chosen_tech_pct": action_counts["research_tech"] / total_actions * 100,
+                "chosen_skip_pct": action_counts["skip"] / total_actions * 100,
+                "legal_city_pct": (
+                    sum(ctx.legal_build_city_count for ctx in record.decision_contexts)
+                    / legal_denominator
+                    * 100
+                ),
+                "legal_road_pct": (
+                    sum(ctx.legal_build_road_count for ctx in record.decision_contexts)
+                    / legal_denominator
+                    * 100
+                ),
+                "legal_building_pct": (
+                    sum(ctx.legal_build_building_count for ctx in record.decision_contexts)
+                    / legal_denominator
+                    * 100
+                ),
+                "legal_tech_pct": (
+                    sum(ctx.legal_research_tech_count for ctx in record.decision_contexts)
+                    / legal_denominator
+                    * 100
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_network_df(records: list[RecordEntry]) -> pd.DataFrame:
+    rows = []
+    for record in records:
+        connected_cities = sum(
+            len(network.city_ids) for network in record.networks if len(network.city_ids) >= 2
+        )
+        isolated_cities = sum(
+            len(network.city_ids) for network in record.networks if len(network.city_ids) == 1
+        )
+        largest_network_size = max(
+            (len(network.city_ids) for network in record.networks),
+            default=0,
+        )
+        road_city_ratio = len(record.roads) / max(record.city_count, 1)
+        rows.append(
+            {
+                "ai_type": record.ai_type,
+                "connected_cities": connected_cities,
+                "isolated_cities": isolated_cities,
+                "largest_network_size": largest_network_size,
+                "network_count": len(record.networks),
+                "road_city_ratio": road_city_ratio,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_map_df(records: list[RecordEntry]) -> pd.DataFrame:
+    rows = []
+    for record in records:
+        terrain_counts = Counter(tile.base_terrain for tile in record.final_map)
+        river = {(tile.x, tile.y) for tile in record.final_map if tile.base_terrain == "river"}
+        turns = 0
+        straights = 0
+        for x, y in river:
+            neighbors = [
+                (nx, ny)
+                for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1))
+                if (nx, ny) in river
+            ]
+            if len(neighbors) != 2:
+                continue
+            same_x = neighbors[0][0] == x == neighbors[1][0]
+            same_y = neighbors[0][1] == y == neighbors[1][1]
+            if same_x or same_y:
+                straights += 1
+            else:
+                turns += 1
+
+        total = len(record.final_map) or 1
+        buildable = (
+            terrain_counts["plain"] + terrain_counts["forest"] + terrain_counts["mountain"]
+        )
+        rows.append(
+            {
+                "map_difficulty": record.map_difficulty,
+                "buildable_ratio": buildable / total,
+                "plain_ratio": terrain_counts["plain"] / total,
+                "wasteland_ratio": terrain_counts["wasteland"] / total,
+                "river_ratio": terrain_counts["river"] / total,
+                "river_cells": len(river),
+                "river_turn_ratio": turns / max(turns + straights, 1),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def automatic_observations(
+    macro_df: pd.DataFrame,
+    score_df: pd.DataFrame,
+    behavior_df: pd.DataFrame,
+    network_df: pd.DataFrame,
+    map_df: pd.DataFrame,
+) -> list[str]:
+    observations: list[str] = []
+
+    macro_mean = macro_df.groupby("ai_type").mean(numeric_only=True)
+    behavior_mean = behavior_df.groupby("ai_type").mean(numeric_only=True)
+    map_mean = map_df.groupby("map_difficulty").mean(numeric_only=True)
+    score_mean = score_df.groupby("ai_type").mean(numeric_only=True)
+
+    if {"Greedy", "Random"} <= set(macro_mean.index):
+        greedy_food = macro_mean.loc["Greedy", "food"]
+        random_food = macro_mean.loc["Random", "food"]
+        if greedy_food > random_food:
+            observations.append(
+                f"`Greedy` 的终局粮食均值高于 `Random`（{greedy_food:.1f} vs {random_food:.1f}），"
+                "说明一层前瞻已经显著改善了生存性。"
             )
-            g_legal.append(
-                {
-                    "phase": "mid",
-                    "legal_actions_count": contexts[len(contexts) // 2][
-                        "legal_actions_count"
-                    ],
-                }
+
+        greedy_building = behavior_mean.loc["Greedy", "chosen_building_pct"]
+        random_city = behavior_mean.loc["Random", "chosen_city_pct"]
+        if greedy_building >= 15:
+            observations.append(
+                f"`Greedy` 的建筑动作占比达到 {greedy_building:.1f}% ，"
+                "建城不再垄断策略空间。"
             )
-            g_legal.append(
-                {
-                    "phase": "late",
-                    "legal_actions_count": contexts[-1]["legal_actions_count"],
-                }
+        if random_city < 50:
+            observations.append(
+                f"`Random` 的建城动作占比降到 {random_city:.1f}% ，"
+                "带权随机已经压制了“海量合法建城动作”的偏置。"
             )
-    legal_df = pd.DataFrame(g_legal)
-    legal_stats = (
-        legal_df.groupby("phase")["legal_actions_count"].agg(["mean", "std"]).to_dict("index")
-        if not legal_df.empty
-        else {}
-    )
 
-    return {
-        "g_action_pct": {
-            k: v / g_total * 100 for k, v in g_actions.items()
-        },
-        "r_action_pct": {
-            k: v / r_total * 100 for k, v in r_actions.items()
-        },
-        "g_priority_pct": {
-            k: v / p_total * 100 for k, v in g_priorities.items()
-        },
-        "g_legal": legal_stats,
-    }
+        greedy_fragment = score_mean.loc["Greedy", "fragmentation_penalty"]
+        random_fragment = score_mean.loc["Random", "fragmentation_penalty"]
+        if greedy_fragment < random_fragment:
+            observations.append(
+                f"`Greedy` 的碎片化惩罚均值更低（{greedy_fragment:.1f} vs {random_fragment:.1f}），"
+                "修路与并网行为正在转化成稳定收益。"
+            )
 
+    if {"normal", "hard"} <= set(map_mean.index):
+        build_gap = (
+            map_mean.loc["normal", "buildable_ratio"]
+            - map_mean.loc["hard", "buildable_ratio"]
+        )
+        if build_gap > 0.03:
+            observations.append(
+                f"`Hard` 地图的平均可建设比例比 `Normal` 低 {build_gap:.3f}，"
+                "难度差异已经不再只体现在荒地数量。"
+            )
+        turn_ratio = map_mean.loc["normal", "river_turn_ratio"]
+        if turn_ratio > 0.3:
+            observations.append(
+                f"平均河流转折率达到 {turn_ratio:.3f}，河流形态已经脱离原先的近似直线。"
+            )
 
-def map_analysis(records: list[dict]) -> dict:
-    """Analyze map-related observations using pandas."""
-    tiles = []
-    for r in records:
-        difficulty = r["map_difficulty"]
-        for t in r.get("final_map", []):
-            tiles.append({"difficulty": difficulty, "terrain": t["base_terrain"]})
-    df = pd.DataFrame(tiles)
-    if df.empty:
-        return {"normal_pct": {}, "hard_pct": {}}
+    legal_vs_chosen = behavior_mean[["chosen_building_pct", "legal_building_pct"]].copy()
+    for ai_type, row in legal_vs_chosen.iterrows():
+        gap = row["legal_building_pct"] - row["chosen_building_pct"]
+        if gap > 10:
+            observations.append(
+                f"`{ai_type}` 仍存在建筑机会未充分利用的现象："
+                f"合法占比比实际选择高 {gap:.1f} 个百分点。"
+            )
 
-    total_by_diff = df.groupby("difficulty").size()
-    counts = df.groupby(["difficulty", "terrain"]).size().unstack(fill_value=0)
-    pct = counts.div(total_by_diff, axis=0) * 100
-
-    return {
-        "normal_pct": pct.loc["normal"].to_dict() if "normal" in pct.index else {},
-        "hard_pct": pct.loc["hard"].to_dict() if "hard" in pct.index else {},
-    }
+    if not observations:
+        observations.append("当前数据没有出现明显单点瓶颈，建议继续扩大种子规模再观察。")
+    return observations
 
 
-def anomalies(records: list[dict]) -> list[dict]:
-    """Pick representative outlier games."""
-    greedy = [r for r in records if r["ai_type"] == "Greedy"]
-    random = [r for r in records if r["ai_type"] == "Random"]
-    picks = []
+def anomalies(records: list[RecordEntry]) -> list[dict[str, object]]:
+    greedy = [record for record in records if record.ai_type == "Greedy"]
+    random = [record for record in records if record.ai_type == "Random"]
+    picks: list[dict[str, object]] = []
 
     if greedy:
-        best = max(greedy, key=lambda r: r["final_score"])
-        worst = min(greedy, key=lambda r: r["final_score"])
-        picks.append({"label": "Greedy highest score", "record": best})
-        picks.append({"label": "Greedy lowest score", "record": worst})
-
+        picks.append(
+            {
+                "label": "Greedy highest score",
+                "record": max(greedy, key=lambda r: r.final_score),
+            }
+        )
+        picks.append(
+            {
+                "label": "Greedy lowest score",
+                "record": min(greedy, key=lambda r: r.final_score),
+            }
+        )
     if random:
-        best_r = max(random, key=lambda r: r["final_score"])
-        picks.append({"label": "Random highest score", "record": best_r})
-
-    # random beats greedy same config
-    if greedy and random:
-        df_g = build_macro_df(greedy)
-        df_r = build_macro_df(random)
-        g_mean = (
-            df_g.groupby(["map_size", "turn_limit", "map_difficulty"])
-            ["final_score"]
-            .mean()
-            .reset_index()
-            .rename(columns={"final_score": "g_mean"})
+        picks.append(
+            {
+                "label": "Random highest score",
+                "record": max(random, key=lambda r: r.final_score),
+            }
         )
-        r_mean = (
-            df_r.groupby(["map_size", "turn_limit", "map_difficulty"])
-            ["final_score"]
-            .mean()
-            .reset_index()
-            .rename(columns={"final_score": "r_mean"})
-        )
-        merged = pd.merge(g_mean, r_mean, on=["map_size", "turn_limit", "map_difficulty"])
-        merged = merged[merged["r_mean"] > merged["g_mean"]]
-        if not merged.empty:
-            row = merged.iloc[0]
-            cfg = (int(row["map_size"]), int(row["turn_limit"]), str(row["map_difficulty"]))
-            r_candidates = [
-                r for r in random
-                if (r["map_size"], r["turn_limit"], r["map_difficulty"]) == cfg
-            ]
-            if r_candidates:
-                best_c = max(r_candidates, key=lambda r: r["final_score"])
-                picks.append(
-                    {
-                        "label": f"Random beats Greedy on {cfg}",
-                        "record": best_c,
-                        "g_mean": float(row["g_mean"]),
-                        "r_mean": float(row["r_mean"]),
-                    }
-                )
     return picks
 
 
-def _clip_turn_log(record: dict, max_turns: int = 20) -> str:
-    """Render first N turn actions and contexts."""
-    actions = record.get("action_log", [])[:max_turns]
-    contexts = record.get("decision_contexts", [])[:max_turns]
+def render_turn_log(record: RecordEntry, max_turns: int = 20) -> str:
+    actions = record.action_log[:max_turns]
+    contexts = record.decision_contexts[:max_turns]
     lines = []
-    for i, a in enumerate(actions):
-        ctx = contexts[i] if i < len(contexts) else {}
-        prio = ctx.get("greedy_priority", "-")
-        legal = ctx.get("legal_actions_count", "-")
-        coord = f"({a.get('x','-')},{a.get('y','-')})" if a.get("x") is not None else "-"
+    for index, action in enumerate(actions):
+        context = contexts[index] if index < len(contexts) else None
+        priority = context.greedy_priority if context is not None else "-"
+        legal = context.legal_actions_count if context is not None else "-"
+        coord = f"({action.x},{action.y})" if action.x is not None else "-"
         lines.append(
-            f"  T{a['turn']:>3} | {a['action_type']:18} | coord={coord:8} | "
-            f"legal={legal:4} | priority={prio}"
+            f"  T{action.turn:>3} | {action.action_type:18} | coord={coord:8} | "
+            f"legal={legal:4} | priority={priority or '-'}"
         )
     return "\n".join(lines)
 
 
-def generate_report(records: list[dict]) -> str:
-    df = build_macro_df(records)
-    behavior = behavior_analysis(records)
-    map_stats = map_analysis(records)
+def record_to_state(record: RecordEntry) -> GameState:
+    state = GameState.empty(
+        GameConfig.for_play(
+            map_size=record.map_size,
+            turn_limit=record.turn_limit,
+            seed=record.seed,
+        )
+    )
+    state.turn = max(record.actual_turns, 1)
+    state.score = record.final_score
+    state.cities = {
+        city.city_id: City(
+            city_id=city.city_id,
+            coord=(city.x, city.y),
+            founded_turn=city.founded_turn,
+            network_id=city.network_id,
+            buildings=BuildingCounts(
+                farm=city.farm,
+                lumber_mill=city.lumber_mill,
+                mine=city.mine,
+                library=city.library,
+            ),
+        )
+        for city in record.cities
+    }
+    state.networks = {
+        network.network_id: Network(
+            network_id=network.network_id,
+            city_ids=set(network.city_ids),
+            resources=ResourcePool(
+                food=network.food,
+                wood=network.wood,
+                ore=network.ore,
+                science=network.science,
+            ),
+            unlocked_techs={TechType(name) for name in network.unlocked_techs},
+        )
+        for network in record.networks
+    }
+    return state
+
+
+def generate_report(records: list[RecordEntry]) -> str:
+    macro_df = build_macro_df(records)
+    score_df = build_score_breakdown_df(records)
+    behavior_df = build_behavior_df(records)
+    network_df = build_network_df(records)
+    map_df = build_map_df(records)
     outlier_games = anomalies(records)
+    observations = automatic_observations(macro_df, score_df, behavior_df, network_df, map_df)
 
     lines = []
-    lines.append("# MicroCiv AI 诊断报告")
+    lines.append(f"# {APP_NAME} AI 诊断报告")
     lines.append("")
     lines.append(f"**数据集规模**: {len(records)} 局")
     lines.append("")
 
-    # Overall comparison
-    lines.append("## 1. 宏观指标对比 (Greedy vs Random)")
+    lines.append("## 1. 宏观结果")
     lines.append("")
     overall = (
-        df.groupby("ai_type")
-        .agg({
-            "final_score": ["mean", "std"],
-            "city_count": ["mean", "std"],
-            "building_count": ["mean", "std"],
-            "tech_count": ["mean", "std"],
-            "skip_count": ["mean", "std"],
-            "actual_turns": ["mean", "std"],
-        })
-        .transpose()
+        macro_df.groupby("ai_type")
+        .agg(
+            final_score=("final_score", "mean"),
+            city_count=("city_count", "mean"),
+            road_count=("road_count", "mean"),
+            building_count=("building_count", "mean"),
+            tech_count=("tech_count", "mean"),
+            food=("food", "mean"),
+            starving_network_count=("starving_network_count", "mean"),
+        )
+        .reset_index()
     )
-    overall.columns = [f"{c[0]} ({c[1]})" for c in overall.columns]
-    overall = overall.reset_index()
-    overall.columns = ["指标"] + list(overall.columns[1:])
     lines.append(make_table(overall))
     lines.append("")
 
-    # By map size
-    lines.append("## 2. 按地图尺寸细分")
+    lines.append("## 2. 评分拆解")
     lines.append("")
-    size_df = (
-        df.groupby(["ai_type", "map_size"])
-        .agg(
-            final_score=("final_score", "mean"),
-            city_count=("city_count", "mean"),
-            building_count=("building_count", "mean"),
-            tech_count=("tech_count", "mean"),
-            skip_count=("skip_count", "mean"),
-        )
+    score_table = (
+        score_df.groupby("ai_type")
+        .mean(numeric_only=True)
         .reset_index()
     )
-    size_df["group"] = size_df["ai_type"] + "/" + size_df["map_size"].astype(str)
-    size_df = size_df[
-        ["group", "final_score", "city_count", "building_count", "tech_count", "skip_count"]
-    ]
-    lines.append(make_table(size_df))
+    lines.append(make_table(score_table))
     lines.append("")
 
-    # By turn limit
-    lines.append("## 3. 按回合上限细分")
+    lines.append("## 3. 行为与动作空间")
     lines.append("")
-    turn_df = (
-        df.groupby(["ai_type", "turn_limit"])
-        .agg(
-            final_score=("final_score", "mean"),
-            city_count=("city_count", "mean"),
-            building_count=("building_count", "mean"),
-            tech_count=("tech_count", "mean"),
-            skip_count=("skip_count", "mean"),
-        )
+    behavior_table = (
+        behavior_df.groupby("ai_type")
+        .mean(numeric_only=True)
         .reset_index()
     )
-    turn_df["group"] = turn_df["ai_type"] + "/" + turn_df["turn_limit"].astype(str)
-    turn_df = turn_df[
-        ["group", "final_score", "city_count", "building_count", "tech_count", "skip_count"]
-    ]
-    lines.append(make_table(turn_df))
+    lines.append(make_table(behavior_table))
     lines.append("")
 
-    # Behavior patterns
-    lines.append("## 4. 行为模式分析")
+    lines.append("## 4. 网络与粮食健康")
     lines.append("")
-    lines.append("### 4.1 动作类型占比")
-    lines.append("")
-    lines.append("**Greedy**:")
-    for k, v in sorted(behavior["g_action_pct"].items(), key=lambda x: -x[1]):
-        lines.append(f"- {k}: {v:.1f}%")
-    lines.append("")
-    lines.append("**Random**:")
-    for k, v in sorted(behavior["r_action_pct"].items(), key=lambda x: -x[1]):
-        lines.append(f"- {k}: {v:.1f}%")
-    lines.append("")
-
-    lines.append("### 4.2 Greedy 优先级分布")
-    lines.append("")
-    for k, v in sorted(behavior["g_priority_pct"].items(), key=lambda x: -x[1]):
-        lines.append(f"- {k}: {v:.1f}%")
-    lines.append("")
-
-    lines.append("### 4.3 合法动作数衰减 (Greedy)")
-    lines.append("")
-    for phase in ["early", "mid", "late"]:
-        stats = behavior["g_legal"].get(phase, {})
-        if stats:
-            lines.append(f"- {phase}: {stats['mean']:.1f} ± {stats['std']:.1f}")
+    network_table = (
+        macro_df.groupby("ai_type")
+        .agg(
+            first_negative_food_turn=("first_negative_food_turn", "mean"),
+            network_count=("network_count", "mean"),
+            starving_network_count=("starving_network_count", "mean"),
+        )
+        .reset_index()
+        .merge(
+            network_df.groupby("ai_type").mean(numeric_only=True).reset_index(),
+            on="ai_type",
+            how="left",
+        )
+    )
+    lines.append(make_table(network_table))
     lines.append("")
 
-    # Map analysis
-    lines.append("## 5. 地图地形分布 (Normal vs Hard)")
+    lines.append("## 5. 地图结构诊断")
     lines.append("")
-    lines.append("**Normal**:")
-    for k, v in sorted(map_stats["normal_pct"].items(), key=lambda x: -x[1]):
-        lines.append(f"- {k}: {v:.1f}%")
-    lines.append("")
-    lines.append("**Hard**:")
-    for k, v in sorted(map_stats["hard_pct"].items(), key=lambda x: -x[1]):
-        lines.append(f"- {k}: {v:.1f}%")
+    map_table = (
+        map_df.groupby("map_difficulty")
+        .mean(numeric_only=True)
+        .reset_index()
+    )
+    lines.append(make_table(map_table, floatfmt=".3f"))
     lines.append("")
 
-    # Anomalies
-    lines.append("## 6. 异常典型案例")
+    lines.append("## 6. 自动观察")
+    lines.append("")
+    for item in observations:
+        lines.append(f"- {item}")
+    lines.append("")
+
+    lines.append("## 7. 代表性样本")
     lines.append("")
     for item in outlier_games:
-        r = item["record"]
+        record = item["record"]
+        assert isinstance(record, RecordEntry)
         lines.append(f"### {item['label']}")
-        if "g_mean" in item:
-            lines.append(f"- Greedy mean={item['g_mean']:.1f}, Random mean={item['r_mean']:.1f}")
         lines.append(
-            f"- score={r['final_score']}, cities={r['city_count']}, "
-            f"buildings={r['building_count']}, techs={r['tech_count']}, "
-            f"skips={r['skip_count']}, "
-            f"config={r['map_size']}/{r['turn_limit']}/{r['map_difficulty']}"
+            f"- score={record.final_score}, cities={record.city_count}, roads={len(record.roads)}, "
+            f"buildings={record.building_count}, techs={record.tech_count}, "
+            f"food={record.food}, "
+            f"config={record.map_size}/{record.turn_limit}/{record.map_difficulty}"
         )
         lines.append("- 前 20 回合动作日志:")
         lines.append("```")
-        lines.append(_clip_turn_log(r))
+        lines.append(render_turn_log(record))
         lines.append("```")
         lines.append("")
 
-    # Hypotheses
-    lines.append("## 7. 自动检测到的可疑模式与诊断假设")
-    lines.append("")
-
-    g_building_rate = behavior["g_action_pct"].get("build_building", 0)
-    r_building_rate = behavior["r_action_pct"].get("build_building", 0)
-    lines.append(
-        f"1. **建筑荒废**: Greedy 建筑动作仅占 {g_building_rate:.2f}%，"
-        f"Random 为 {r_building_rate:.2f}%。"
-        "假设：建筑成本过高，或 Greedy 的 building 优先级低于 city，导致永远轮不到。"
-    )
-    lines.append("")
-
-    g_tech_rate = behavior["g_action_pct"].get("research_tech", 0)
-    r_tech_rate = behavior["r_action_pct"].get("research_tech", 0)
-    lines.append(
-        f"2. **科技荒废**: Greedy 科技动作仅占 {g_tech_rate:.2f}%，"
-        f"Random 为 {r_tech_rate:.2f}%。"
-        "假设：科技收益（解锁建筑）对 Greedy 吸引力不足，或 science 产出和存储过低。"
-    )
-    lines.append("")
-
-    g_skip_rate = behavior["g_action_pct"].get("skip", 0)
-    lines.append(
-        f"3. **Skip 陷阱**: Greedy skip 动作占 {g_skip_rate:.1f}%。"
-        "假设：当建城点耗尽后 Greedy 没有有效的 fallback 策略，导致大量空过回合。"
-    )
-    lines.append("")
-
-    diff_g = df[df["ai_type"] == "Greedy"]
-    diff_score_normal = diff_g[diff_g["map_difficulty"] == "normal"]["final_score"].mean()
-    diff_score_hard = diff_g[diff_g["map_difficulty"] == "hard"]["final_score"].mean()
-    lines.append(
-        f"4. **地图难度区分度弱**: Greedy 在 normal 的平均得分 {diff_score_normal:.1f}，"
-        f"hard 为 {diff_score_hard:.1f}，差距可能不够显著。"
-        "假设：Hard 地图的地形分布（如荒地、河流比例）调整幅度不足，或未对 AI 产生足够惩罚。"
-    )
-    lines.append("")
-
-    lines.append(
-        "5. **网络规则后遗症**: 相邻城市不再连通后，"
-        "Greedy 的 `_city_action_key` 中仍有 'connection_bonus' 评分项，"
-        "但该 bonus 在新规则下已无法通过邻接城市获得，导致选址逻辑与实际连通性脱节。"
-    )
-    lines.append("")
-
-    lines.append("---")
-    lines.append("*报告由 analyze_batch.py 自动生成*")
     return "\n".join(lines)
 
 
@@ -416,9 +486,7 @@ def main() -> int:
     args = _parse_args()
     raw = json.loads(args.input.read_text(encoding="utf-8"))
     database = RecordDatabase.from_dict(raw)
-    records = [r.to_dict() for r in database.records]
-
-    report = generate_report(records)
+    report = generate_report(database.records)
     args.output.write_text(report, encoding="utf-8")
     print(f"Report written to {args.output}", file=sys.stderr)
     return 0
