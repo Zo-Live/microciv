@@ -21,7 +21,7 @@ from microciv.ai.heuristics import (
 from microciv.ai.policy import Policy, get_legal_actions, simulate_action
 from microciv.constants import BUILDING_YIELDS, FOOD_CONSUMPTION_PER_CITY, TECH_COSTS
 from microciv.game.actions import Action
-from microciv.game.enums import ActionType, BuildingType, TechType, TerrainType
+from microciv.game.enums import ActionType, BuildingType, OccupantType, TechType, TerrainType
 from microciv.game.models import GameState
 from microciv.game.scoring import (
     building_count,
@@ -32,6 +32,7 @@ from microciv.game.scoring import (
     starving_network_count,
     total_resources,
 )
+from microciv.utils.grid import cardinal_neighbors, moore_neighbors
 
 MAX_CITY_CANDIDATES = 8
 MAX_ROAD_CANDIDATES = 10
@@ -163,6 +164,21 @@ class GreedyPolicy(Policy):
             if action.coord is not None
             and state.board[action.coord].base_terrain is TerrainType.MOUNTAIN
         ]
+        plain_city_actions = [
+            action
+            for action in resource_city_actions
+            if action.coord is not None
+            and state.board[action.coord].base_terrain is TerrainType.PLAIN
+        ]
+        interior_gem_actions = [
+            action
+            for action in city_actions
+            if action.coord is not None
+            and state.board[action.coord].base_terrain in {
+                TerrainType.FOREST, TerrainType.MOUNTAIN
+            }
+            and city_site_score(state, action.coord) >= 100
+        ]
         river_city_actions = [
             action
             for action in resource_city_actions
@@ -217,14 +233,11 @@ class GreedyPolicy(Policy):
                 for action in city_actions
                 if action.coord is not None
                 and city_site_score(state, action.coord) >= 40
-                and (
-                    not food_crisis
-                    or resource_ring_counts(state, action.coord)[2] > 0
-                )
             ]
             candidates.extend(rescue_cities[:4])
             if food_crisis:
-                candidates.extend(river_city_actions[:6])
+                candidates.extend(river_city_actions[:4])
+                candidates.extend(plain_city_actions[:4])
 
         city_limit = min(
             24,
@@ -266,30 +279,17 @@ class GreedyPolicy(Policy):
 
         candidates.extend(city_actions[:city_limit])
         candidates.extend(resource_city_actions[:resource_city_limit])
+        candidates.extend(interior_gem_actions[:4])
+        food_target = len(state.cities) * FOOD_CONSUMPTION_PER_CITY * 3
         if resources.wood < wood_target or terrain_counts[TerrainType.FOREST] < 3:
-            if food_crisis:
-                candidates.extend(
-                    [
-                        action
-                        for action in forest_city_actions
-                        if action.coord is not None
-                        and resource_ring_counts(state, action.coord)[2] > 0
-                    ][: min(4, resource_city_limit)]
-                )
-            else:
-                candidates.extend(forest_city_actions[: min(6, resource_city_limit)])
+            candidates.extend(forest_city_actions[: min(6, resource_city_limit)])
         if resources.ore < ore_target or terrain_counts[TerrainType.MOUNTAIN] < 3:
+            candidates.extend(mountain_city_actions[: min(6, resource_city_limit)])
+        if resources.food < food_target or terrain_counts[TerrainType.PLAIN] < 3:
             if food_crisis:
-                candidates.extend(
-                    [
-                        action
-                        for action in mountain_city_actions
-                        if action.coord is not None
-                        and resource_ring_counts(state, action.coord)[2] > 0
-                    ][: min(4, resource_city_limit)]
-                )
+                candidates.extend(plain_city_actions[: min(4, resource_city_limit)])
             else:
-                candidates.extend(mountain_city_actions[: min(6, resource_city_limit)])
+                candidates.extend(plain_city_actions[: min(6, resource_city_limit)])
         candidates.extend(river_city_actions[: min(6, resource_city_limit)])
         candidates.extend(road_actions[:road_limit])
         candidates.extend(building_actions[:building_limit])
@@ -330,10 +330,32 @@ class GreedyPolicy(Policy):
         value -= starving * 220
         value -= max(0, -resources.food) * 3
         value += building_count(simulated) * 8
+        excess_science = max(0, resources.science - 60)
+        if excess_science:
+            value -= excess_science * 3
         if action.action_type is ActionType.BUILD_ROAD:
             assert action.coord is not None
             road_value = road_site_score(state, action.coord)
             value += road_value * 4
+            frontier_city_boost = 0
+            for neighbor in moore_neighbors(action.coord):
+                tile = state.board.get(neighbor)
+                if tile is None or tile.occupant is not OccupantType.NONE:
+                    continue
+                if tile.base_terrain not in {
+                    TerrainType.PLAIN, TerrainType.FOREST, TerrainType.MOUNTAIN
+                }:
+                    continue
+                # Check if this road unlocks a high-value city site that was previously disconnected
+                has_nearby_road = any(
+                    (n := state.board.get(n2)) is not None
+                    and n.occupant.value in {"road", "city"}
+                    for n2 in cardinal_neighbors(neighbor)
+                    if n2 != action.coord
+                )
+                if not has_nearby_road and city_site_score(state, neighbor) >= 90:
+                    frontier_city_boost = max(frontier_city_boost, 160)
+            value += frontier_city_boost
             if len(state.roads) == 0 and len(state.cities) >= 2:
                 value += 620
                 if road_value >= 80:
@@ -359,6 +381,7 @@ class GreedyPolicy(Policy):
             per_turn_yield = sum(BUILDING_YIELDS[action.building_type].values())
             value += per_turn_yield * min(turns_remaining, LONG_GAME_BUILDING_BONUS_TURNS) * 4
             value += infrastructure_gap * 30
+            value += 120
             if current_resources.wood >= 10:
                 value += 110
             if (
@@ -379,11 +402,17 @@ class GreedyPolicy(Policy):
             value += min(turns_remaining, 24) * 8
             if current_resources.science >= TECH_COSTS[action.tech_type]:
                 value += 180
+            science_excess = max(0, current_resources.science - 50)
+            if science_excess:
+                value -= science_excess * 2
         if action.action_type is ActionType.BUILD_CITY:
             assert action.coord is not None
             terrain = state.board[action.coord].base_terrain
-            forest_ring, mountain_ring, river_ring = resource_ring_counts(state, action.coord)
+            forest_ring, mountain_ring, river_ring, plain_ring, occupied_ring = resource_ring_counts(
+                state, action.coord
+            )
             resource_ring = forest_ring + mountain_ring
+            ring_total = resource_ring + river_ring
             river_adjacent = sum(
                 1
                 for neighbor in ((1, 0), (-1, 0), (0, 1), (0, -1))
@@ -419,10 +448,23 @@ class GreedyPolicy(Policy):
             value += river_adjacent * 80
             if current_resources.food < 0:
                 food_crisis_scale = min(80, -current_resources.food)
-                value += river_ring * food_crisis_scale * 5
-                value += river_adjacent * food_crisis_scale * 7
-            value += min(forest_ring, mountain_ring) * 64
-            value += max(0, (resource_ring + river_ring) - 3) * 95
+                value += river_ring * food_crisis_scale * 2
+                value += river_adjacent * food_crisis_scale * 3
+            mix = min(forest_ring, mountain_ring)
+            mix_c_triggered = False
+            if resource_ring >= 4 and occupied_ring <= 4:
+                if river_ring == 0 and plain_ring == 0:
+                    value += mix * 96
+                    mix_c_triggered = True
+                elif river_ring == 0 and plain_ring > 0:
+                    value += mix * 64
+                elif river_ring > 0:
+                    value += mix * 64
+            if mix_c_triggered and terrain in {
+                TerrainType.FOREST, TerrainType.MOUNTAIN
+            }:
+                value += 240
+            value += max(0, ring_total - 3) * 95
             if terrain is TerrainType.PLAIN and resource_ring >= 4:
                 value += 240 + ((resource_ring - 4) * 70)
             if terrain is TerrainType.FOREST:
@@ -435,9 +477,14 @@ class GreedyPolicy(Policy):
                 value += max(0, 4 - terrain_counts[TerrainType.MOUNTAIN]) * 120
                 if resource_ring >= 4:
                     value += 140
-            elif terrain is TerrainType.PLAIN and current_resources.food > food_buffer_target * 2:
-                if current_resources.wood < wood_target or current_resources.ore < ore_target:
-                    value -= 300
+            elif terrain is TerrainType.PLAIN:
+                if current_resources.food > food_buffer_target * 2:
+                    if current_resources.wood < wood_target or current_resources.ore < ore_target:
+                        value -= 300
+                if current_resources.food < 0:
+                    value += food_crisis_scale * 3
+                if current_resources.food < food_buffer_target:
+                    value += 120
             if turns_remaining <= 60:
                 value -= (60 - turns_remaining) * 5
             if infrastructure_gap > 0:
@@ -451,19 +498,14 @@ class GreedyPolicy(Policy):
                 if food_gain <= 0:
                     value -= 420
                 if river_ring == 0 and river_adjacent == 0:
-                    value -= 1800
+                    value -= 600
             if current_resources.food < -(city_count * FOOD_CONSUMPTION_PER_CITY):
                 if food_gain <= 0:
                     value -= 900
                 if river_ring == 0 and river_adjacent == 0:
-                    value -= 1200
+                    value -= 400
             if current_resources.food < food_buffer_target and food_gain <= 0:
                 value -= 180
-            if (
-                current_resources.food < food_buffer_target
-                and (river_ring > 0 or river_adjacent > 0)
-            ):
-                value += 180
             if resources.food <= 0:
                 value -= 260
         if action.action_type is ActionType.SKIP:
