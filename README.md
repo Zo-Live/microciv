@@ -61,13 +61,13 @@ python -m microciv
 
 ```bash
 # 快速批量运行（单一参数配置）
-python scripts/batch_autoplay.py -n 100 --policy greedy
+python scripts/batch_autoplay.py -n <games> --policy <policy>
 
-# 大规模参数网格数据集生成（同时导出 JSON 和 CSV）
-python scripts/generate_dataset.py -n 10
+# 大规模参数网格数据集生成
+python scripts/generate_dataset.py -n <games-per-combo>
 
 # 生成诊断报告（需要 pandas + tabulate）
-python scripts/analyze_batch.py --input exports/dataset/dataset.json --output docs/report.md
+python scripts/analyze_batch.py --input <dataset.json> --output <report.md>
 ```
 
 数据分析脚本依赖 `pandas` 和 `tabulate`，可通过以下方式安装：
