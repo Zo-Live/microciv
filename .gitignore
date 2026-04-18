@@ -209,7 +209,7 @@ exports/*
 .cursorignore
 .cursorindexingignore
 docs/*
-!docs/阶段一项目规则与操作流程.md
+!docs/项目规则与操作流程.md
 
 # Marimo
 marimo/_static/
