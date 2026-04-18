@@ -51,7 +51,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--turn-limits",
         type=str,
-        default="30,80,150",
+        default="30,50,80,100,150",
         help="Comma-separated turn limits.",
     )
     parser.add_argument(
