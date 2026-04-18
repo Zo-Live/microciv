@@ -70,8 +70,9 @@ def test_scoring_uses_unique_techs_and_total_resources() -> None:
     assert breakdown.fragmented_network_penalty == 16
     assert breakdown.isolated_city_penalty == 24
     assert breakdown.unproductive_road_penalty == 0
-    assert breakdown.starving_network_penalty == 140
-    assert calculate_score(state) == 108
+    assert breakdown.starving_network_penalty == 0
+    assert breakdown.library_science_bonus == 0
+    assert calculate_score(state) == 248
 
 
 def test_scoring_penalizes_roads_in_single_city_networks() -> None:

@@ -17,7 +17,7 @@ from microciv.game.scoring import (
 )
 from microciv.utils.grid import Coord, coord_sort_key
 
-RECORDS_SCHEMA_VERSION = 4
+RECORDS_SCHEMA_VERSION = 5
 
 CSV_FIELD_ORDER: tuple[str, ...] = (
     "record_id",
@@ -294,6 +294,7 @@ class RecordNetworkSnapshot:
     wood: int
     ore: int
     science: int
+    consecutive_starving_turns: int
     unlocked_techs: list[str]
 
     @classmethod
@@ -305,6 +306,7 @@ class RecordNetworkSnapshot:
             wood=network.resources.wood,
             ore=network.resources.ore,
             science=network.resources.science,
+            consecutive_starving_turns=network.consecutive_starving_turns,
             unlocked_techs=sorted(tech.value for tech in network.unlocked_techs),
         )
 
@@ -317,6 +319,7 @@ class RecordNetworkSnapshot:
             wood=_require_int(payload, "wood"),
             ore=_require_int(payload, "ore"),
             science=_require_int(payload, "science"),
+            consecutive_starving_turns=_int_with_default(payload, "consecutive_starving_turns", 0),
             unlocked_techs=[str(tech) for tech in _list_field(payload, "unlocked_techs")],
         )
 
@@ -328,6 +331,7 @@ class RecordNetworkSnapshot:
             "wood": self.wood,
             "ore": self.ore,
             "science": self.science,
+            "consecutive_starving_turns": self.consecutive_starving_turns,
             "unlocked_techs": self.unlocked_techs,
         }
 

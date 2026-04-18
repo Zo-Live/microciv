@@ -96,7 +96,7 @@ def test_settle_resources_applies_network_famine_snapshot_rules() -> None:
 
 def test_cover_reward_and_river_road_cost_helpers_follow_rules() -> None:
     river_reward = cover_reward_for_tile(TerrainType.RIVER)
-    network = Network(network_id=1, resources=ResourcePool(wood=3, ore=10))
+    network = Network(network_id=1, resources=ResourcePool(wood=15, ore=10))
 
     assert river_reward.food == 8
     assert river_reward.science == 8
@@ -117,8 +117,8 @@ def test_choose_river_road_payment_network_uses_founded_turn_then_coord() -> Non
         2: City(city_id=2, coord=(2, 1), founded_turn=1, network_id=2),
     }
     state.networks = {
-        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(wood=3)),
-        2: Network(network_id=2, city_ids={2}, resources=ResourcePool(wood=3)),
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(wood=15)),
+        2: Network(network_id=2, city_ids={2}, resources=ResourcePool(wood=15)),
     }
     recompute_networks(state)
 

@@ -32,12 +32,11 @@ from microciv.constants import (
     SCORE_RIVER_ACCESS_BASE,
     SCORE_RIVER_ACCESS_DECAY,
     SCORE_RIVER_ACCESS_FLOOR,
-    SCORE_STARVING_NETWORK_PENALTY,
     SCORE_TECH_WEIGHT,
     SCORE_UNPRODUCTIVE_ROAD_PENALTY,
     TECH_UNLOCKS,
 )
-from microciv.game.enums import BuildingType, OccupantType, ResourceType, TerrainType
+from microciv.game.enums import BuildingType, OccupantType, ResourceType, TechType, TerrainType
 from microciv.game.models import GameState, Network, ResourcePool
 from microciv.game.networks import map_passable_coords_to_networks
 from microciv.utils.grid import Coord, cardinal_neighbors, moore_neighbors
@@ -57,7 +56,7 @@ class ScoreBreakdown:
     wood_score: int
     ore_score: int
     science_score: int
-    excess_science_penalty: int
+    library_science_bonus: int
     building_mismatch_penalty: int
     starving_network_penalty: int
     fragmented_network_penalty: int
@@ -80,7 +79,7 @@ class ScoreBreakdown:
             + self.tech_score
             + self.building_utilization_score
             + self.resource_score
-            - self.excess_science_penalty
+            + self.library_science_bonus
             - self.building_mismatch_penalty
             - self.starving_network_penalty
             - self.fragmented_network_penalty
@@ -111,9 +110,13 @@ def score_breakdown(state: GameState) -> ScoreBreakdown:
         wood_score=_resource_stock_score(resources.wood, ResourceType.WOOD),
         ore_score=_resource_stock_score(resources.ore, ResourceType.ORE),
         science_score=_resource_stock_score(resources.science, ResourceType.SCIENCE),
-        excess_science_penalty=max(0, resources.science - 60) // 4,
+        library_science_bonus=_library_science_bonus(state),
         building_mismatch_penalty=building_mismatch_penalty(state),
-        starving_network_penalty=starvation_count * SCORE_STARVING_NETWORK_PENALTY,
+        starving_network_penalty=sum(
+            network.consecutive_starving_turns * 70
+            for network in state.networks.values()
+            if network.resources.food <= 0
+        ),
         fragmented_network_penalty=fragmentation * SCORE_FRAGMENTED_NETWORK_PENALTY,
         isolated_city_penalty=isolated_city_count(state) * SCORE_ISOLATED_CITY_PENALTY,
         unproductive_road_penalty=(
@@ -238,6 +241,21 @@ def city_composition_bonus(state: GameState) -> int:
 
 def starving_network_count(state: GameState) -> int:
     return sum(1 for network in state.networks.values() if network.resources.food <= 0)
+
+
+def _library_science_bonus(state: GameState) -> int:
+    bonus = 0
+    for network in state.networks.values():
+        if len(network.unlocked_techs) < len(TechType):
+            continue
+        library_count = sum(
+            state.cities[city_id].buildings.library
+            for city_id in network.city_ids
+        )
+        if library_count <= 0:
+            continue
+        bonus += (max(0, network.resources.science) * library_count) // 200
+    return bonus
 
 
 def largest_network_size(state: GameState) -> int:

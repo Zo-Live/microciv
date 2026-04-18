@@ -198,6 +198,10 @@ def settle_resources(
         consumption = FOOD_CONSUMPTION_PER_CITY * len(network.city_ids)
         network.resources.food -= consumption
         food_consumption[network_id] = consumption
+        if network.resources.food <= 0:
+            network.consecutive_starving_turns += 1
+        else:
+            network.consecutive_starving_turns = 0
 
     return SettlementSummary(
         ownership=ownership,
