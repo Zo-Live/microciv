@@ -1,4 +1,4 @@
-"""Analyze a MicroCiv batch dataset and emit a diagnostic Markdown report."""
+"""Analyze a MicroCiv batch dataset and emit a descriptive Markdown report."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import Final
 
 import pandas as pd
 
@@ -16,7 +17,15 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from microciv.constants import APP_NAME  # noqa: E402
-from microciv.game.enums import TechType  # noqa: E402
+from microciv.game.enums import (  # noqa: E402
+    MapDifficulty,
+    Mode,
+    OccupantType,
+    PlaybackMode,
+    PolicyType,
+    TechType,
+    TerrainType,
+)
 from microciv.game.models import (  # noqa: E402
     BuildingCounts,
     City,
@@ -24,9 +33,13 @@ from microciv.game.models import (  # noqa: E402
     GameState,
     Network,
     ResourcePool,
+    Road,
+    Tile,
 )
 from microciv.game.scoring import score_breakdown  # noqa: E402
 from microciv.records.models import RecordDatabase, RecordEntry  # noqa: E402
+
+TAIL_WINDOW: Final[int] = 20
 
 
 def _parse_args() -> argparse.Namespace:
@@ -47,13 +60,52 @@ def _parse_args() -> argparse.Namespace:
 
 
 def make_table(df: pd.DataFrame, floatfmt: str = ".1f") -> str:
-    """Render a pandas DataFrame as a Markdown table."""
+    if df.empty:
+        return "_No data_"
     return df.to_markdown(index=False, floatfmt=floatfmt)
 
 
+def _p25(series: pd.Series) -> float:
+    return float(series.quantile(0.25))
+
+
+def _p75(series: pd.Series) -> float:
+    return float(series.quantile(0.75))
+
+
+def _summary_table(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    value_cols: list[str],
+) -> pd.DataFrame:
+    summary = (
+        df.groupby(group_cols, dropna=False)[value_cols]
+        .agg(["mean", "median", _p25, _p75, "min", "max"])
+        .reset_index()
+    )
+    summary.columns = [
+        "_".join(str(part) for part in column if part).rstrip("_")
+        if isinstance(column, tuple)
+        else str(column)
+        for column in summary.columns
+    ]
+    counts = df.groupby(group_cols, dropna=False).size().reset_index(name="samples")
+    return counts.merge(summary, on=group_cols, how="left")
+
+
 def build_macro_df(records: list[RecordEntry]) -> pd.DataFrame:
-    rows = []
+    rows: list[dict[str, object]] = []
     for record in records:
+        connected_cities = sum(
+            len(network.city_ids) for network in record.networks if len(network.city_ids) >= 2
+        )
+        isolated_cities = sum(
+            len(network.city_ids) for network in record.networks if len(network.city_ids) == 1
+        )
+        largest_network_size = max(
+            (len(network.city_ids) for network in record.networks),
+            default=0,
+        )
         first_negative_food_turn = next(
             (snap.turn for snap in record.turn_snapshots if snap.food < 0),
             None,
@@ -70,6 +122,9 @@ def build_macro_df(records: list[RecordEntry]) -> pd.DataFrame:
                 "building_count": record.building_count,
                 "tech_count": record.tech_count,
                 "network_count": len(record.networks),
+                "connected_cities": connected_cities,
+                "isolated_cities": isolated_cities,
+                "largest_network_size": largest_network_size,
                 "starving_network_count": sum(
                     1 for network in record.networks if network.food <= 0
                 ),
@@ -80,27 +135,45 @@ def build_macro_df(records: list[RecordEntry]) -> pd.DataFrame:
                 "skip_count": record.skip_count,
                 "actual_turns": record.actual_turns,
                 "first_negative_food_turn": first_negative_food_turn,
+                "score_per_city": record.final_score / max(record.city_count, 1),
+                "score_per_building": record.final_score / max(record.building_count, 1),
+                "buildings_per_city": record.building_count / max(record.city_count, 1),
+                "roads_per_city": len(record.roads) / max(record.city_count, 1),
+                "connected_city_ratio": connected_cities / max(record.city_count, 1),
             }
         )
     return pd.DataFrame(rows)
 
 
 def build_score_breakdown_df(records: list[RecordEntry]) -> pd.DataFrame:
-    rows = []
+    rows: list[dict[str, object]] = []
     for record in records:
         breakdown = score_breakdown(record_to_state(record))
         rows.append(
             {
                 "ai_type": record.ai_type,
+                "map_size": record.map_size,
+                "turn_limit": record.turn_limit,
+                "map_difficulty": record.map_difficulty,
                 "city_score": breakdown.city_score,
                 "connected_city_score": breakdown.connected_city_score,
                 "resource_ring_score": breakdown.resource_ring_score,
+                "river_access_score": breakdown.river_access_score,
+                "city_composition_bonus": breakdown.city_composition_bonus,
                 "building_score": breakdown.building_score,
                 "tech_score": breakdown.tech_score,
-                "tech_utilization_score": breakdown.tech_utilization_score,
+                "building_utilization_score": breakdown.building_utilization_score,
                 "resource_score": breakdown.resource_score,
-                "starving_penalty": breakdown.starving_network_penalty,
-                "fragmentation_penalty": breakdown.fragmented_network_penalty,
+                "food_score": breakdown.food_score,
+                "wood_score": breakdown.wood_score,
+                "ore_score": breakdown.ore_score,
+                "science_score": breakdown.science_score,
+                "excess_science_penalty": breakdown.excess_science_penalty,
+                "building_mismatch_penalty": breakdown.building_mismatch_penalty,
+                "starving_network_penalty": breakdown.starving_network_penalty,
+                "fragmented_network_penalty": breakdown.fragmented_network_penalty,
+                "isolated_city_penalty": breakdown.isolated_city_penalty,
+                "unproductive_road_penalty": breakdown.unproductive_road_penalty,
                 "total_score": breakdown.total,
             }
         )
@@ -108,14 +181,20 @@ def build_score_breakdown_df(records: list[RecordEntry]) -> pd.DataFrame:
 
 
 def build_behavior_df(records: list[RecordEntry]) -> pd.DataFrame:
-    rows = []
+    rows: list[dict[str, object]] = []
     for record in records:
         action_counts = Counter(entry.action_type for entry in record.action_log)
         total_actions = sum(action_counts.values()) or 1
         legal_denominator = sum(ctx.legal_actions_count for ctx in record.decision_contexts) or 1
+        tail_actions = record.action_log[-TAIL_WINDOW:]
+        tail_counts = Counter(entry.action_type for entry in tail_actions)
+        tail_total = len(tail_actions) or 1
         rows.append(
             {
                 "ai_type": record.ai_type,
+                "map_size": record.map_size,
+                "turn_limit": record.turn_limit,
+                "map_difficulty": record.map_difficulty,
                 "chosen_city_pct": action_counts["build_city"] / total_actions * 100,
                 "chosen_road_pct": action_counts["build_road"] / total_actions * 100,
                 "chosen_building_pct": action_counts["build_building"] / total_actions * 100,
@@ -141,40 +220,50 @@ def build_behavior_df(records: list[RecordEntry]) -> pd.DataFrame:
                     / legal_denominator
                     * 100
                 ),
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def build_network_df(records: list[RecordEntry]) -> pd.DataFrame:
-    rows = []
-    for record in records:
-        connected_cities = sum(
-            len(network.city_ids) for network in record.networks if len(network.city_ids) >= 2
-        )
-        isolated_cities = sum(
-            len(network.city_ids) for network in record.networks if len(network.city_ids) == 1
-        )
-        largest_network_size = max(
-            (len(network.city_ids) for network in record.networks),
-            default=0,
-        )
-        road_city_ratio = len(record.roads) / max(record.city_count, 1)
-        rows.append(
-            {
-                "ai_type": record.ai_type,
-                "connected_cities": connected_cities,
-                "isolated_cities": isolated_cities,
-                "largest_network_size": largest_network_size,
-                "network_count": len(record.networks),
-                "road_city_ratio": road_city_ratio,
+                "chosen_minus_legal_city_pct": (
+                    action_counts["build_city"] / total_actions * 100
+                    - (
+                        sum(ctx.legal_build_city_count for ctx in record.decision_contexts)
+                        / legal_denominator
+                        * 100
+                    )
+                ),
+                "chosen_minus_legal_road_pct": (
+                    action_counts["build_road"] / total_actions * 100
+                    - (
+                        sum(ctx.legal_build_road_count for ctx in record.decision_contexts)
+                        / legal_denominator
+                        * 100
+                    )
+                ),
+                "chosen_minus_legal_building_pct": (
+                    action_counts["build_building"] / total_actions * 100
+                    - (
+                        sum(ctx.legal_build_building_count for ctx in record.decision_contexts)
+                        / legal_denominator
+                        * 100
+                    )
+                ),
+                "chosen_minus_legal_tech_pct": (
+                    action_counts["research_tech"] / total_actions * 100
+                    - (
+                        sum(ctx.legal_research_tech_count for ctx in record.decision_contexts)
+                        / legal_denominator
+                        * 100
+                    )
+                ),
+                "tail_build_city_pct": tail_counts["build_city"] / tail_total * 100,
+                "tail_build_road_pct": tail_counts["build_road"] / tail_total * 100,
+                "tail_build_building_pct": tail_counts["build_building"] / tail_total * 100,
+                "tail_build_tech_pct": tail_counts["research_tech"] / tail_total * 100,
+                "tail_skip_pct": tail_counts["skip"] / tail_total * 100,
             }
         )
     return pd.DataFrame(rows)
 
 
 def build_map_df(records: list[RecordEntry]) -> pd.DataFrame:
-    rows = []
+    rows: list[dict[str, object]] = []
     for record in records:
         terrain_counts = Counter(tile.base_terrain for tile in record.final_map)
         river = {(tile.x, tile.y) for tile in record.final_map if tile.base_terrain == "river"}
@@ -201,6 +290,9 @@ def build_map_df(records: list[RecordEntry]) -> pd.DataFrame:
         )
         rows.append(
             {
+                "ai_type": record.ai_type,
+                "map_size": record.map_size,
+                "turn_limit": record.turn_limit,
                 "map_difficulty": record.map_difficulty,
                 "buildable_ratio": buildable / total,
                 "plain_ratio": terrain_counts["plain"] / total,
@@ -213,106 +305,43 @@ def build_map_df(records: list[RecordEntry]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def automatic_observations(
-    macro_df: pd.DataFrame,
-    score_df: pd.DataFrame,
-    behavior_df: pd.DataFrame,
-    network_df: pd.DataFrame,
-    map_df: pd.DataFrame,
-) -> list[str]:
-    observations: list[str] = []
-
-    macro_mean = macro_df.groupby("ai_type").mean(numeric_only=True)
-    behavior_mean = behavior_df.groupby("ai_type").mean(numeric_only=True)
-    map_mean = map_df.groupby("map_difficulty").mean(numeric_only=True)
-    score_mean = score_df.groupby("ai_type").mean(numeric_only=True)
-
-    if {"Greedy", "Random"} <= set(macro_mean.index):
-        greedy_food = macro_mean.loc["Greedy", "food"]
-        random_food = macro_mean.loc["Random", "food"]
-        if greedy_food > random_food:
-            observations.append(
-                f"`Greedy` 的终局粮食均值高于 `Random`（{greedy_food:.1f} vs {random_food:.1f}），"
-                "说明一层前瞻已经显著改善了生存性。"
-            )
-
-        greedy_building = behavior_mean.loc["Greedy", "chosen_building_pct"]
-        random_city = behavior_mean.loc["Random", "chosen_city_pct"]
-        if greedy_building >= 15:
-            observations.append(
-                f"`Greedy` 的建筑动作占比达到 {greedy_building:.1f}% ，"
-                "建城不再垄断策略空间。"
-            )
-        if random_city < 50:
-            observations.append(
-                f"`Random` 的建城动作占比降到 {random_city:.1f}% ，"
-                "带权随机已经压制了“海量合法建城动作”的偏置。"
-            )
-
-        greedy_fragment = score_mean.loc["Greedy", "fragmentation_penalty"]
-        random_fragment = score_mean.loc["Random", "fragmentation_penalty"]
-        if greedy_fragment < random_fragment:
-            observations.append(
-                f"`Greedy` 的碎片化惩罚均值更低（{greedy_fragment:.1f} vs {random_fragment:.1f}），"
-                "修路与并网行为正在转化成稳定收益。"
-            )
-
-    if {"normal", "hard"} <= set(map_mean.index):
-        build_gap = (
-            map_mean.loc["normal", "buildable_ratio"]
-            - map_mean.loc["hard", "buildable_ratio"]
+def _sample_rows(records: list[RecordEntry]) -> list[dict[str, object]]:
+    samples: list[dict[str, object]] = []
+    for ai_type in sorted({record.ai_type for record in records}):
+        subset = [record for record in records if record.ai_type == ai_type]
+        if not subset:
+            continue
+        samples.extend(
+            [
+                {
+                    "label": f"{ai_type} highest score",
+                    "record": max(subset, key=lambda r: r.final_score),
+                },
+                {
+                    "label": f"{ai_type} lowest score",
+                    "record": min(subset, key=lambda r: r.final_score),
+                },
+                {
+                    "label": f"{ai_type} highest skip_count",
+                    "record": max(subset, key=lambda r: r.skip_count),
+                },
+                {
+                    "label": f"{ai_type} largest network_count",
+                    "record": max(subset, key=lambda r: len(r.networks)),
+                },
+            ]
         )
-        if build_gap > 0.03:
-            observations.append(
-                f"`Hard` 地图的平均可建设比例比 `Normal` 低 {build_gap:.3f}，"
-                "难度差异已经不再只体现在荒地数量。"
-            )
-        turn_ratio = map_mean.loc["normal", "river_turn_ratio"]
-        if turn_ratio > 0.3:
-            observations.append(
-                f"平均河流转折率达到 {turn_ratio:.3f}，河流形态已经脱离原先的近似直线。"
-            )
-
-    legal_vs_chosen = behavior_mean[["chosen_building_pct", "legal_building_pct"]].copy()
-    for ai_type, row in legal_vs_chosen.iterrows():
-        gap = row["legal_building_pct"] - row["chosen_building_pct"]
-        if gap > 10:
-            observations.append(
-                f"`{ai_type}` 仍存在建筑机会未充分利用的现象："
-                f"合法占比比实际选择高 {gap:.1f} 个百分点。"
-            )
-
-    if not observations:
-        observations.append("当前数据没有出现明显单点瓶颈，建议继续扩大种子规模再观察。")
-    return observations
-
-
-def anomalies(records: list[RecordEntry]) -> list[dict[str, object]]:
-    greedy = [record for record in records if record.ai_type == "Greedy"]
-    random = [record for record in records if record.ai_type == "Random"]
-    picks: list[dict[str, object]] = []
-
-    if greedy:
-        picks.append(
-            {
-                "label": "Greedy highest score",
-                "record": max(greedy, key=lambda r: r.final_score),
-            }
-        )
-        picks.append(
-            {
-                "label": "Greedy lowest score",
-                "record": min(greedy, key=lambda r: r.final_score),
-            }
-        )
-    if random:
-        picks.append(
-            {
-                "label": "Random highest score",
-                "record": max(random, key=lambda r: r.final_score),
-            }
-        )
-    return picks
+    deduped: list[dict[str, object]] = []
+    seen: set[tuple[str, int]] = set()
+    for sample in samples:
+        record = sample["record"]
+        assert isinstance(record, RecordEntry)
+        key = (str(sample["label"]), record.record_id)
+        if key in seen:
+            continue
+        deduped.append(sample)
+        seen.add(key)
+    return deduped
 
 
 def render_turn_log(record: RecordEntry, max_turns: int = 20) -> str:
@@ -332,15 +361,25 @@ def render_turn_log(record: RecordEntry, max_turns: int = 20) -> str:
 
 
 def record_to_state(record: RecordEntry) -> GameState:
-    state = GameState.empty(
-        GameConfig.for_play(
-            map_size=record.map_size,
-            turn_limit=record.turn_limit,
-            seed=record.seed,
-        )
+    config = GameConfig(
+        mode=Mode.PLAY if record.mode == "play" else Mode.AUTOPLAY,
+        map_size=record.map_size,
+        turn_limit=record.turn_limit,
+        map_difficulty=MapDifficulty(record.map_difficulty),
+        policy_type=_policy_type_from_label(record.ai_type),
+        playback_mode=_playback_mode_from_label(record.playback_mode),
+        seed=record.seed,
     )
+    state = GameState.empty(config)
     state.turn = max(record.actual_turns, 1)
     state.score = record.final_score
+    state.board = {
+        (tile.x, tile.y): Tile(
+            base_terrain=TerrainType(tile.base_terrain),
+            occupant=OccupantType(tile.occupant),
+        )
+        for tile in record.final_map
+    }
     state.cities = {
         city.city_id: City(
             city_id=city.city_id,
@@ -355,6 +394,14 @@ def record_to_state(record: RecordEntry) -> GameState:
             ),
         )
         for city in record.cities
+    }
+    state.roads = {
+        road.road_id: Road(
+            road_id=road.road_id,
+            coord=(road.x, road.y),
+            built_turn=road.built_turn,
+        )
+        for road in record.roads
     }
     state.networks = {
         network.network_id: Network(
@@ -373,111 +420,213 @@ def record_to_state(record: RecordEntry) -> GameState:
     return state
 
 
+def _policy_type_from_label(label: str) -> PolicyType:
+    if label == "Greedy":
+        return PolicyType.GREEDY
+    if label == "Random":
+        return PolicyType.RANDOM
+    return PolicyType.NONE
+
+
+def _playback_mode_from_label(label: str) -> PlaybackMode:
+    if label == "speed":
+        return PlaybackMode.SPEED
+    if label == "normal":
+        return PlaybackMode.NORMAL
+    return PlaybackMode.NONE
+
+
 def generate_report(records: list[RecordEntry]) -> str:
     macro_df = build_macro_df(records)
     score_df = build_score_breakdown_df(records)
     behavior_df = build_behavior_df(records)
-    network_df = build_network_df(records)
     map_df = build_map_df(records)
-    outlier_games = anomalies(records)
-    observations = automatic_observations(macro_df, score_df, behavior_df, network_df, map_df)
+    samples = _sample_rows(records)
 
-    lines = []
-    lines.append(f"# {APP_NAME} AI 诊断报告")
-    lines.append("")
-    lines.append(f"**数据集规模**: {len(records)} 局")
-    lines.append("")
-
-    lines.append("## 1. 宏观结果")
-    lines.append("")
-    overall = (
-        macro_df.groupby("ai_type")
-        .agg(
-            final_score=("final_score", "mean"),
-            city_count=("city_count", "mean"),
-            road_count=("road_count", "mean"),
-            building_count=("building_count", "mean"),
-            tech_count=("tech_count", "mean"),
-            food=("food", "mean"),
-            starving_network_count=("starving_network_count", "mean"),
-        )
-        .reset_index()
+    dataset_overview = pd.DataFrame(
+        [
+            {
+                "total_games": len(records),
+                "policy_count": macro_df["ai_type"].nunique(),
+                "map_size_count": macro_df["map_size"].nunique(),
+                "turn_limit_count": macro_df["turn_limit"].nunique(),
+                "difficulty_count": macro_df["map_difficulty"].nunique(),
+                "config_count": macro_df[
+                    ["ai_type", "map_size", "turn_limit", "map_difficulty"]
+                ]
+                .drop_duplicates()
+                .shape[0],
+            }
+        ]
     )
-    lines.append(make_table(overall))
-    lines.append("")
-
-    lines.append("## 2. 评分拆解")
-    lines.append("")
-    score_table = (
-        score_df.groupby("ai_type")
-        .mean(numeric_only=True)
-        .reset_index()
+    config_coverage = (
+        macro_df.groupby(["ai_type", "map_size", "turn_limit", "map_difficulty"], dropna=False)
+        .size()
+        .reset_index(name="samples")
+        .sort_values(["ai_type", "map_size", "turn_limit", "map_difficulty"])
     )
-    lines.append(make_table(score_table))
-    lines.append("")
-
-    lines.append("## 3. 行为与动作空间")
-    lines.append("")
-    behavior_table = (
-        behavior_df.groupby("ai_type")
-        .mean(numeric_only=True)
-        .reset_index()
+    policy_summary = _summary_table(
+        macro_df,
+        ["ai_type"],
+        [
+            "final_score",
+            "city_count",
+            "road_count",
+            "building_count",
+            "buildings_per_city",
+            "roads_per_city",
+            "score_per_city",
+            "score_per_building",
+            "connected_city_ratio",
+            "skip_count",
+            "food",
+            "science",
+        ],
     )
-    lines.append(make_table(behavior_table))
-    lines.append("")
-
-    lines.append("## 4. 网络与粮食健康")
-    lines.append("")
-    network_table = (
-        macro_df.groupby("ai_type")
-        .agg(
-            first_negative_food_turn=("first_negative_food_turn", "mean"),
-            network_count=("network_count", "mean"),
-            starving_network_count=("starving_network_count", "mean"),
-        )
-        .reset_index()
-        .merge(
-            network_df.groupby("ai_type").mean(numeric_only=True).reset_index(),
-            on="ai_type",
-            how="left",
-        )
+    config_summary = _summary_table(
+        macro_df,
+        ["ai_type", "map_size", "turn_limit", "map_difficulty"],
+        [
+            "final_score",
+            "city_count",
+            "road_count",
+            "building_count",
+            "buildings_per_city",
+            "roads_per_city",
+            "connected_city_ratio",
+            "skip_count",
+            "first_negative_food_turn",
+        ],
     )
-    lines.append(make_table(network_table))
-    lines.append("")
-
-    lines.append("## 5. 地图结构诊断")
-    lines.append("")
-    map_table = (
-        map_df.groupby("map_difficulty")
-        .mean(numeric_only=True)
-        .reset_index()
+    score_summary = _summary_table(
+        score_df,
+        ["ai_type"],
+        [
+            "city_score",
+            "connected_city_score",
+            "resource_ring_score",
+            "river_access_score",
+            "city_composition_bonus",
+            "building_score",
+            "tech_score",
+            "building_utilization_score",
+            "resource_score",
+            "excess_science_penalty",
+            "building_mismatch_penalty",
+            "fragmented_network_penalty",
+            "isolated_city_penalty",
+            "unproductive_road_penalty",
+            "total_score",
+        ],
     )
-    lines.append(make_table(map_table, floatfmt=".3f"))
-    lines.append("")
+    behavior_summary = _summary_table(
+        behavior_df,
+        ["ai_type"],
+        [
+            "chosen_city_pct",
+            "chosen_road_pct",
+            "chosen_building_pct",
+            "chosen_tech_pct",
+            "chosen_skip_pct",
+            "legal_city_pct",
+            "legal_road_pct",
+            "legal_building_pct",
+            "legal_tech_pct",
+            "chosen_minus_legal_city_pct",
+            "chosen_minus_legal_road_pct",
+            "chosen_minus_legal_building_pct",
+            "chosen_minus_legal_tech_pct",
+            "tail_build_city_pct",
+            "tail_build_road_pct",
+            "tail_build_building_pct",
+            "tail_build_tech_pct",
+            "tail_skip_pct",
+        ],
+    )
+    network_summary = _summary_table(
+        macro_df,
+        ["ai_type"],
+        [
+            "network_count",
+            "connected_cities",
+            "isolated_cities",
+            "largest_network_size",
+            "starving_network_count",
+            "first_negative_food_turn",
+        ],
+    )
+    map_summary = _summary_table(
+        map_df,
+        ["map_difficulty"],
+        [
+            "buildable_ratio",
+            "plain_ratio",
+            "wasteland_ratio",
+            "river_ratio",
+            "river_cells",
+            "river_turn_ratio",
+        ],
+    )
 
-    lines.append("## 6. 自动观察")
-    lines.append("")
-    for item in observations:
-        lines.append(f"- {item}")
-    lines.append("")
+    lines = [
+        f"# {APP_NAME} Dataset Report",
+        "",
+        "## 1. Dataset Overview",
+        "",
+        make_table(dataset_overview, floatfmt=".0f"),
+        "",
+        "### 1.1 Config Coverage",
+        "",
+        make_table(config_coverage, floatfmt=".0f"),
+        "",
+        "## 2. Policy Summary",
+        "",
+        make_table(policy_summary),
+        "",
+        "## 3. Config Summary",
+        "",
+        make_table(config_summary),
+        "",
+        "## 4. Score Component Summary",
+        "",
+        make_table(score_summary),
+        "",
+        "## 5. Behavior Summary",
+        "",
+        make_table(behavior_summary),
+        "",
+        "## 6. Network And Risk Summary",
+        "",
+        make_table(network_summary),
+        "",
+        "## 7. Map Summary",
+        "",
+        make_table(map_summary, floatfmt=".3f"),
+        "",
+        "## 8. Representative Samples",
+        "",
+    ]
 
-    lines.append("## 7. 代表性样本")
-    lines.append("")
-    for item in outlier_games:
-        record = item["record"]
+    for sample in samples:
+        record = sample["record"]
         assert isinstance(record, RecordEntry)
-        lines.append(f"### {item['label']}")
-        lines.append(
-            f"- score={record.final_score}, cities={record.city_count}, roads={len(record.roads)}, "
-            f"buildings={record.building_count}, techs={record.tech_count}, "
-            f"food={record.food}, "
-            f"config={record.map_size}/{record.turn_limit}/{record.map_difficulty}"
+        lines.extend(
+            [
+                f"### {sample['label']}",
+                (
+                    f"- record_id={record.record_id}, score={record.final_score}, "
+                    f"cities={record.city_count}, roads={len(record.roads)}, "
+                    f"buildings={record.building_count}, techs={record.tech_count}, "
+                    f"skip={record.skip_count}, config={record.map_size}/{record.turn_limit}/"
+                    f"{record.map_difficulty}"
+                ),
+                "- first 20 actions:",
+                "```",
+                render_turn_log(record),
+                "```",
+                "",
+            ]
         )
-        lines.append("- 前 20 回合动作日志:")
-        lines.append("```")
-        lines.append(render_turn_log(record))
-        lines.append("```")
-        lines.append("")
 
     return "\n".join(lines)
 

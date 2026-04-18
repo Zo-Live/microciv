@@ -6,7 +6,14 @@ from collections import Counter, defaultdict
 
 from microciv.constants import FOOD_CONSUMPTION_PER_CITY, TECH_COSTS
 from microciv.game.actions import Action
-from microciv.game.enums import ActionType, BuildingType, OccupantType, ResourceType, TechType, TerrainType
+from microciv.game.enums import (
+    ActionType,
+    BuildingType,
+    OccupantType,
+    ResourceType,
+    TechType,
+    TerrainType,
+)
 from microciv.game.models import City, GameState, Network
 from microciv.game.networks import map_passable_coords_to_networks
 from microciv.game.scoring import total_resources
@@ -67,7 +74,13 @@ def resource_ring_counts(state: GameState, coord: Coord) -> tuple[int, int, int,
             river_neighbors += 1
         elif tile.base_terrain is TerrainType.PLAIN:
             plain_neighbors += 1
-    return forest_neighbors, mountain_neighbors, river_neighbors, plain_neighbors, occupied_neighbors
+    return (
+        forest_neighbors,
+        mountain_neighbors,
+        river_neighbors,
+        plain_neighbors,
+        occupied_neighbors,
+    )
 
 
 def resource_ring_bonus(state: GameState, coord: Coord) -> int:
@@ -75,9 +88,13 @@ def resource_ring_bonus(state: GameState, coord: Coord) -> int:
     wood_target, ore_target = material_targets(state)
     food_pressure = max(0, len(state.cities) * FOOD_CONSUMPTION_PER_CITY * 2 - resources.food)
     science_need = max(0, 14 + (len(state.networks) * 3) - resources.science)
-    forest_neighbors, mountain_neighbors, river_neighbors, plain_neighbors, occupied_neighbors = resource_ring_counts(
-        state, coord
-    )
+    (
+        forest_neighbors,
+        mountain_neighbors,
+        river_neighbors,
+        plain_neighbors,
+        occupied_neighbors,
+    ) = resource_ring_counts(state, coord)
     resource_neighbors = forest_neighbors + mountain_neighbors
     ring_neighbors = resource_neighbors + river_neighbors
     wood_shortage = max(0, wood_target - resources.wood)

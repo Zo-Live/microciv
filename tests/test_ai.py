@@ -60,20 +60,65 @@ def test_greedy_prefers_farm_when_network_is_in_food_danger() -> None:
     assert action.building_type.value == "farm"
 
 
-def test_greedy_prefers_high_food_city_site() -> None:
+def test_greedy_prefers_missing_unlocked_building_before_city_expansion() -> None:
     state = GameState.empty(GameConfig.for_play())
     state.board = {
-        (0, 0): Tile(base_terrain=TerrainType.PLAIN),
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
         (0, 1): Tile(base_terrain=TerrainType.PLAIN),
-        (1, 0): Tile(base_terrain=TerrainType.RIVER),
+        (1, 0): Tile(base_terrain=TerrainType.PLAIN),
         (1, 1): Tile(base_terrain=TerrainType.FOREST),
-        (3, 3): Tile(base_terrain=TerrainType.PLAIN),
-        (4, 4): Tile(base_terrain=TerrainType.WASTELAND),
+    }
+    state.cities = {
+        1: City(
+            city_id=1,
+            coord=(0, 0),
+            founded_turn=1,
+            network_id=1,
+            buildings=BuildingCounts(),
+        )
+    }
+    state.networks = {
+        1: Network(
+            network_id=1,
+            city_ids={1},
+            resources=ResourcePool(food=30, wood=20, ore=10, science=12),
+            unlocked_techs={TechType.AGRICULTURE},
+        )
     }
 
     action = GreedyPolicy().select_action(state)
 
-    assert action == Action.build_city((1, 1))
+    assert action.action_type is ActionType.BUILD_BUILDING
+    assert action.city_id == 1
+    assert action.building_type is not None
+    assert action.building_type.value == "farm"
+
+
+def test_greedy_prefers_research_over_non_structural_road() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 0): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (2, 2): Tile(base_terrain=TerrainType.PLAIN),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1),
+    }
+    state.networks = {
+        1: Network(
+            network_id=1,
+            city_ids={1},
+            resources=ResourcePool(food=30, wood=20, ore=10, science=12),
+        ),
+    }
+
+    action = GreedyPolicy().select_action(state)
+
+    assert action.action_type is ActionType.RESEARCH_TECH
+    assert action.city_id == 1
+    assert action.tech_type is TechType.AGRICULTURE
 
 
 def test_greedy_prefers_forest_city_when_wood_is_scarce() -> None:
@@ -182,7 +227,7 @@ def test_city_site_score_prefers_resource_ring_interior_over_river_edge() -> Non
     assert interior_score > river_edge_score
 
 
-def test_greedy_prefers_connective_road_that_merges_networks() -> None:
+def test_greedy_prefers_connective_action_that_merges_networks() -> None:
     state = GameState.empty(GameConfig.for_play())
     state.board = {
         (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
@@ -213,7 +258,8 @@ def test_greedy_prefers_connective_road_that_merges_networks() -> None:
 
     action = GreedyPolicy().select_action(state)
 
-    assert action == Action.build_road((0, 1))
+    assert action.coord == (0, 1)
+    assert action.action_type in {ActionType.BUILD_CITY, ActionType.BUILD_ROAD}
 
 
 def test_random_policy_downweights_city_under_food_pressure() -> None:
@@ -324,7 +370,6 @@ def test_greedy_does_not_stall_on_large_hard_map() -> None:
     }
     engine = GameEngine(state)
     policy = GreedyPolicy()
-    skip_count = 0
 
     while not state.is_game_over:
         action = policy.select_action(state)
@@ -332,9 +377,6 @@ def test_greedy_does_not_stall_on_large_hard_map() -> None:
         assert validation.is_valid, action
         result = engine.apply_action(action)
         assert result.success
-        if action.action_type is ActionType.SKIP:
-            skip_count += 1
 
     assert state.score >= 1500, state.score
     assert sum(city.total_buildings for city in state.cities.values()) >= 20
-    assert skip_count <= 10

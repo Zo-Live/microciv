@@ -6,7 +6,7 @@ import curses
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from microciv.config import AppPaths, build_app_paths
 from microciv.game.actions import Action, validate_action
@@ -152,7 +152,10 @@ class MicroCivController:
     def scroll_records(self, delta_rows: int) -> None:
         if self.current_route is not ScreenRoute.RECORDS_GRID:
             return
-        self.records_scroll = max(0, min(self.records_scroll + delta_rows, self.max_records_scroll()))
+        self.records_scroll = max(
+            0,
+            min(self.records_scroll + delta_rows, self.max_records_scroll()),
+        )
 
     def jump_records_top(self) -> None:
         if self.current_route is ScreenRoute.RECORDS_GRID:
@@ -300,7 +303,10 @@ class MicroCivController:
         ):
             return
         steps = 0
-        while self.current_route is ScreenRoute.AUTOPLAY_GAME and not self.active_session.state.is_game_over:
+        while (
+            self.current_route is ScreenRoute.AUTOPLAY_GAME
+            and not self.active_session.state.is_game_over
+        ):
             self.active_session.step_autoplay()
             self._complete_session_if_needed()
             steps += 1
@@ -531,28 +537,36 @@ class MicroCivController:
 
     def _replace_setup_config(self, **changes: object) -> None:
         config = self.setup_state.config
-        data = {
-            "map_size": config.map_size,
-            "turn_limit": config.turn_limit,
-            "map_difficulty": config.map_difficulty,
-            "seed": config.seed,
-        }
-        data.update(changes)
+        map_size = cast(int, changes.get("map_size", config.map_size))
+        turn_limit = cast(int, changes.get("turn_limit", config.turn_limit))
+        map_difficulty = cast(
+            MapDifficulty,
+            changes.get("map_difficulty", config.map_difficulty),
+        )
+        seed = cast(int, changes.get("seed", config.seed))
         if self.setup_state.autoplay:
+            policy_type = cast(
+                PolicyType,
+                changes.get("policy_type", config.policy_type),
+            )
+            playback_mode = cast(
+                PlaybackMode,
+                changes.get("playback_mode", config.playback_mode),
+            )
             self.setup_state.config = GameConfig.for_autoplay(
-                map_size=int(data["map_size"]),
-                turn_limit=int(data["turn_limit"]),
-                map_difficulty=data["map_difficulty"],  # type: ignore[arg-type]
-                policy_type=data.get("policy_type", config.policy_type),  # type: ignore[arg-type]
-                playback_mode=data.get("playback_mode", config.playback_mode),  # type: ignore[arg-type]
-                seed=int(data["seed"]),
+                map_size=map_size,
+                turn_limit=turn_limit,
+                map_difficulty=map_difficulty,
+                policy_type=policy_type,
+                playback_mode=playback_mode,
+                seed=seed,
             )
         else:
             self.setup_state.config = GameConfig.for_play(
-                map_size=int(data["map_size"]),
-                turn_limit=int(data["turn_limit"]),
-                map_difficulty=data["map_difficulty"],  # type: ignore[arg-type]
-                seed=int(data["seed"]),
+                map_size=map_size,
+                turn_limit=turn_limit,
+                map_difficulty=map_difficulty,
+                seed=seed,
             )
 
     def _click_manual_game(self, element_id: str) -> None:
@@ -730,7 +744,10 @@ class MicroCivController:
         actions: list[str] = []
         if state.config.mode is Mode.PLAY:
             actions.append("game-skip")
-        if selection.selected_coord is not None and self._has_valid_settlement_actions(selection.selected_coord):
+        if (
+            selection.selected_coord is not None
+            and self._has_valid_settlement_actions(selection.selected_coord)
+        ):
             if validate_action(state, Action.build_city(selection.selected_coord)).is_valid:
                 actions.append("settle-city")
             if validate_action(state, Action.build_road(selection.selected_coord)).is_valid:
@@ -1222,12 +1239,25 @@ class CursesMicroCivApp:
         right_x = min(width - btn_w - 4, width // 2 + 4)
         top_y = title_y + GLYPH_HEIGHT + 3
         bottom_y = top_y + btn_h + 3
-        self._draw_box_button(stdscr, "game-menu-main", "Menu", left_x, top_y, btn_w, btn_h)
-        self._draw_box_button(stdscr, "game-menu-resume", "Resume", right_x, top_y, btn_w, btn_h)
-        self._draw_box_button(stdscr, "game-menu-restart", "Restart", left_x, bottom_y, btn_w, btn_h)
+        self._draw_box_button(
+            stdscr, "game-menu-main", "Menu", left_x, top_y, btn_w, btn_h
+        )
+        self._draw_box_button(
+            stdscr, "game-menu-resume", "Resume", right_x, top_y, btn_w, btn_h
+        )
+        self._draw_box_button(
+            stdscr, "game-menu-restart", "Restart", left_x, bottom_y, btn_w, btn_h
+        )
         self._draw_box_button(stdscr, "game-menu-exit", "Exit", right_x, bottom_y, btn_w, btn_h)
 
-    def _render_final(self, stdscr: CursesWindow, width: int, height: int, *, is_auto: bool) -> None:
+    def _render_final(
+        self,
+        stdscr: CursesWindow,
+        width: int,
+        height: int,
+        *,
+        is_auto: bool,
+    ) -> None:
         if self.controller.active_session is None:
             return
         state = self.controller.active_session.state
@@ -1312,8 +1342,22 @@ class CursesMicroCivApp:
 
     def _render_no_records(self, stdscr: CursesWindow, width: int, height: int) -> None:
         text = "No records"
-        self._safe_addstr(stdscr, height // 2 - 2, max((width - len(text)) // 2, 0), text, "text")
-        self._draw_box_button(stdscr, "no-records-back", "Back", max((width - 14) // 2, 2), height // 2 + 1, 14, 3)
+        self._safe_addstr(
+            stdscr,
+            height // 2 - 2,
+            max((width - len(text)) // 2, 0),
+            text,
+            "text",
+        )
+        self._draw_box_button(
+            stdscr,
+            "no-records-back",
+            "Back",
+            max((width - 14) // 2, 2),
+            height // 2 + 1,
+            14,
+            3,
+        )
 
     def _render_board(
         self,
@@ -1406,7 +1450,10 @@ def _record_detail_lines(record: RecordEntry) -> list[str]:
                 f"AI Type: {record.ai_type}",
                 f"Playback: {record.playback_mode or 'normal'}",
                 f"Turn Time Total: {_fmt_sig3(float(record.turn_elapsed_ms_total))} ms",
-                f"Step Avg: {_fmt_sig3(record.turn_elapsed_ms_total / max(record.actual_turns, 1))} ms",
+                (
+                    "Step Avg: "
+                    f"{_fmt_sig3(record.turn_elapsed_ms_total / max(record.actual_turns, 1))} ms"
+                ),
             ]
         )
     return lines
