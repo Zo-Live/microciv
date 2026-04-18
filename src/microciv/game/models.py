@@ -171,6 +171,7 @@ class Network:
     city_ids: set[int] = field(default_factory=set)
     resources: ResourcePool = field(default_factory=ResourcePool)
     unlocked_techs: set[TechType] = field(default_factory=set)
+    consecutive_starving_turns: int = 0
 
     def __post_init__(self) -> None:
         if self.network_id < 1:
@@ -180,6 +181,9 @@ class Network:
         self.city_ids.update(other.city_ids)
         self.resources.merge(other.resources)
         self.unlocked_techs.update(other.unlocked_techs)
+        self.consecutive_starving_turns = max(
+            self.consecutive_starving_turns, other.consecutive_starving_turns
+        )
 
 
 @dataclass(slots=True)
