@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-MicroCiv is a terminal-based, turn-based civilization simulator built with Python 3.13+ and curses. It features square-grid procedural maps, city/road/building construction, tech research, resource management, and two AI policies (Greedy, Random). Records are persisted as JSON with CSV export.
+MicroCiv is a terminal-based, turn-based civilization simulator built with Python 3.13+ and curses. It features square-grid procedural maps, city/road/building construction, tech research, resource management, and two AI policies (Greedy, Random). Records are persisted as JSON; batch runners can additionally export CSV.
 
 ## Commands
 
@@ -46,7 +46,7 @@ Install with `uv sync` (preferred) or `pip install -e ".[dev]"`.
 - `game/engine.py` — `GameEngine.apply_action()` validates, mutates state, recomputes networks/resources/score, advances turn. Returns `EngineResult`.
 - `game/actions.py` — `Action` (frozen dataclass with classmethods `build_city`, `build_road`, `build_building`, `research_tech`, `skip`), `validate_action()`, `list_legal_actions()`.
 - `game/enums.py` — All enums are `StrEnum`: `TerrainType`, `OccupantType`, `ResourceType`, `BuildingType`, `TechType`, `ActionType`, `Mode`, `PolicyType`, `PlaybackMode`, `MapDifficulty`.
-- `game/networks.py` — Road/city connectivity via union-find. `recompute_networks()` merges networks when roads connect cities.
+- `game/networks.py` — Road/city connectivity via BFS over passable tiles. `recompute_networks()` discovers connected components and merges networks when roads connect cities.
 - `game/resources.py` — Per-turn resource settlement (terrain yields + building yields - food consumption). `settle_resources()` is called after every action.
 - `game/mapgen.py` — Procedural map generation with terrain distribution.
 - `game/scoring.py` — Score calculation from cities, buildings, techs, and resources.
@@ -58,7 +58,7 @@ Install with `uv sync` (preferred) or `pip install -e ".[dev]"`.
 - `ai/heuristics.py` — `city_site_score()`, `city_expansion_score()`, `road_site_score()`, `resource_ring_counts()`, `resource_ring_bonus()`. These determine how Greedy ranks city/road sites and resource-ring quality.
 - `simulate_action()` deep-copies state for lookahead.
 
-**Persistence**: `records/models.py` defines `RecordEntry` and snapshot dataclasses (`RecordTileSnapshot`, `RecordCitySnapshot`, etc.) with `from_dict`/`to_dict` round-trip serialization. `records/store.py` handles JSON file I/O. `records/export.py` handles CSV export.
+**Persistence**: `records/models.py` defines `RecordEntry` and snapshot dataclasses (`RecordTileSnapshot`, `RecordCitySnapshot`, etc.) with `from_dict`/`to_dict` round-trip serialization. `records/store.py` handles JSON file I/O. `records/export.py` handles JSON export; batch runners (`scripts/batch_autoplay.py`, `scripts/generate_dataset.py`) also write CSV via the `to_csv_row()` helpers in `records/models.py`.
 
 **Batch runners**: 
 - `scripts/batch_autoplay.py` runs headless autoplay games in bulk and exports results as JSON and CSV.
@@ -66,7 +66,7 @@ Install with `uv sync` (preferred) or `pip install -e ".[dev]"`.
 - `scripts/analyze_batch.py` consumes the dataset JSON and emits a diagnostic Markdown report with aggregated metrics, behavior patterns, and actionable hypotheses.
 Both runners use `create_game_session()` and `GameSession.step_autoplay()` to advance turns without the curses UI.
 
-**UI**: `curses_app.py` is the main curses controller with mouse-driven interaction. `tui/` contains UI component helpers.
+**UI**: `curses_app.py` contains both `MicroCivController` (UI-agnostic state routing) and `CursesMicroCivApp` (curses event loop + rendering). `tui/` contains `pixel_font.py` for block-character rendering.
 
 **Utilities**: `utils/grid.py` has `Coord` type alias, `cardinal_neighbors()`, `moore_neighbors()`, `coord_sort_key()`. `utils/rng.py` wraps seeded random.
 

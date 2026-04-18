@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "2026-spring-microciv"
+name = "microciv"
 version = "0.1.0"
 description = "A curses-based micro strategy civilization simulator for the 2026 spring course project."
 readme = "README.md"
