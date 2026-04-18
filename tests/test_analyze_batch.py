@@ -100,6 +100,28 @@ def _make_record(policy_type: PolicyType, seed: int) -> RecordEntry:
         largest_network_size=1,
         starving_network_count=0,
         legal_actions_count=12,
+        score_breakdown={
+            "city_score": 14,
+            "connected_city_score": 0,
+            "resource_ring_score": 12,
+            "river_access_score": 20,
+            "city_composition_bonus": 0,
+            "building_score": 28,
+            "tech_score": 240,
+            "building_utilization_score": 8,
+            "food_score": 3,
+            "wood_score": 4,
+            "ore_score": 2,
+            "science_score": 1,
+            "resource_score": 10,
+            "library_science_bonus": 0,
+            "building_mismatch_penalty": 0,
+            "starving_network_penalty": 0,
+            "fragmented_network_penalty": 0,
+            "isolated_city_penalty": 12,
+            "unproductive_road_penalty": 0,
+            "total": 320,
+        },
     )
     state.stats.record_decision_context(
         turn=5,
@@ -110,7 +132,37 @@ def _make_record(policy_type: PolicyType, seed: int) -> RecordEntry:
         legal_research_tech_count=1,
         legal_skip_count=1,
         chosen_action_type="skip",
-        policy_context={"greedy_priority": "skip", "greedy_best_action_type": "skip"},
+        policy_context={
+            "greedy_stage": "fill",
+            "greedy_priority": "skip",
+            "greedy_best_action_type": "skip",
+            "greedy_best_delta_score": -12,
+            "greedy_score_breakdown": {
+                "city_score": 14,
+                "building_score": 28,
+                "tech_score": 240,
+                "starving_network_penalty": 0,
+                "total": 320,
+            },
+            "greedy_best_site_budget": {
+                "food_yield": 0,
+                "wood_yield": 0,
+                "ore_yield": 0,
+                "science_yield": 0,
+                "food_balance": 0,
+                "total_yield": 0,
+            },
+            "greedy_best_future_network_budget": {
+                "network_id": 1,
+                "city_count": 1,
+                "food": 50,
+                "wood": 20,
+                "ore": 10,
+                "science": 8,
+                "pressure": -46,
+            },
+            "greedy_best_future_network_starving": False,
+        },
     )
     return RecordEntry.from_game_state(
         record_id=seed + 1,
@@ -129,9 +181,13 @@ def test_generate_report_is_descriptive_and_uses_current_score_fields() -> None:
     score_df = analyze_batch.build_score_breakdown_df(records)
 
     assert "## 4. Score Component Summary" in report
-    assert "## 5. Behavior Summary" in report
+    assert "## 5. Turn Score Composition Summary" in report
+    assert "## 6. Behavior Summary" in report
+    assert "## 7. Greedy Stage Summary" in report
     assert "自动观察" not in report
     assert "building_utilization_score_mean" in report
     assert "river_access_score_mean" in report
+    assert "avg_site_food_balance" in report
+    assert "score_total_mean" in report
     assert "tech_utilization_score" not in report
     assert score_df["river_access_score"].gt(0).all()

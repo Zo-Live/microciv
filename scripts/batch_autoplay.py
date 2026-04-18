@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 import time
 from datetime import UTC, datetime
@@ -16,7 +17,6 @@ if str(SRC) not in sys.path:
 
 from microciv.game.enums import MapDifficulty, PlaybackMode, PolicyType  # noqa: E402
 from microciv.game.models import GameConfig  # noqa: E402
-from microciv.records.export import export_records_json  # noqa: E402
 from microciv.records.models import CSV_FIELD_ORDER, RecordDatabase, RecordEntry  # noqa: E402
 from microciv.session import create_game_session  # noqa: E402
 
@@ -56,16 +56,25 @@ def _parse_args() -> argparse.Namespace:
         help="Output directory for results.",
     )
     parser.add_argument(
-        "--export-json",
-        action="store_true",
-        default=True,
-        help="Export full results as JSON (default: True).",
+        "--label",
+        type=str,
+        default="",
+        help="Optional label appended to output filenames.",
     )
     parser.add_argument(
-        "--export-csv",
+        "--no-export-json",
         action="store_true",
-        default=True,
-        help="Export summary as CSV (default: True).",
+        help="Disable JSON export.",
+    )
+    parser.add_argument(
+        "--no-export-csv",
+        action="store_true",
+        help="Disable CSV export.",
+    )
+    parser.add_argument(
+        "--no-write-summary",
+        action="store_true",
+        help="Disable summary JSON export.",
     )
     return parser.parse_args()
 
@@ -152,19 +161,59 @@ def main() -> int:
     )
 
     database = RecordDatabase(records=records)
+    run_tag = args.label.strip().replace(" ", "_")
+    base_name = (
+        f"{args.policy}_{args.map_size}_{args.turn_limit}_{args.map_difficulty}_"
+        f"{args.seed_start}_{args.seed_start + args.games - 1}"
+    )
+    if run_tag:
+        base_name = f"{base_name}_{run_tag}"
 
-    if args.export_json:
-        json_path = export_records_json(database, output_dir)
+    if not args.no_export_json:
+        json_path = output_dir / f"{base_name}.json"
+        json_path.write_text(
+            json.dumps(database.to_dict(), ensure_ascii=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
         print(f"JSON exported: {json_path}", file=sys.stderr)
 
-    if args.export_csv:
-        csv_path = output_dir / "records_export.csv"
+    if not args.no_export_csv:
+        csv_path = output_dir / f"{base_name}.csv"
         with csv_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(CSV_FIELD_ORDER))
             writer.writeheader()
             for record in records:
                 writer.writerow(record.to_csv_row())
         print(f"CSV exported: {csv_path}", file=sys.stderr)
+
+    if not args.no_write_summary:
+        summary_path = output_dir / f"{base_name}_summary.json"
+        summary = {
+            "games": args.games,
+            "policy": args.policy,
+            "map_size": args.map_size,
+            "turn_limit": args.turn_limit,
+            "map_difficulty": args.map_difficulty,
+            "seed_start": args.seed_start,
+            "seed_end": args.seed_start + args.games - 1,
+            "total_elapsed_seconds": round(total_elapsed, 3),
+            "avg_elapsed_seconds": round(total_elapsed / args.games, 3),
+            "avg_score": round(sum(record.final_score for record in records) / len(records), 2),
+            "max_score": max(record.final_score for record in records),
+            "min_score": min(record.final_score for record in records),
+            "avg_city_count": round(sum(record.city_count for record in records) / len(records), 2),
+            "avg_building_count": round(
+                sum(record.building_count for record in records) / len(records), 2
+            ),
+            "avg_network_count": round(
+                sum(len(record.networks) for record in records) / len(records), 2
+            ),
+        }
+        summary_path.write_text(
+            json.dumps(summary, ensure_ascii=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"Summary exported: {summary_path}", file=sys.stderr)
 
     return 0
 

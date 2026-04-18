@@ -68,10 +68,10 @@ python main.py
 python main.py
 
 # Batch AI data collection
-python scripts/batch_autoplay.py -n <games> --policy <policy>
+python scripts/batch_autoplay.py -n <games> --policy <policy> --label <tag>
 
 # Large-scale param-grid dataset generation
-python scripts/generate_dataset.py -n <games-per-combo>
+python scripts/generate_dataset.py -n <games-per-combo> --label <tag>
 
 # Generate diagnostic report from dataset (requires pandas + tabulate)
 python scripts/analyze_batch.py --input <dataset.json> --output <report.md>
@@ -244,11 +244,14 @@ Main Menu
 - `resource_ring_counts(state, coord) -> tuple[forest, mountain, river, plain, occupied]` — neighbor terrain analysis used by both scoring and AI
 - `city_site_score(state, coord) -> int` — heuristic city placement score
 - `road_site_score(state, coord) -> int` — heuristic road placement score
+- `GreedyPolicy.explain_decision(state) -> dict[str, object]` — staged greedy telemetry (`rescue / consolidate / expand / fill`, score delta, site/network budgets)
 
 **Records**:
 - `RecordEntry.from_game_state(record_id=..., timestamp=..., state=...)`
 - `RecordStore(path).append_completed_game(state) -> RecordEntry`
 - `export_records_json(database, output_dir) -> Path`
+- `turn_snapshots[*].score_breakdown` — per-turn score composition
+- `decision_contexts[*]` — Greedy stage/budget telemetry or Random type weights
 
 ---
 
@@ -265,7 +268,7 @@ Test framework is `pytest`, configured in `pyproject.toml`.
 - `test_networks.py` — network connectivity
 - `test_resources.py` — resource settlement
 - `test_scoring.py` — score calculation
-- `test_ai.py` — Greedy/Random strategy legality, Greedy food rescue behavior, full game completion, score baseline
+- `test_ai.py` — Greedy/Random strategy legality, staged Greedy food rescue behavior, full game completion, fixed-seed score baselines
 - `test_records.py` — RecordEntry serialization, Store persistence, schema migration, FIFO trimming, export
 - `test_grid.py`, `test_curses_app.py`, `test_analyze_batch.py` — utilities, UI, and script tests
 
@@ -300,7 +303,10 @@ If you need to extend functionality, prioritize these files:
 - **Scoring formula changes**: `game/scoring.py` (new fields like `excess_science_penalty` or Mix logic changes will break `test_scoring.py` assertions)
 - **AI heuristic changes**: `ai/heuristics.py` (changes to `resource_ring_counts`, `city_site_score`, `road_site_score` propagate to Greedy behavior and may affect `test_ai.py` baselines)
 - **Batch runners**: `scripts/batch_autoplay.py`, `scripts/generate_dataset.py`
+  - `batch_autoplay.py` writes named JSON / CSV outputs and optional summary JSON
+  - `generate_dataset.py` writes dataset JSON / CSV and a manifest JSON
 - **Data analysis scripts**: `scripts/analyze_batch.py`
+  - report includes final/turn score composition, behavior summary, Greedy stage summary, network-risk summary, representative samples
 - **Records model extensions**: `records/models.py` (new fields must be updated in sync in `CSV_FIELD_ORDER` and `from_dict`/`to_dict`)
 
 ---

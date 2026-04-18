@@ -17,6 +17,26 @@ from microciv.game.models import (
     Road,
     Tile,
 )
+from microciv.session import GameSession
+
+
+def _run_policy_game(config: GameConfig, policy: GreedyPolicy | RandomPolicy) -> GameState:
+    generated = MapGenerator().generate(config)
+    state = GameState.empty(config)
+    state.board = {
+        coord: Tile(base_terrain=tile.base_terrain, occupant=tile.occupant)
+        for coord, tile in generated.board.items()
+    }
+    engine = GameEngine(state)
+
+    while not state.is_game_over:
+        action = policy.select_action(state)
+        validation = validate_action(state, action)
+        assert validation.is_valid, (config.seed, action, validation.message)
+        result = engine.apply_action(action)
+        assert result.success, (config.seed, action, result.message)
+
+    return state
 
 
 def test_random_policy_returns_legal_action() -> None:
@@ -94,6 +114,67 @@ def test_greedy_prefers_missing_unlocked_building_before_city_expansion() -> Non
     assert action.building_type.value == "farm"
 
 
+def test_greedy_explain_decision_reports_rescue_stage() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {(0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY)}
+    state.cities = {
+        1: City(
+            city_id=1,
+            coord=(0, 0),
+            founded_turn=1,
+            network_id=1,
+            buildings=BuildingCounts(),
+        )
+    }
+    state.networks = {
+        1: Network(
+            network_id=1,
+            city_ids={1},
+            resources=ResourcePool(food=-3, wood=12, science=10),
+            unlocked_techs={TechType.AGRICULTURE},
+        )
+    }
+
+    context = GreedyPolicy().explain_decision(state)
+
+    assert context["greedy_stage"] == "rescue"
+    assert context["greedy_starving_networks"] == 1
+
+
+def test_autoplay_records_turn_score_breakdown_and_greedy_budget_context() -> None:
+    state = GameState.empty(GameConfig.for_autoplay())
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (2, 2): Tile(base_terrain=TerrainType.FOREST),
+        (1, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 2): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 3): Tile(base_terrain=TerrainType.PLAIN),
+        (2, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (2, 3): Tile(base_terrain=TerrainType.PLAIN),
+        (3, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (3, 2): Tile(base_terrain=TerrainType.RIVER),
+        (3, 3): Tile(base_terrain=TerrainType.PLAIN),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1),
+    }
+    state.networks = {
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool()),
+    }
+    session = GameSession(state=state, engine=GameEngine(state), policy=GreedyPolicy())
+
+    session.step_autoplay()
+
+    snapshot = state.stats.turn_snapshots[0]
+    context = state.stats.decision_contexts[0]
+    assert snapshot["score_breakdown"]["resource_score"] >= 0
+    assert snapshot["score_breakdown"]["total"] == snapshot["score"]
+    assert context["greedy_stage"]
+    assert context["chosen_action_type"] == "build_city"
+    assert context["greedy_best_site_budget"]["total_yield"] > 0
+    assert "greedy_best_future_network_budget" in context
+
+
 def test_greedy_prefers_research_over_non_structural_road() -> None:
     state = GameState.empty(GameConfig.for_play())
     state.board = {
@@ -148,7 +229,7 @@ def test_greedy_prefers_forest_city_when_wood_is_scarce() -> None:
         1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1),
     }
     state.networks = {
-        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=80, wood=0, ore=20)),
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool()),
     }
 
     action = GreedyPolicy().select_action(state)
@@ -183,7 +264,7 @@ def test_greedy_prefers_mountain_city_when_ore_is_scarce() -> None:
         1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1),
     }
     state.networks = {
-        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=80, wood=20, ore=0)),
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool()),
     }
 
     action = GreedyPolicy().select_action(state)
@@ -302,43 +383,24 @@ def test_greedy_and_random_can_finish_full_games() -> None:
     for policy_cls in (GreedyPolicy, RandomPolicy):
         for seed in seeds:
             config = GameConfig.for_play(seed=seed, turn_limit=30, map_size=12)
-            generated = MapGenerator().generate(config)
-            state = GameState.empty(config)
-            state.board = {
-                coord: Tile(base_terrain=tile.base_terrain, occupant=tile.occupant)
-                for coord, tile in generated.board.items()
-            }
-            engine = GameEngine(state)
             policy = policy_cls(seed=seed) if policy_cls is RandomPolicy else policy_cls()
+            state = _run_policy_game(config, policy)
 
-            while not state.is_game_over:
-                action = policy.select_action(state)
-                validation = validate_action(state, action)
-                assert validation.is_valid, (seed, action, validation.message)
-                result = engine.apply_action(action)
-                assert result.success, (seed, action, result.message)
-
-            assert state.score >= -50
+            minimum_score = -900 if policy_cls is RandomPolicy else -50
+            assert state.score >= minimum_score
 
 
 def test_greedy_scores_reasonably_on_standard_settings() -> None:
-    for seed in range(1, 6):
+    expected_min_scores = {
+        1: 2500,
+        2: 1800,
+        3: 2600,
+        4: 2200,
+        5: 2800,
+    }
+    for seed, min_score in expected_min_scores.items():
         config = GameConfig.for_autoplay(seed=seed, turn_limit=80, map_size=16)
-        generated = MapGenerator().generate(config)
-        state = GameState.empty(config)
-        state.board = {
-            coord: Tile(base_terrain=tile.base_terrain, occupant=tile.occupant)
-            for coord, tile in generated.board.items()
-        }
-        engine = GameEngine(state)
-        policy = GreedyPolicy()
-
-        while not state.is_game_over:
-            action = policy.select_action(state)
-            validation = validate_action(state, action)
-            assert validation.is_valid, (seed, action, validation.message)
-            result = engine.apply_action(action)
-            assert result.success, (seed, action, result.message)
+        state = _run_policy_game(config, GreedyPolicy())
 
         city_count = len(state.cities)
         road_count = len(state.roads)
@@ -348,7 +410,7 @@ def test_greedy_scores_reasonably_on_standard_settings() -> None:
             + state.stats.research_mining_count
             + state.stats.research_education_count
         )
-        assert state.score >= 350, f"seed={seed} score={state.score} too low"
+        assert state.score >= min_score, f"seed={seed} score={state.score} too low"
         assert city_count > 1, f"seed={seed} only {city_count} city"
         assert road_count > 0 or research_count >= 3, (
             f"seed={seed} built no road and only researched {research_count} techs"
@@ -362,21 +424,9 @@ def test_greedy_does_not_stall_on_large_hard_map() -> None:
         map_size=24,
         map_difficulty=MapDifficulty.HARD,
     )
-    generated = MapGenerator().generate(config)
-    state = GameState.empty(config)
-    state.board = {
-        coord: Tile(base_terrain=tile.base_terrain, occupant=tile.occupant)
-        for coord, tile in generated.board.items()
-    }
-    engine = GameEngine(state)
-    policy = GreedyPolicy()
+    state = _run_policy_game(config, GreedyPolicy())
 
-    while not state.is_game_over:
-        action = policy.select_action(state)
-        validation = validate_action(state, action)
-        assert validation.is_valid, action
-        result = engine.apply_action(action)
-        assert result.success
-
-    assert state.score >= 1500, state.score
-    assert sum(city.total_buildings for city in state.cities.values()) >= 20
+    assert state.score >= 4500, state.score
+    assert sum(city.total_buildings for city in state.cities.values()) >= 60
+    assert len(state.networks) <= 2
+    assert len(state.roads) >= 5

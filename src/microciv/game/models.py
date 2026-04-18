@@ -289,27 +289,29 @@ class Stats:
         largest_network_size: int,
         starving_network_count: int,
         legal_actions_count: int,
+        score_breakdown: dict[str, int] | None = None,
     ) -> None:
-        self.turn_snapshots.append(
-            {
-                "turn": turn,
-                "score": score,
-                "food": food,
-                "wood": wood,
-                "ore": ore,
-                "science": science,
-                "city_count": city_count,
-                "building_count": building_count,
-                "tech_count": tech_count,
-                "road_count": road_count,
-                "network_count": network_count,
-                "connected_city_count": connected_city_count,
-                "isolated_city_count": isolated_city_count,
-                "largest_network_size": largest_network_size,
-                "starving_network_count": starving_network_count,
-                "legal_actions_count": legal_actions_count,
-            }
-        )
+        snapshot: dict[str, object] = {
+            "turn": turn,
+            "score": score,
+            "food": food,
+            "wood": wood,
+            "ore": ore,
+            "science": science,
+            "city_count": city_count,
+            "building_count": building_count,
+            "tech_count": tech_count,
+            "road_count": road_count,
+            "network_count": network_count,
+            "connected_city_count": connected_city_count,
+            "isolated_city_count": isolated_city_count,
+            "largest_network_size": largest_network_size,
+            "starving_network_count": starving_network_count,
+            "legal_actions_count": legal_actions_count,
+        }
+        if score_breakdown is not None:
+            snapshot["score_breakdown"] = dict(score_breakdown)
+        self.turn_snapshots.append(snapshot)
 
     def record_decision_context(
         self,
