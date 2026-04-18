@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 
-from microciv.constants import FOOD_CONSUMPTION_PER_CITY, TECH_COSTS
+from microciv.constants import BUILDING_LIMIT_PER_CITY, FOOD_CONSUMPTION_PER_CITY, TECH_COSTS
 from microciv.game.actions import Action
 from microciv.game.enums import (
     ActionType,
@@ -356,7 +356,7 @@ def building_action_score(state: GameState, action: Action) -> int:
     resource_type = BUILDING_RESOURCE_TYPE[action.building_type]
     shortage = _resource_shortage(network, resource_type)
     same_building = city.buildings.for_type(action.building_type)
-    available_slots = max(0, 6 - city.total_buildings)
+    available_slots = max(0, BUILDING_LIMIT_PER_CITY - city.total_buildings)
     score = 40 + shortage + (available_slots * 3) - (same_building * 5)
     if action.building_type is BuildingType.FARM:
         needs_food = (
@@ -365,7 +365,10 @@ def building_action_score(state: GameState, action: Action) -> int:
         )
         score += 35 if needs_food else 10
     elif action.building_type is BuildingType.LIBRARY:
-        score += 22 if len(network.unlocked_techs) < len(TechType) else 4
+        if len(network.unlocked_techs) < len(TechType):
+            score += 22
+        else:
+            score += 35
     elif action.building_type is BuildingType.LUMBER_MILL:
         score += 24 if network.resources.wood < 28 else 8
     elif action.building_type is BuildingType.MINE:

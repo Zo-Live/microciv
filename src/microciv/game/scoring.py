@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
@@ -113,7 +114,7 @@ def score_breakdown(state: GameState) -> ScoreBreakdown:
         library_science_bonus=_library_science_bonus(state),
         building_mismatch_penalty=building_mismatch_penalty(state),
         starving_network_penalty=sum(
-            network.consecutive_starving_turns * 70
+            network.consecutive_starving_turns * 35
             for network in state.networks.values()
             if network.resources.food <= 0
         ),
@@ -254,7 +255,8 @@ def _library_science_bonus(state: GameState) -> int:
         )
         if library_count <= 0:
             continue
-        bonus += (max(0, network.resources.science) * library_count) // 200
+        product = max(1, network.resources.science * library_count)
+        bonus += int(math.log2(product) * 50)
     return bonus
 
 

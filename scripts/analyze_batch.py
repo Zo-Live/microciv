@@ -9,7 +9,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Final
 
-import pandas as pd
+try:
+    import pandas as pd
+except ModuleNotFoundError as exc:  # pragma: no cover - depends on local optional deps
+    pd = None  # type: ignore[assignment]
+    PANDAS_IMPORT_ERROR = exc
+else:
+    PANDAS_IMPORT_ERROR = None
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -91,6 +97,12 @@ def _summary_table(
     ]
     counts = df.groupby(group_cols, dropna=False).size().reset_index(name="samples")
     return counts.merge(summary, on=group_cols, how="left")
+
+
+def _metric_mean(df: pd.DataFrame, column: str) -> float:
+    if column not in df:
+        return 0.0
+    return float(df[column].fillna(0).mean())
 
 
 def build_macro_df(records: list[RecordEntry]) -> pd.DataFrame:
@@ -180,6 +192,64 @@ def build_score_breakdown_df(records: list[RecordEntry]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def build_turn_score_breakdown_df(records: list[RecordEntry]) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for record in records:
+        for snapshot in record.turn_snapshots:
+            if not snapshot.score_breakdown:
+                continue
+            row: dict[str, object] = {
+                "ai_type": record.ai_type,
+                "map_size": record.map_size,
+                "turn_limit": record.turn_limit,
+                "map_difficulty": record.map_difficulty,
+                "turn": snapshot.turn,
+                "score": snapshot.score,
+            }
+            for key, value in snapshot.score_breakdown.items():
+                row[f"score_{key}"] = value
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def build_decision_context_df(records: list[RecordEntry]) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for record in records:
+        for context in record.decision_contexts:
+            row: dict[str, object] = {
+                "ai_type": record.ai_type,
+                "map_size": record.map_size,
+                "turn_limit": record.turn_limit,
+                "map_difficulty": record.map_difficulty,
+                "turn": context.turn,
+                "chosen_action_type": context.chosen_action_type or "",
+                "greedy_stage": context.greedy_stage or "",
+                "greedy_priority": context.greedy_priority or "",
+                "greedy_best_action_type": context.greedy_best_action_type or "",
+                "greedy_best_score": context.greedy_best_score,
+                "greedy_best_delta_score": context.greedy_best_delta_score,
+                "greedy_food_pressure": context.greedy_food_pressure,
+                "greedy_starving_networks": context.greedy_starving_networks,
+                "greedy_connected_cities": context.greedy_connected_cities,
+                "greedy_total_food": context.greedy_total_food,
+                "greedy_network_count": context.greedy_network_count,
+                "greedy_best_connection_steps": context.greedy_best_connection_steps,
+                "greedy_best_future_network_starving": (
+                    int(context.greedy_best_future_network_starving)
+                    if context.greedy_best_future_network_starving is not None
+                    else None
+                ),
+            }
+            for key, value in context.greedy_score_breakdown.items():
+                row[f"score_{key}"] = value
+            for key, value in context.greedy_best_site_budget.items():
+                row[f"site_{key}"] = value
+            for key, value in context.greedy_best_future_network_budget.items():
+                row[f"future_network_{key}"] = value
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def build_behavior_df(records: list[RecordEntry]) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for record in records:
@@ -260,6 +330,41 @@ def build_behavior_df(records: list[RecordEntry]) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def build_stage_summary_df(records: list[RecordEntry]) -> pd.DataFrame:
+    decision_df = build_decision_context_df(records)
+    if decision_df.empty:
+        return decision_df
+
+    greedy_df = decision_df[decision_df["greedy_stage"] != ""].copy()
+    if greedy_df.empty:
+        return greedy_df
+
+    rows: list[dict[str, object]] = []
+    for (ai_type, stage), group in greedy_df.groupby(["ai_type", "greedy_stage"], dropna=False):
+        total = len(group)
+        chosen_counts = Counter(group["chosen_action_type"])
+        row: dict[str, object] = {
+            "ai_type": ai_type,
+            "greedy_stage": stage,
+            "samples": total,
+            "chosen_city_pct": chosen_counts["build_city"] / total * 100,
+            "chosen_road_pct": chosen_counts["build_road"] / total * 100,
+            "chosen_building_pct": chosen_counts["build_building"] / total * 100,
+            "chosen_tech_pct": chosen_counts["research_tech"] / total * 100,
+            "avg_best_delta_score": _metric_mean(group, "greedy_best_delta_score"),
+            "avg_food_pressure": _metric_mean(group, "greedy_food_pressure"),
+            "avg_network_count": _metric_mean(group, "greedy_network_count"),
+            "avg_site_food_balance": _metric_mean(group, "site_food_balance"),
+            "avg_site_total_yield": _metric_mean(group, "site_total_yield"),
+            "avg_future_network_pressure": _metric_mean(group, "future_network_pressure"),
+            "future_network_starving_rate": (
+                _metric_mean(group, "greedy_best_future_network_starving") * 100
+            ),
+        }
+        rows.append(row)
+    return pd.DataFrame(rows).sort_values(["ai_type", "greedy_stage"])
 
 
 def build_map_df(records: list[RecordEntry]) -> pd.DataFrame:
@@ -351,11 +456,14 @@ def render_turn_log(record: RecordEntry, max_turns: int = 20) -> str:
     for index, action in enumerate(actions):
         context = contexts[index] if index < len(contexts) else None
         priority = context.greedy_priority if context is not None else "-"
+        stage = context.greedy_stage if context is not None else "-"
         legal = context.legal_actions_count if context is not None else "-"
+        delta = context.greedy_best_delta_score if context is not None else "-"
         coord = f"({action.x},{action.y})" if action.x is not None else "-"
         lines.append(
             f"  T{action.turn:>3} | {action.action_type:18} | coord={coord:8} | "
-            f"legal={legal:4} | priority={priority or '-'}"
+            f"legal={legal:4} | stage={stage or '-':11} | "
+            f"priority={priority or '-':15} | delta={delta}"
         )
     return "\n".join(lines)
 
@@ -437,9 +545,16 @@ def _playback_mode_from_label(label: str) -> PlaybackMode:
 
 
 def generate_report(records: list[RecordEntry]) -> str:
+    if pd is None:  # pragma: no cover - depends on local optional deps
+        raise RuntimeError(
+            "scripts/analyze_batch.py requires pandas and tabulate. "
+            "Install dev dependencies first."
+        ) from PANDAS_IMPORT_ERROR
     macro_df = build_macro_df(records)
     score_df = build_score_breakdown_df(records)
+    turn_score_df = build_turn_score_breakdown_df(records)
     behavior_df = build_behavior_df(records)
+    stage_df = build_stage_summary_df(records)
     map_df = build_map_df(records)
     samples = _sample_rows(records)
 
@@ -519,6 +634,30 @@ def generate_report(records: list[RecordEntry]) -> str:
             "total_score",
         ],
     )
+    turn_score_value_cols = [
+        "score_total",
+        "score_city_score",
+        "score_connected_city_score",
+        "score_resource_ring_score",
+        "score_building_score",
+        "score_tech_score",
+        "score_resource_score",
+        "score_starving_network_penalty",
+        "score_fragmented_network_penalty",
+        "score_isolated_city_penalty",
+    ]
+    turn_score_summary = (
+        _summary_table(
+            turn_score_df,
+            ["ai_type"],
+            [column for column in turn_score_value_cols if column in turn_score_df],
+        )
+        if (
+            not turn_score_df.empty
+            and any(column in turn_score_df for column in turn_score_value_cols)
+        )
+        else pd.DataFrame()
+    )
     behavior_summary = _summary_table(
         behavior_df,
         ["ai_type"],
@@ -543,6 +682,7 @@ def generate_report(records: list[RecordEntry]) -> str:
             "tail_skip_pct",
         ],
     )
+    stage_summary = stage_df if not stage_df.empty else pd.DataFrame()
     network_summary = _summary_table(
         macro_df,
         ["ai_type"],
@@ -591,19 +731,27 @@ def generate_report(records: list[RecordEntry]) -> str:
         "",
         make_table(score_summary),
         "",
-        "## 5. Behavior Summary",
+        "## 5. Turn Score Composition Summary",
+        "",
+        make_table(turn_score_summary),
+        "",
+        "## 6. Behavior Summary",
         "",
         make_table(behavior_summary),
         "",
-        "## 6. Network And Risk Summary",
+        "## 7. Greedy Stage Summary",
+        "",
+        make_table(stage_summary),
+        "",
+        "## 8. Network And Risk Summary",
         "",
         make_table(network_summary),
         "",
-        "## 7. Map Summary",
+        "## 9. Map Summary",
         "",
         make_table(map_summary, floatfmt=".3f"),
         "",
-        "## 8. Representative Samples",
+        "## 10. Representative Samples",
         "",
     ]
 
@@ -633,6 +781,13 @@ def generate_report(records: list[RecordEntry]) -> str:
 
 def main() -> int:
     args = _parse_args()
+    if pd is None:  # pragma: no cover - depends on local optional deps
+        print(
+            "Missing optional dependency: pandas. "
+            "Install dev dependencies or `pip install pandas tabulate`.",
+            file=sys.stderr,
+        )
+        return 1
     raw = json.loads(args.input.read_text(encoding="utf-8"))
     database = RecordDatabase.from_dict(raw)
     report = generate_report(database.records)

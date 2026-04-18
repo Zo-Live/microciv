@@ -17,7 +17,7 @@ from microciv.game.scoring import (
 )
 from microciv.utils.grid import Coord, coord_sort_key
 
-RECORDS_SCHEMA_VERSION = 5
+RECORDS_SCHEMA_VERSION = 6
 
 CSV_FIELD_ORDER: tuple[str, ...] = (
     "record_id",
@@ -88,6 +88,27 @@ def _int_with_default(payload: Mapping[str, object], field_name: str, default: i
     return default if value is None else value
 
 
+def _require_bool(payload: Mapping[str, object], field_name: str) -> bool:
+    value = payload[field_name]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1"}:
+            return True
+        if lowered in {"false", "0"}:
+            return False
+    raise ValueError(f"{field_name} must be a boolean.")
+
+
+def _optional_bool(payload: Mapping[str, object], field_name: str) -> bool | None:
+    if field_name not in payload:
+        return None
+    return _require_bool(payload, field_name)
+
+
 def _require_float(payload: Mapping[str, object], field_name: str) -> float:
     value = payload[field_name]
     if isinstance(value, int | float):
@@ -152,6 +173,22 @@ def _mapping_of_floats(payload: Mapping[str, object], field_name: str) -> dict[s
             values[str(key)] = float(value)
             continue
         raise ValueError(f"{field_name}[{key!r}] must be numeric.")
+    return values
+
+
+def _mapping_of_ints(payload: Mapping[str, object], field_name: str) -> dict[str, int]:
+    values: dict[str, int] = {}
+    for key, value in _mapping_field(payload, field_name).items():
+        if isinstance(value, bool):
+            values[str(key)] = int(value)
+            continue
+        if isinstance(value, int):
+            values[str(key)] = value
+            continue
+        if isinstance(value, str):
+            values[str(key)] = int(value)
+            continue
+        raise ValueError(f"{field_name}[{key!r}] must be integer-like.")
     return values
 
 
@@ -398,6 +435,7 @@ class RecordTurnSnapshot:
     largest_network_size: int
     starving_network_count: int
     legal_actions_count: int
+    score_breakdown: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordTurnSnapshot:
@@ -418,10 +456,11 @@ class RecordTurnSnapshot:
             largest_network_size=_int_with_default(payload, "largest_network_size", 0),
             starving_network_count=_int_with_default(payload, "starving_network_count", 0),
             legal_actions_count=_require_int(payload, "legal_actions_count"),
+            score_breakdown=_mapping_of_ints(payload, "score_breakdown"),
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "turn": self.turn,
             "score": self.score,
             "food": self.food,
@@ -439,6 +478,9 @@ class RecordTurnSnapshot:
             "starving_network_count": self.starving_network_count,
             "legal_actions_count": self.legal_actions_count,
         }
+        if self.score_breakdown:
+            result["score_breakdown"] = self.score_breakdown
+        return result
 
 
 @dataclass(slots=True, frozen=True)
@@ -453,9 +495,21 @@ class RecordDecisionContext:
     legal_research_tech_count: int
     legal_skip_count: int
     chosen_action_type: str | None = None
+    greedy_stage: str | None = None
     greedy_priority: str | None = None
     greedy_best_action_type: str | None = None
     greedy_best_score: float | None = None
+    greedy_best_delta_score: int | None = None
+    greedy_food_pressure: int | None = None
+    greedy_starving_networks: int | None = None
+    greedy_connected_cities: int | None = None
+    greedy_total_food: int | None = None
+    greedy_network_count: int | None = None
+    greedy_best_connection_steps: int | None = None
+    greedy_best_future_network_starving: bool | None = None
+    greedy_score_breakdown: dict[str, int] = field(default_factory=dict)
+    greedy_best_site_budget: dict[str, int] = field(default_factory=dict)
+    greedy_best_future_network_budget: dict[str, int] = field(default_factory=dict)
     random_type_weights: dict[str, float] = field(default_factory=dict)
 
     @classmethod
@@ -473,12 +527,28 @@ class RecordDecisionContext:
             ),
             legal_skip_count=_int_with_default(payload, "legal_skip_count", 0),
             chosen_action_type=_optional_str(payload, "chosen_action_type"),
+            greedy_stage=_optional_str(payload, "greedy_stage"),
             greedy_priority=_optional_str(payload, "greedy_priority"),
             greedy_best_action_type=_optional_str(payload, "greedy_best_action_type"),
             greedy_best_score=(
                 _require_float(payload, "greedy_best_score")
                 if "greedy_best_score" in payload
                 else None
+            ),
+            greedy_best_delta_score=_optional_int(payload, "greedy_best_delta_score"),
+            greedy_food_pressure=_optional_int(payload, "greedy_food_pressure"),
+            greedy_starving_networks=_optional_int(payload, "greedy_starving_networks"),
+            greedy_connected_cities=_optional_int(payload, "greedy_connected_cities"),
+            greedy_total_food=_optional_int(payload, "greedy_total_food"),
+            greedy_network_count=_optional_int(payload, "greedy_network_count"),
+            greedy_best_connection_steps=_optional_int(payload, "greedy_best_connection_steps"),
+            greedy_best_future_network_starving=_optional_bool(
+                payload, "greedy_best_future_network_starving"
+            ),
+            greedy_score_breakdown=_mapping_of_ints(payload, "greedy_score_breakdown"),
+            greedy_best_site_budget=_mapping_of_ints(payload, "greedy_best_site_budget"),
+            greedy_best_future_network_budget=_mapping_of_ints(
+                payload, "greedy_best_future_network_budget"
             ),
             random_type_weights=_mapping_of_floats(payload, "random_type_weights"),
         )
@@ -495,12 +565,38 @@ class RecordDecisionContext:
         }
         if self.chosen_action_type is not None:
             result["chosen_action_type"] = self.chosen_action_type
+        if self.greedy_stage is not None:
+            result["greedy_stage"] = self.greedy_stage
         if self.greedy_priority is not None:
             result["greedy_priority"] = self.greedy_priority
         if self.greedy_best_action_type is not None:
             result["greedy_best_action_type"] = self.greedy_best_action_type
         if self.greedy_best_score is not None:
             result["greedy_best_score"] = self.greedy_best_score
+        if self.greedy_best_delta_score is not None:
+            result["greedy_best_delta_score"] = self.greedy_best_delta_score
+        if self.greedy_food_pressure is not None:
+            result["greedy_food_pressure"] = self.greedy_food_pressure
+        if self.greedy_starving_networks is not None:
+            result["greedy_starving_networks"] = self.greedy_starving_networks
+        if self.greedy_connected_cities is not None:
+            result["greedy_connected_cities"] = self.greedy_connected_cities
+        if self.greedy_total_food is not None:
+            result["greedy_total_food"] = self.greedy_total_food
+        if self.greedy_network_count is not None:
+            result["greedy_network_count"] = self.greedy_network_count
+        if self.greedy_best_connection_steps is not None:
+            result["greedy_best_connection_steps"] = self.greedy_best_connection_steps
+        if self.greedy_best_future_network_starving is not None:
+            result["greedy_best_future_network_starving"] = (
+                self.greedy_best_future_network_starving
+            )
+        if self.greedy_score_breakdown:
+            result["greedy_score_breakdown"] = self.greedy_score_breakdown
+        if self.greedy_best_site_budget:
+            result["greedy_best_site_budget"] = self.greedy_best_site_budget
+        if self.greedy_best_future_network_budget:
+            result["greedy_best_future_network_budget"] = self.greedy_best_future_network_budget
         if self.random_type_weights:
             result["random_type_weights"] = self.random_type_weights
         return result

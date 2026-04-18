@@ -44,6 +44,7 @@ class GameSession:
             connected_city_count,
             isolated_city_count,
             largest_network_size,
+            score_breakdown,
             starving_network_count,
             tech_count,
             total_resources,
@@ -51,6 +52,7 @@ class GameSession:
 
         legal_actions = list_legal_actions(self.state)
         resources = total_resources(self.state)
+        breakdown = score_breakdown(self.state)
         self.state.stats.record_turn_snapshot(
             turn=self.state.turn,
             score=self.state.score,
@@ -68,6 +70,28 @@ class GameSession:
             largest_network_size=largest_network_size(self.state),
             starving_network_count=starving_network_count(self.state),
             legal_actions_count=len(legal_actions),
+            score_breakdown={
+                "city_score": breakdown.city_score,
+                "connected_city_score": breakdown.connected_city_score,
+                "resource_ring_score": breakdown.resource_ring_score,
+                "river_access_score": breakdown.river_access_score,
+                "city_composition_bonus": breakdown.city_composition_bonus,
+                "building_score": breakdown.building_score,
+                "tech_score": breakdown.tech_score,
+                "building_utilization_score": breakdown.building_utilization_score,
+                "food_score": breakdown.food_score,
+                "wood_score": breakdown.wood_score,
+                "ore_score": breakdown.ore_score,
+                "science_score": breakdown.science_score,
+                "resource_score": breakdown.resource_score,
+                "library_science_bonus": breakdown.library_science_bonus,
+                "building_mismatch_penalty": breakdown.building_mismatch_penalty,
+                "starving_network_penalty": breakdown.starving_network_penalty,
+                "fragmented_network_penalty": breakdown.fragmented_network_penalty,
+                "isolated_city_penalty": breakdown.isolated_city_penalty,
+                "unproductive_road_penalty": breakdown.unproductive_road_penalty,
+                "total": breakdown.total,
+            },
         )
         policy_context = (
             self.policy.explain_decision(self.state)

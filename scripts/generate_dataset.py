@@ -21,13 +21,6 @@ from microciv.game.models import GameConfig  # noqa: E402
 from microciv.records.models import CSV_FIELD_ORDER, RecordDatabase, RecordEntry  # noqa: E402
 from microciv.session import create_game_session  # noqa: E402
 
-PARAM_GRID = {
-    "policy": ["greedy", "random"],
-    "map_size": [12, 16, 20, 24],
-    "turn_limit": [30, 80, 150],
-    "map_difficulty": ["normal", "hard"],
-}
-
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate large MicroCiv dataset.")
@@ -42,6 +35,36 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=ROOT / "exports" / "dataset",
         help="Output directory.",
+    )
+    parser.add_argument(
+        "--policies",
+        type=str,
+        default="greedy,random",
+        help="Comma-separated policies.",
+    )
+    parser.add_argument(
+        "--map-sizes",
+        type=str,
+        default="12,16,20,24",
+        help="Comma-separated map sizes.",
+    )
+    parser.add_argument(
+        "--turn-limits",
+        type=str,
+        default="30,80,150",
+        help="Comma-separated turn limits.",
+    )
+    parser.add_argument(
+        "--difficulties",
+        type=str,
+        default="normal,hard",
+        help="Comma-separated difficulties.",
+    )
+    parser.add_argument(
+        "--label",
+        type=str,
+        default="",
+        help="Optional label appended to output filenames.",
     )
     return parser.parse_args()
 
@@ -60,6 +83,13 @@ def _map_difficulty(value: str) -> MapDifficulty:
     if value == "hard":
         return MapDifficulty.HARD
     raise ValueError(value)
+
+
+def _parse_csv_values(raw: str, *, field_name: str) -> list[str]:
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    if values:
+        return values
+    raise ValueError(f"{field_name} must contain at least one value.")
 
 
 def run_game(
@@ -95,10 +125,24 @@ def main() -> int:
     output_dir: Path = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    combos = list(product(*PARAM_GRID.values()))
+    param_grid = {
+        "policy": _parse_csv_values(args.policies, field_name="policies"),
+        "map_size": [
+            int(item) for item in _parse_csv_values(args.map_sizes, field_name="map_sizes")
+        ],
+        "turn_limit": [
+            int(item) for item in _parse_csv_values(args.turn_limits, field_name="turn_limits")
+        ],
+        "map_difficulty": _parse_csv_values(args.difficulties, field_name="difficulties"),
+    }
+    combos = list(product(*param_grid.values()))
     total_games = len(combos) * args.games_per_combo
     records: list[RecordEntry] = []
     global_seed = args.seed_start
+    run_tag = args.label.strip().replace(" ", "_")
+    base_name = "dataset"
+    if run_tag:
+        base_name = f"{base_name}_{run_tag}"
 
     print(
         f"Dataset plan: {len(combos)} combos x {args.games_per_combo} games = "
@@ -137,20 +181,37 @@ def main() -> int:
 
     database = RecordDatabase(records=records)
 
-    json_path = output_dir / "dataset.json"
+    json_path = output_dir / f"{base_name}.json"
     json_path.write_text(
         json.dumps(database.to_dict(), ensure_ascii=True, indent=2) + "\n",
         encoding="utf-8",
     )
     print(f"Dataset JSON exported: {json_path}", file=sys.stderr)
 
-    csv_path = output_dir / "dataset.csv"
+    csv_path = output_dir / f"{base_name}.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(CSV_FIELD_ORDER))
         writer.writeheader()
         for record in records:
             writer.writerow(record.to_csv_row())
     print(f"Dataset CSV exported: {csv_path}", file=sys.stderr)
+
+    manifest_path = output_dir / f"{base_name}_manifest.json"
+    manifest = {
+        "games_per_combo": args.games_per_combo,
+        "seed_start": args.seed_start,
+        "seed_end": global_seed - 1,
+        "param_grid": param_grid,
+        "combo_count": len(combos),
+        "total_games": total_games,
+        "total_elapsed_seconds": round(total_elapsed, 3),
+        "avg_elapsed_seconds": round(total_elapsed / total_games, 3),
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(f"Dataset manifest exported: {manifest_path}", file=sys.stderr)
     return 0
 
 

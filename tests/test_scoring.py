@@ -64,7 +64,7 @@ def test_scoring_uses_unique_techs_and_total_resources() -> None:
     assert total_resources(state).science == 40
     breakdown = score_breakdown(state)
     assert breakdown.city_score == 28
-    assert breakdown.building_score == 54
+    assert breakdown.building_score == 42
     assert breakdown.tech_score == 240
     assert breakdown.building_utilization_score == -36
     assert breakdown.fragmented_network_penalty == 16
@@ -72,7 +72,7 @@ def test_scoring_uses_unique_techs_and_total_resources() -> None:
     assert breakdown.unproductive_road_penalty == 0
     assert breakdown.starving_network_penalty == 0
     assert breakdown.library_science_bonus == 0
-    assert calculate_score(state) == 248
+    assert calculate_score(state) == 236
 
 
 def test_scoring_penalizes_roads_in_single_city_networks() -> None:
@@ -109,8 +109,8 @@ def test_scoring_rewards_cities_nested_inside_resource_rings() -> None:
 
     breakdown = score_breakdown(state)
 
-    assert city_resource_ring_score(state) == 95
-    assert breakdown.resource_ring_score == 95
+    assert city_resource_ring_score(state) == 87
+    assert breakdown.resource_ring_score == 87
 
 
 def test_scoring_counts_river_tiles_inside_resource_ring() -> None:
@@ -125,7 +125,7 @@ def test_scoring_counts_river_tiles_inside_resource_ring() -> None:
     state.cities = {1: City(city_id=1, coord=(4, 4), founded_turn=1, network_id=1)}
     state.networks = {1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=4))}
 
-    assert city_resource_ring_score(state) == 16
+    assert city_resource_ring_score(state) == 14
 
 
 def test_river_access_score_decays_per_river_component() -> None:
