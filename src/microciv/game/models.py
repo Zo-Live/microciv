@@ -356,6 +356,8 @@ class GameConfig:
                 "turn_limit must be between "
                 f"{MIN_TURN_LIMIT} and {MAX_TURN_LIMIT}, got {self.turn_limit}."
             )
+        if not isinstance(self.map_difficulty, MapDifficulty):
+            raise ValueError("map_difficulty must be a MapDifficulty value.")
         if self.mode is Mode.PLAY:
             if self.policy_type is not PolicyType.NONE:
                 raise ValueError("Play mode requires policy_type=PolicyType.NONE.")

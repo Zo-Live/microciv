@@ -34,7 +34,7 @@ def test_record_entry_from_game_state_captures_frozen_fields() -> None:
     assert entry.ai_type == "Human"
     assert entry.playback_mode == ""
     assert entry.actual_turns == 30
-    assert entry.final_score == 326
+    assert entry.final_score == 308
     assert entry.city_count == 1
     assert entry.building_count == 2
     assert entry.tech_count == 2
@@ -72,7 +72,7 @@ def test_record_store_persists_and_reloads_completed_games(tmp_path) -> None:
     assert reloaded.next_record_id == 2
     assert len(reloaded.records) == 1
     assert reloaded.records[0].timestamp == "2026-04-09T12:00:00+08:00"
-    assert reloaded.records[0].final_score == 326
+    assert reloaded.records[0].final_score == 308
 
 
 def test_record_store_resets_old_schema_file(tmp_path) -> None:

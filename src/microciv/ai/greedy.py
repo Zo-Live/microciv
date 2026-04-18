@@ -19,10 +19,11 @@ from microciv.ai.heuristics import (
     road_site_score,
 )
 from microciv.ai.policy import Policy, get_legal_actions, simulate_action
-from microciv.constants import BUILDING_YIELDS, FOOD_CONSUMPTION_PER_CITY, TECH_COSTS
+from microciv.constants import BUILDING_YIELDS, FOOD_CONSUMPTION_PER_CITY
 from microciv.game.actions import Action
 from microciv.game.enums import ActionType, BuildingType, OccupantType, TechType, TerrainType
 from microciv.game.models import GameState
+from microciv.game.networks import map_passable_coords_to_networks
 from microciv.game.scoring import (
     building_count,
     connected_city_count,
@@ -30,15 +31,16 @@ from microciv.game.scoring import (
     largest_network_size,
     score_breakdown,
     starving_network_count,
+    tech_count,
     total_resources,
 )
 from microciv.utils.grid import cardinal_neighbors, moore_neighbors
 
 MAX_CITY_CANDIDATES = 8
-MAX_ROAD_CANDIDATES = 10
 MAX_BUILDING_CANDIDATES = 8
 MAX_RESOURCE_CITY_CANDIDATES = 8
 LONG_GAME_BUILDING_BONUS_TURNS = 30
+TARGET_INLAND_SHARE = 0.45
 
 
 @dataclass(slots=True, frozen=True)
@@ -132,6 +134,17 @@ class GreedyPolicy(Policy):
         resources = total_resources(state)
         terrain_counts = city_terrain_counts(state)
         wood_target, ore_target = material_targets(state)
+        current_tech_count = tech_count(state)
+        missing_unlocked_buildings = _has_missing_unlocked_buildings(state)
+        current_connected_cities, current_connected_inland = _connected_city_mix(state)
+        food_buffer_target = max(1, len(state.cities) * FOOD_CONSUMPTION_PER_CITY * 3)
+        development_saturated = (
+            len(state.cities) > 0
+            and current_tech_count == len(TechType)
+            and not missing_unlocked_buildings
+            and total_buildings >= len(state.cities) * 3
+            and resources.food >= food_buffer_target
+        )
         pressure = max(
             (city_network_pressure(network) for network in state.networks.values()),
             default=0,
@@ -146,11 +159,17 @@ class GreedyPolicy(Policy):
                 for action in groups.get(ActionType.BUILD_CITY, [])
                 if action.coord is not None
             ),
-            key=lambda action: (-city_site_score(state, action.coord), action.coord),
+            key=lambda action: (
+                -city_site_score(state, _action_coord(action)),
+                _action_coord(action),
+            ),
         )
         resource_city_actions = sorted(
             city_actions,
-            key=lambda action: (-city_expansion_score(state, action.coord), action.coord),
+            key=lambda action: (
+                -city_expansion_score(state, _action_coord(action)),
+                _action_coord(action),
+            ),
         )
         forest_city_actions = [
             action
@@ -179,6 +198,12 @@ class GreedyPolicy(Policy):
             }
             and city_site_score(state, action.coord) >= 100
         ]
+        inland_city_actions = [
+            action
+            for action in resource_city_actions
+            if action.coord is not None
+            and not _is_river_adjacent_site(state, action.coord)
+        ]
         river_city_actions = [
             action
             for action in resource_city_actions
@@ -189,8 +214,13 @@ class GreedyPolicy(Policy):
                 action
                 for action in groups.get(ActionType.BUILD_ROAD, [])
                 if action.coord is not None
+                and _road_structure_score(state, action.coord) > 0
             ),
-            key=lambda action: (-road_site_score(state, action.coord), action.coord),
+            key=lambda action: (
+                -_road_structure_score(state, _action_coord(action)),
+                -road_site_score(state, _action_coord(action)),
+                _action_coord(action),
+            ),
         )
         building_actions = sorted(
             groups.get(ActionType.BUILD_BUILDING, []),
@@ -203,6 +233,9 @@ class GreedyPolicy(Policy):
                 ),
             ),
         )
+        gap_building_actions = [
+            action for action in building_actions if _is_gap_build_action(state, action)
+        ]
         research_actions = sorted(
             groups.get(ActionType.RESEARCH_TECH, []),
             key=lambda action: (
@@ -214,6 +247,9 @@ class GreedyPolicy(Policy):
                 ),
             ),
         )
+
+        building_limit = min(14, MAX_BUILDING_CANDIDATES + max(0, len(state.cities) // 8))
+        research_limit = min(max(2, len(state.networks) + 1), len(research_actions))
 
         if pressure > 0:
             farm_actions = [
@@ -227,7 +263,7 @@ class GreedyPolicy(Policy):
                 action for action in research_actions if action.tech_type is TechType.AGRICULTURE
             ]
             candidates.extend(agriculture[:1])
-            candidates.extend(road_actions[:MAX_ROAD_CANDIDATES])
+            candidates.extend(road_actions[: max(2, len(state.networks))])
             rescue_cities = [
                 action
                 for action in city_actions
@@ -239,47 +275,57 @@ class GreedyPolicy(Policy):
                 candidates.extend(river_city_actions[:4])
                 candidates.extend(plain_city_actions[:4])
 
-        city_limit = min(
-            24,
-            MAX_CITY_CANDIDATES
-            + max(0, (state.config.map_size - 12) // 2)
-            + max(0, (len(state.cities) - 10) // 2),
-        )
-        road_limit = min(14, MAX_ROAD_CANDIDATES + max(0, state.config.map_size - 16))
-        building_limit = min(
-            18,
-            MAX_BUILDING_CANDIDATES
-            + max(0, (state.config.map_size - 16))
-            + max(0, len(state.cities) // 12),
-        )
+        city_limit = min(10, MAX_CITY_CANDIDATES + max(0, (state.config.map_size - 16) // 4))
+        road_limit = min(6, max(2, len(state.networks) + 1))
         resource_city_limit = min(
-            MAX_RESOURCE_CITY_CANDIDATES + max(0, state.config.map_size - 16),
+            min(6, MAX_RESOURCE_CITY_CANDIDATES + max(0, state.config.map_size - 20)),
             city_limit,
         )
+        if turns_remaining <= 100:
+            city_limit = max(4, city_limit - 2)
+            resource_city_limit = max(3, resource_city_limit - 1)
         if turns_remaining <= 60:
-            city_limit = max(6, city_limit - 6)
-            resource_city_limit = max(4, resource_city_limit - 2)
-            building_limit = min(20, building_limit + 4)
+            city_limit = max(3, city_limit - 2)
+            resource_city_limit = max(2, resource_city_limit - 1)
+            building_limit = min(18, building_limit + 2)
+        if current_tech_count < len(TechType):
+            city_limit = max(3, city_limit - 2)
+            resource_city_limit = max(2, resource_city_limit - 1)
+            research_limit = min(max(3, len(state.networks) + 2), len(research_actions))
         if total_buildings < len(state.cities):
-            city_limit = max(6, city_limit - 4)
-            resource_city_limit = max(4, resource_city_limit - 2)
+            city_limit = max(3, city_limit - 2)
+            resource_city_limit = max(2, resource_city_limit - 1)
+            building_limit = min(18, building_limit + 2)
+        if missing_unlocked_buildings:
+            city_limit = max(2, city_limit - 2)
+            resource_city_limit = max(2, resource_city_limit - 1)
+            road_limit = min(3, road_limit)
             building_limit = min(20, building_limit + 4)
-        if total_buildings + 8 < len(state.cities) * 2:
-            city_limit = max(4, city_limit - 6)
-            resource_city_limit = max(3, resource_city_limit - 4)
-            building_limit = min(22, building_limit + 6)
-        if resources.wood >= 20 and resources.ore >= 8 and turns_remaining >= 20:
-            city_limit = max(4, city_limit - 4)
-            resource_city_limit = max(3, resource_city_limit - 2)
-            building_limit = min(24, building_limit + 6)
         if food_crisis:
-            city_limit = min(city_limit, 6)
-            resource_city_limit = min(resource_city_limit, 5)
-            building_limit = min(24, building_limit + 4)
+            city_limit = min(city_limit, 2)
+            resource_city_limit = min(resource_city_limit, 2)
+            road_limit = min(2, road_limit)
+            building_limit = min(20, building_limit + 4)
+            research_limit = min(max(2, len(state.networks)), len(research_actions))
+        elif development_saturated:
+            city_limit = min(11, city_limit + 1)
+            resource_city_limit = min(7, resource_city_limit + 1)
+            building_limit = max(8, building_limit - 2)
+            current_composition_gap = _composition_gap(
+                current_connected_cities,
+                current_connected_inland,
+            )
+            if current_composition_gap > 0.20:
+                road_limit = min(7, road_limit + 1)
 
+        candidates.extend(gap_building_actions[: min(8, len(gap_building_actions))])
+        candidates.extend(research_actions[:research_limit])
+        candidates.extend(building_actions[:building_limit])
         candidates.extend(city_actions[:city_limit])
         candidates.extend(resource_city_actions[:resource_city_limit])
         candidates.extend(interior_gem_actions[:4])
+        if _inland_share(current_connected_cities, current_connected_inland) < TARGET_INLAND_SHARE:
+            candidates.extend(inland_city_actions[: min(6, city_limit)])
         food_target = len(state.cities) * FOOD_CONSUMPTION_PER_CITY * 3
         if resources.wood < wood_target or terrain_counts[TerrainType.FOREST] < 3:
             candidates.extend(forest_city_actions[: min(6, resource_city_limit)])
@@ -290,10 +336,11 @@ class GreedyPolicy(Policy):
                 candidates.extend(plain_city_actions[: min(4, resource_city_limit)])
             else:
                 candidates.extend(plain_city_actions[: min(6, resource_city_limit)])
-        candidates.extend(river_city_actions[: min(6, resource_city_limit)])
+        if food_crisis or current_connected_cities < 6:
+            candidates.extend(river_city_actions[: min(4, resource_city_limit)])
+        else:
+            candidates.extend(river_city_actions[: min(2, resource_city_limit)])
         candidates.extend(road_actions[:road_limit])
-        candidates.extend(building_actions[:building_limit])
-        candidates.extend(research_actions)
         candidates.extend(groups.get(ActionType.SKIP, [])[:1])
 
         deduped: list[Action] = []
@@ -304,15 +351,37 @@ class GreedyPolicy(Policy):
                 seen.add(action)
         return deduped
 
-    def _evaluate_action(self, state: GameState, action: Action, current_score: int) -> int:
+    def _evaluate_action(
+        self,
+        state: GameState,
+        action: Action,
+        current_score: int,
+    ) -> int:
         current_resources = total_resources(state)
+        current_breakdown = score_breakdown(state)
         turns_remaining = max(0, state.config.turn_limit - state.turn + 1)
         current_buildings = building_count(state)
         city_count = len(state.cities)
-        wood_target, ore_target = material_targets(state)
-        terrain_counts = city_terrain_counts(state)
+        buildings_per_city = current_buildings / max(1, city_count)
         infrastructure_gap = max(0, city_count - current_buildings)
         food_buffer_target = city_count * FOOD_CONSUMPTION_PER_CITY * 3
+        current_connected = connected_city_count(state)
+        current_isolated = isolated_city_count(state)
+        current_largest_network = largest_network_size(state)
+        current_tech_count = tech_count(state)
+        missing_unlocked_buildings = _has_missing_unlocked_buildings(state)
+        current_connected_cities, current_connected_inland = _connected_city_mix(state)
+        current_composition_gap = _composition_gap(
+            current_connected_cities,
+            current_connected_inland,
+        )
+        development_saturated = (
+            city_count > 0
+            and current_tech_count == len(TechType)
+            and not missing_unlocked_buildings
+            and current_buildings >= city_count * 3
+            and current_resources.food >= max(1, food_buffer_target)
+        )
         simulated = simulate_action(state, action)
         breakdown = score_breakdown(simulated)
         resources = total_resources(simulated)
@@ -320,204 +389,143 @@ class GreedyPolicy(Policy):
         connected = connected_city_count(simulated)
         isolated = isolated_city_count(simulated)
         largest_network = largest_network_size(simulated)
+        connected_cities, connected_inland = _connected_city_mix(simulated)
         delta_score = breakdown.total - current_score
 
-        value = breakdown.total * 10
-        value += delta_score * 14
-        value += connected * 25
-        value += largest_network * 12
-        value -= isolated * 10
-        value -= starving * 220
-        value -= max(0, -resources.food) * 3
-        value += building_count(simulated) * 8
+        value = breakdown.total * 20
+        value += delta_score * 40
+        value += max(0, connected - current_connected) * 90
+        value += max(0, current_isolated - isolated) * 140
+        value += max(0, largest_network - current_largest_network) * 35
+        value += (
+            breakdown.building_utilization_score - current_breakdown.building_utilization_score
+        ) * 18
+        value += (
+            current_breakdown.building_mismatch_penalty - breakdown.building_mismatch_penalty
+        ) * 14
+        value += (
+            breakdown.city_composition_bonus - current_breakdown.city_composition_bonus
+        ) * 10
+        value -= max(0, -resources.food) * 14
+        value -= starving * 260
+        value -= isolated * 24
         excess_science = max(0, resources.science - 60)
         if excess_science:
-            value -= excess_science * 3
+            value -= excess_science * 2
         if action.action_type is ActionType.BUILD_ROAD:
             assert action.coord is not None
-            road_value = road_site_score(state, action.coord)
-            value += road_value * 4
-            frontier_city_boost = 0
-            for neighbor in moore_neighbors(action.coord):
-                tile = state.board.get(neighbor)
-                if tile is None or tile.occupant is not OccupantType.NONE:
-                    continue
-                if tile.base_terrain not in {
-                    TerrainType.PLAIN, TerrainType.FOREST, TerrainType.MOUNTAIN
-                }:
-                    continue
-                # Check if this road unlocks a high-value city site that was previously disconnected
-                has_nearby_road = any(
-                    (n := state.board.get(n2)) is not None
-                    and n.occupant.value in {"road", "city"}
-                    for n2 in cardinal_neighbors(neighbor)
-                    if n2 != action.coord
-                )
-                if not has_nearby_road and city_site_score(state, neighbor) >= 90:
-                    frontier_city_boost = max(frontier_city_boost, 160)
-            value += frontier_city_boost
-            if len(state.roads) == 0 and len(state.cities) >= 2:
-                value += 620
-                if road_value >= 80:
-                    value += 520
-            if len(state.roads) < max(1, len(state.cities) // 4):
-                value += 140
-            if current_resources.food < 0 and road_value >= 120:
-                value += 180
-            if (
-                connected == connected_city_count(state)
-                and largest_network == largest_network_size(state)
-                and isolated == isolated_city_count(state)
-                and road_value < 120
-            ):
+            road_structure = _road_structure_score(state, action.coord)
+            value += road_structure * 120
+            value += int(current_composition_gap * road_structure * 80)
+            if connected == current_connected and isolated == current_isolated:
+                value -= 520
+            if largest_network == current_largest_network:
+                value -= 160
+            if missing_unlocked_buildings:
+                value -= 220
+            if current_tech_count < len(TechType):
                 value -= 180
+            if current_breakdown.building_utilization_score < 0:
+                value -= 260
+            if resources.food <= 0:
+                value -= 260
         if (
             action.action_type is ActionType.BUILD_BUILDING
             and action.building_type is BuildingType.FARM
         ):
-            value += 80
+            value += 70
         if action.action_type is ActionType.BUILD_BUILDING:
             assert action.building_type is not None
             per_turn_yield = sum(BUILDING_YIELDS[action.building_type].values())
-            value += per_turn_yield * min(turns_remaining, LONG_GAME_BUILDING_BONUS_TURNS) * 4
-            value += infrastructure_gap * 30
-            value += 120
-            if current_resources.wood >= 10:
-                value += 110
+            value += per_turn_yield * 18
+            value += infrastructure_gap * 28
+            if _is_gap_build_action(state, action):
+                value += 220
+            if development_saturated:
+                value -= 110
             if (
-                action.building_type in {BuildingType.MINE, BuildingType.LIBRARY}
-                and current_resources.ore >= 8
+                current_connected_cities >= 8
+                and current_buildings >= city_count * 2
+                and current_composition_gap > 0.15
             ):
-                value += 130
-            if current_buildings + 8 < city_count * 2:
-                value += 160
+                value -= int(current_composition_gap * 520)
+            if (
+                action.building_type is BuildingType.FARM
+                and resources.food > current_resources.food
+            ):
+                value += 180
+            if resources.food <= 0 and action.building_type is not BuildingType.FARM:
+                value -= 180
         if (
             action.action_type is ActionType.RESEARCH_TECH
             and action.tech_type is TechType.AGRICULTURE
         ):
-            value += 70
+            value += 80
         if action.action_type is ActionType.RESEARCH_TECH:
             assert action.tech_type is not None
-            value += 220
-            value += min(turns_remaining, 24) * 8
-            if current_resources.science >= TECH_COSTS[action.tech_type]:
-                value += 180
-            science_excess = max(0, current_resources.science - 50)
-            if science_excess:
-                value -= science_excess * 2
+            value += 140
+            value += (len(TechType) - current_tech_count) * 45
+            value += min(turns_remaining, 24) * 4
+            if current_breakdown.building_utilization_score < 0:
+                value += 80
         if action.action_type is ActionType.BUILD_CITY:
             assert action.coord is not None
-            terrain = state.board[action.coord].base_terrain
-            forest_ring, mountain_ring, river_ring, plain_ring, occupied_ring = resource_ring_counts(
-                state, action.coord
-            )
-            resource_ring = forest_ring + mountain_ring
-            ring_total = resource_ring + river_ring
-            river_adjacent = sum(
-                1
-                for neighbor in ((1, 0), (-1, 0), (0, 1), (0, -1))
-                if (
-                    adjacent := state.board.get(
-                        (action.coord[0] + neighbor[0], action.coord[1] + neighbor[1])
-                    )
-                ) is not None
-                and adjacent.base_terrain is TerrainType.RIVER
-            )
-            wood_gain = resources.wood - current_resources.wood
-            ore_gain = resources.ore - current_resources.ore
             food_gain = resources.food - current_resources.food
-            science_gain = resources.science - current_resources.science
-            city_soft_cap = max(12, state.config.map_size - 4)
-            value -= max(0, len(state.cities) - city_soft_cap) * 12
-            value += max(0, food_gain) * 2
-            value += max(0, wood_gain) * max(10, 24 - current_resources.wood)
-            value += max(0, ore_gain) * max(12, 20 - current_resources.ore)
-            value += max(0, science_gain) * max(2, 10 - (current_resources.science // 4))
-            if current_resources.wood <= 4 and wood_gain > 0:
-                value += 140
-            if current_resources.wood <= 10 and wood_gain > 0:
-                value += 160
-            if current_resources.ore <= 4 and ore_gain > 0:
-                value += 160
-            if current_resources.ore <= 8 and ore_gain > 0:
+            site_quality = max(0, city_site_score(state, action.coord) - 60)
+            value += max(0, food_gain) * 20
+            value += site_quality * 2
+            if development_saturated:
                 value += 180
-            if building_count(state) == 0 and (wood_gain > 0 or ore_gain > 0):
-                value += 120
-            value += resource_ring * 88
-            value += river_ring * 56
-            value += river_adjacent * 80
-            if current_resources.food < 0:
-                food_crisis_scale = min(80, -current_resources.food)
-                value += river_ring * food_crisis_scale * 2
-                value += river_adjacent * food_crisis_scale * 3
-            mix = min(forest_ring, mountain_ring)
-            mix_c_triggered = False
-            if resource_ring >= 4 and occupied_ring <= 4:
-                if river_ring == 0 and plain_ring == 0:
-                    value += mix * 96
-                    mix_c_triggered = True
-                elif river_ring == 0 and plain_ring > 0:
-                    value += mix * 64
-                elif river_ring > 0:
-                    value += mix * 64
-            if mix_c_triggered and terrain in {
-                TerrainType.FOREST, TerrainType.MOUNTAIN
-            }:
-                value += 240
-            value += max(0, ring_total - 3) * 95
-            if terrain is TerrainType.PLAIN and resource_ring >= 4:
-                value += 240 + ((resource_ring - 4) * 70)
-            if terrain is TerrainType.FOREST:
-                value += max(0, wood_target - current_resources.wood) * 34
-                value += max(0, 4 - terrain_counts[TerrainType.FOREST]) * 110
-                if resource_ring >= 4:
-                    value += 120
-            elif terrain is TerrainType.MOUNTAIN:
-                value += max(0, ore_target - current_resources.ore) * 38
-                value += max(0, 4 - terrain_counts[TerrainType.MOUNTAIN]) * 120
-                if resource_ring >= 4:
-                    value += 140
-            elif terrain is TerrainType.PLAIN:
-                if current_resources.food > food_buffer_target * 2:
-                    if current_resources.wood < wood_target or current_resources.ore < ore_target:
-                        value -= 300
-                if current_resources.food < 0:
-                    value += food_crisis_scale * 3
-                if current_resources.food < food_buffer_target:
-                    value += 120
-            if turns_remaining <= 60:
-                value -= (60 - turns_remaining) * 5
+                value += current_tech_count * 20
+                if current_composition_gap > 0.20:
+                    value += 80
+            current_gap = _composition_gap(current_connected_cities, current_connected_inland)
+            future_gap = _composition_gap(connected_cities, connected_inland)
+            value += (current_gap - future_gap) * 1000
+            if not _is_river_adjacent_site(state, action.coord):
+                connection_steps = _road_steps_to_network(state, action.coord, max_steps=3)
+                value += int(current_gap * 1400)
+                if connection_steps is not None:
+                    value += max(0, 4 - connection_steps) * 180
+                    value += int(current_gap * 420)
+                    if connection_steps <= 2:
+                        soft_gap = _composition_gap(
+                            current_connected_cities + 1,
+                            current_connected_inland + 1,
+                        )
+                        value += max(0, current_gap - soft_gap) * 1000
+                else:
+                    value -= 220
+            elif current_gap > 0 and connected >= current_connected:
+                value -= current_gap * 1100
             if infrastructure_gap > 0:
-                value -= infrastructure_gap * 34
-            if current_buildings + 8 < city_count * 2:
-                value -= 220
-            if current_resources.wood >= 20 and current_resources.ore >= 8:
+                value -= infrastructure_gap * 70
+            if current_buildings < city_count * 1.8:
+                value -= int((city_count * 1.8 - current_buildings) * 140)
+            if buildings_per_city < 1.4:
                 value -= 180
+            if current_buildings + 4 < city_count * 2:
+                value -= 240
+            if missing_unlocked_buildings:
+                value -= 260
+            if current_tech_count < len(TechType):
+                value -= 180
+            if current_resources.food < food_buffer_target:
+                value -= 240
             if current_resources.food < 0:
-                value -= max(0, -current_resources.food) * 6
+                value -= 360
                 if food_gain <= 0:
                     value -= 420
-                if river_ring == 0 and river_adjacent == 0:
-                    value -= 600
-            if current_resources.food < -(city_count * FOOD_CONSUMPTION_PER_CITY):
-                if food_gain <= 0:
-                    value -= 900
-                if river_ring == 0 and river_adjacent == 0:
-                    value -= 400
-            if current_resources.food < food_buffer_target and food_gain <= 0:
-                value -= 180
             if resources.food <= 0:
-                value -= 260
+                value -= 520
         if action.action_type is ActionType.SKIP:
-            value -= 140
-            if building_count(state) == 0 and len(state.cities) >= 8:
-                value -= 220
-            if current_resources.wood <= 10:
-                value -= 120
-            if current_resources.ore <= 8:
-                value -= 120
-            if turns_remaining > 12 and infrastructure_gap > 0 and current_resources.wood >= 10:
-                value -= min(280, infrastructure_gap * 25)
+            value -= 220
+            if current_breakdown.building_utilization_score < 0:
+                value -= 160
+            if current_tech_count < len(TechType):
+                value -= 140
+            if infrastructure_gap > 0:
+                value -= min(260, infrastructure_gap * 35)
         return value
 
 
@@ -550,3 +558,150 @@ def _action_tiebreak_key(state: GameState, action: Action) -> tuple[int, tuple[i
     if action.city_id is not None:
         city_turn = state.cities[action.city_id].founded_turn
     return (action.action_type.value != "build_building", coord, city_turn, city_id)
+
+
+def _action_coord(action: Action) -> tuple[int, int]:
+    assert action.coord is not None
+    return action.coord
+
+
+def _is_river_adjacent_site(state: GameState, coord: tuple[int, int]) -> bool:
+    return any(
+        (tile := state.board.get(neighbor)) is not None
+        and tile.base_terrain is TerrainType.RIVER
+        for neighbor in cardinal_neighbors(coord)
+    )
+
+
+def _connected_city_mix(state: GameState) -> tuple[int, int]:
+    connected = 0
+    inland = 0
+    for city in state.cities.values():
+        network = state.networks[city.network_id]
+        if len(network.city_ids) < 2:
+            continue
+        connected += 1
+        if not _is_river_adjacent_site(state, city.coord):
+            inland += 1
+    return connected, inland
+
+
+def _inland_share(connected_cities: int, connected_inland: int) -> float:
+    if connected_cities <= 0:
+        return 0.0
+    return connected_inland / connected_cities
+
+
+def _composition_gap(connected_cities: int, connected_inland: int) -> float:
+    if connected_cities < 6:
+        return max(0.0, TARGET_INLAND_SHARE - _inland_share(connected_cities, connected_inland))
+    return abs(_inland_share(connected_cities, connected_inland) - TARGET_INLAND_SHARE)
+
+
+def _road_steps_to_network(
+    state: GameState,
+    coord: tuple[int, int],
+    max_steps: int,
+) -> int | None:
+    passable_map = map_passable_coords_to_networks(state)
+    if coord in passable_map:
+        return 0
+    frontier = [(coord, 0)]
+    seen = {coord}
+    while frontier:
+        current, steps = frontier.pop(0)
+        if steps >= max_steps:
+            continue
+        for neighbor in cardinal_neighbors(current):
+            if neighbor in seen:
+                continue
+            tile = state.board.get(neighbor)
+            if tile is None:
+                continue
+            if neighbor in passable_map:
+                return steps + 1
+            if tile.occupant is not OccupantType.NONE:
+                continue
+            if tile.base_terrain not in {
+                TerrainType.PLAIN,
+                TerrainType.FOREST,
+                TerrainType.MOUNTAIN,
+                TerrainType.RIVER,
+            }:
+                continue
+            seen.add(neighbor)
+            frontier.append((neighbor, steps + 1))
+    return None
+
+
+def _has_missing_unlocked_buildings(state: GameState) -> bool:
+    return any(_network_missing_building_types(state, network_id) for network_id in state.networks)
+
+
+def _network_missing_building_types(
+    state: GameState,
+    network_id: int,
+) -> set[BuildingType]:
+    network = state.networks[network_id]
+    missing: set[BuildingType] = set()
+    for tech_type in network.unlocked_techs:
+        building_type = TECH_UNLOCK_PRIORITY_TO_BUILDING[tech_type]
+        total = sum(
+            state.cities[city_id].buildings.for_type(building_type)
+            for city_id in network.city_ids
+        )
+        if total == 0:
+            missing.add(building_type)
+    return missing
+
+
+def _is_gap_build_action(state: GameState, action: Action) -> bool:
+    if action.city_id is None or action.building_type is None:
+        return False
+    city = state.cities[action.city_id]
+    return action.building_type in _network_missing_building_types(state, city.network_id)
+
+
+def _road_structure_score(state: GameState, coord: tuple[int, int]) -> int:
+    structural_score = 0
+    passable_map = map_passable_coords_to_networks(state)
+    adjacent_network_ids = {
+        passable_map[neighbor]
+        for neighbor in cardinal_neighbors(coord)
+        if neighbor in passable_map
+    }
+    if len(adjacent_network_ids) >= 2:
+        structural_score += 4
+    if any(len(state.networks[network_id].city_ids) == 1 for network_id in adjacent_network_ids):
+        structural_score += 3
+    if state.board[coord].base_terrain is TerrainType.RIVER and adjacent_network_ids:
+        structural_score += 1
+    for neighbor in moore_neighbors(coord):
+        tile = state.board.get(neighbor)
+        if tile is None or tile.occupant is not OccupantType.NONE:
+            continue
+        if tile.base_terrain not in {TerrainType.PLAIN, TerrainType.FOREST, TerrainType.MOUNTAIN}:
+            continue
+        if city_site_score(state, neighbor) < 120:
+            continue
+        has_prior_access = any(
+            (adjacent := state.board.get(n2)) is not None
+            and (
+                adjacent.occupant in {OccupantType.CITY, OccupantType.ROAD}
+                or adjacent.base_terrain is TerrainType.RIVER
+            )
+            for n2 in cardinal_neighbors(neighbor)
+            if n2 != coord
+        )
+        if not has_prior_access:
+            structural_score += 2
+            break
+    return structural_score
+
+
+TECH_UNLOCK_PRIORITY_TO_BUILDING: dict[TechType, BuildingType] = {
+    TechType.AGRICULTURE: BuildingType.FARM,
+    TechType.LOGGING: BuildingType.LUMBER_MILL,
+    TechType.MINING: BuildingType.MINE,
+    TechType.EDUCATION: BuildingType.LIBRARY,
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from microciv.constants import PROJECT_VERSION
@@ -61,6 +62,99 @@ CSV_FIELD_ORDER: tuple[str, ...] = (
 )
 
 
+def _require_dict(value: object, field_name: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a JSON object.")
+    return {str(key): item for key, item in value.items()}
+
+
+def _require_int(payload: Mapping[str, object], field_name: str) -> int:
+    value = payload[field_name]
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return int(value)
+    raise ValueError(f"{field_name} must be an integer.")
+
+
+def _optional_int(payload: Mapping[str, object], field_name: str) -> int | None:
+    if field_name not in payload:
+        return None
+    return _require_int(payload, field_name)
+
+
+def _int_with_default(payload: Mapping[str, object], field_name: str, default: int) -> int:
+    value = _optional_int(payload, field_name)
+    return default if value is None else value
+
+
+def _require_float(payload: Mapping[str, object], field_name: str) -> float:
+    value = payload[field_name]
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        return float(value)
+    raise ValueError(f"{field_name} must be a number.")
+
+
+def _require_str(payload: Mapping[str, object], field_name: str) -> str:
+    value = payload[field_name]
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string.")
+    return value
+
+
+def _optional_str(payload: Mapping[str, object], field_name: str) -> str | None:
+    if field_name not in payload:
+        return None
+    return _require_str(payload, field_name)
+
+
+def _list_field(payload: Mapping[str, object], field_name: str) -> list[object]:
+    value = payload.get(field_name, [])
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list.")
+    return value
+
+
+def _list_of_dicts(payload: Mapping[str, object], field_name: str) -> list[dict[str, object]]:
+    return [
+        _require_dict(item, f"{field_name}[{index}]")
+        for index, item in enumerate(_list_field(payload, field_name))
+    ]
+
+
+def _mapping_field(payload: Mapping[str, object], field_name: str) -> dict[str, object]:
+    value = payload.get(field_name, {})
+    return _require_dict(value, field_name)
+
+
+def _list_of_ints(payload: Mapping[str, object], field_name: str) -> list[int]:
+    values: list[int] = []
+    for index, item in enumerate(_list_field(payload, field_name)):
+        if isinstance(item, int):
+            values.append(item)
+            continue
+        if isinstance(item, str):
+            values.append(int(item))
+            continue
+        raise ValueError(f"{field_name}[{index}] must be an integer.")
+    return values
+
+
+def _mapping_of_floats(payload: Mapping[str, object], field_name: str) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for key, value in _mapping_field(payload, field_name).items():
+        if isinstance(value, int | float):
+            values[str(key)] = float(value)
+            continue
+        if isinstance(value, str):
+            values[str(key)] = float(value)
+            continue
+        raise ValueError(f"{field_name}[{key!r}] must be numeric.")
+    return values
+
+
 @dataclass(slots=True, frozen=True)
 class RecordTileSnapshot:
     """Serializable snapshot of a final map tile."""
@@ -82,10 +176,10 @@ class RecordTileSnapshot:
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordTileSnapshot:
         return cls(
-            x=int(payload["x"]),
-            y=int(payload["y"]),
-            base_terrain=str(payload["base_terrain"]),
-            occupant=str(payload["occupant"]),
+            x=_require_int(payload, "x"),
+            y=_require_int(payload, "y"),
+            base_terrain=_require_str(payload, "base_terrain"),
+            occupant=_require_str(payload, "occupant"),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -130,16 +224,16 @@ class RecordCitySnapshot:
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordCitySnapshot:
         return cls(
-            city_id=int(payload["city_id"]),
-            x=int(payload["x"]),
-            y=int(payload["y"]),
-            founded_turn=int(payload["founded_turn"]),
-            network_id=int(payload["network_id"]),
-            farm=int(payload["farm"]),
-            lumber_mill=int(payload["lumber_mill"]),
-            mine=int(payload["mine"]),
-            library=int(payload["library"]),
-            total_buildings=int(payload["total_buildings"]),
+            city_id=_require_int(payload, "city_id"),
+            x=_require_int(payload, "x"),
+            y=_require_int(payload, "y"),
+            founded_turn=_require_int(payload, "founded_turn"),
+            network_id=_require_int(payload, "network_id"),
+            farm=_require_int(payload, "farm"),
+            lumber_mill=_require_int(payload, "lumber_mill"),
+            mine=_require_int(payload, "mine"),
+            library=_require_int(payload, "library"),
+            total_buildings=_require_int(payload, "total_buildings"),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -175,10 +269,10 @@ class RecordRoadSnapshot:
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordRoadSnapshot:
         return cls(
-            road_id=int(payload["road_id"]),
-            x=int(payload["x"]),
-            y=int(payload["y"]),
-            built_turn=int(payload["built_turn"]),
+            road_id=_require_int(payload, "road_id"),
+            x=_require_int(payload, "x"),
+            y=_require_int(payload, "y"),
+            built_turn=_require_int(payload, "built_turn"),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -217,13 +311,13 @@ class RecordNetworkSnapshot:
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordNetworkSnapshot:
         return cls(
-            network_id=int(payload["network_id"]),
-            city_ids=[int(city_id) for city_id in payload["city_ids"]],
-            food=int(payload["food"]),
-            wood=int(payload["wood"]),
-            ore=int(payload["ore"]),
-            science=int(payload["science"]),
-            unlocked_techs=[str(tech) for tech in payload["unlocked_techs"]],
+            network_id=_require_int(payload, "network_id"),
+            city_ids=_list_of_ints(payload, "city_ids"),
+            food=_require_int(payload, "food"),
+            wood=_require_int(payload, "wood"),
+            ore=_require_int(payload, "ore"),
+            science=_require_int(payload, "science"),
+            unlocked_techs=[str(tech) for tech in _list_field(payload, "unlocked_techs")],
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -253,13 +347,13 @@ class RecordActionLogEntry:
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordActionLogEntry:
         return cls(
-            turn=int(payload["turn"]),
-            action_type=str(payload["action_type"]),
-            x=int(payload["x"]) if "x" in payload else None,
-            y=int(payload["y"]) if "y" in payload else None,
-            city_id=int(payload["city_id"]) if "city_id" in payload else None,
-            building_type=str(payload["building_type"]) if "building_type" in payload else None,
-            tech_type=str(payload["tech_type"]) if "tech_type" in payload else None,
+            turn=_require_int(payload, "turn"),
+            action_type=_require_str(payload, "action_type"),
+            x=_optional_int(payload, "x"),
+            y=_optional_int(payload, "y"),
+            city_id=_optional_int(payload, "city_id"),
+            building_type=_optional_str(payload, "building_type"),
+            tech_type=_optional_str(payload, "tech_type"),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -304,22 +398,22 @@ class RecordTurnSnapshot:
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordTurnSnapshot:
         return cls(
-            turn=int(payload["turn"]),
-            score=int(payload["score"]),
-            food=int(payload["food"]),
-            wood=int(payload["wood"]),
-            ore=int(payload["ore"]),
-            science=int(payload["science"]),
-            city_count=int(payload["city_count"]),
-            building_count=int(payload["building_count"]),
-            tech_count=int(payload["tech_count"]),
-            road_count=int(payload["road_count"]),
-            network_count=int(payload["network_count"]),
-            connected_city_count=int(payload.get("connected_city_count", 0)),
-            isolated_city_count=int(payload.get("isolated_city_count", 0)),
-            largest_network_size=int(payload.get("largest_network_size", 0)),
-            starving_network_count=int(payload.get("starving_network_count", 0)),
-            legal_actions_count=int(payload["legal_actions_count"]),
+            turn=_require_int(payload, "turn"),
+            score=_require_int(payload, "score"),
+            food=_require_int(payload, "food"),
+            wood=_require_int(payload, "wood"),
+            ore=_require_int(payload, "ore"),
+            science=_require_int(payload, "science"),
+            city_count=_require_int(payload, "city_count"),
+            building_count=_require_int(payload, "building_count"),
+            tech_count=_require_int(payload, "tech_count"),
+            road_count=_require_int(payload, "road_count"),
+            network_count=_require_int(payload, "network_count"),
+            connected_city_count=_int_with_default(payload, "connected_city_count", 0),
+            isolated_city_count=_int_with_default(payload, "isolated_city_count", 0),
+            largest_network_size=_int_with_default(payload, "largest_network_size", 0),
+            starving_network_count=_int_with_default(payload, "starving_network_count", 0),
+            legal_actions_count=_require_int(payload, "legal_actions_count"),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -363,31 +457,26 @@ class RecordDecisionContext:
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordDecisionContext:
         return cls(
-            turn=int(payload["turn"]),
-            legal_actions_count=int(payload["legal_actions_count"]),
-            legal_build_city_count=int(payload.get("legal_build_city_count", 0)),
-            legal_build_road_count=int(payload.get("legal_build_road_count", 0)),
-            legal_build_building_count=int(payload.get("legal_build_building_count", 0)),
-            legal_research_tech_count=int(payload.get("legal_research_tech_count", 0)),
-            legal_skip_count=int(payload.get("legal_skip_count", 0)),
-            chosen_action_type=(
-                str(payload["chosen_action_type"]) if "chosen_action_type" in payload else None
+            turn=_require_int(payload, "turn"),
+            legal_actions_count=_require_int(payload, "legal_actions_count"),
+            legal_build_city_count=_int_with_default(payload, "legal_build_city_count", 0),
+            legal_build_road_count=_int_with_default(payload, "legal_build_road_count", 0),
+            legal_build_building_count=_int_with_default(
+                payload, "legal_build_building_count", 0
             ),
-            greedy_priority=(
-                str(payload["greedy_priority"]) if "greedy_priority" in payload else None
+            legal_research_tech_count=_int_with_default(
+                payload, "legal_research_tech_count", 0
             ),
-            greedy_best_action_type=(
-                str(payload["greedy_best_action_type"])
-                if "greedy_best_action_type" in payload
+            legal_skip_count=_int_with_default(payload, "legal_skip_count", 0),
+            chosen_action_type=_optional_str(payload, "chosen_action_type"),
+            greedy_priority=_optional_str(payload, "greedy_priority"),
+            greedy_best_action_type=_optional_str(payload, "greedy_best_action_type"),
+            greedy_best_score=(
+                _require_float(payload, "greedy_best_score")
+                if "greedy_best_score" in payload
                 else None
             ),
-            greedy_best_score=(
-                float(payload["greedy_best_score"]) if "greedy_best_score" in payload else None
-            ),
-            random_type_weights={
-                str(key): float(value)
-                for key, value in dict(payload.get("random_type_weights", {})).items()
-            },
+            random_type_weights=_mapping_of_floats(payload, "random_type_weights"),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -538,70 +627,82 @@ class RecordEntry:
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordEntry:
-        mode = str(payload["mode"])
+        mode = _require_str(payload, "mode")
         if mode not in {"play", "autoplay"}:
             raise ValueError(f"Invalid mode: {mode}")
-        ai_type = str(payload["ai_type"])
+        ai_type = _require_str(payload, "ai_type")
         if ai_type not in {"Human", "Greedy", "Random"}:
             raise ValueError(f"Invalid ai_type: {ai_type}")
-        playback_mode = str(payload["playback_mode"])
+        playback_mode = _require_str(payload, "playback_mode")
         if playback_mode not in {"", "normal", "speed"}:
             raise ValueError(f"Invalid playback_mode: {playback_mode}")
         return cls(
-            record_id=int(payload["record_id"]),
-            timestamp=str(payload["timestamp"]),
-            game_version=str(payload["game_version"]),
+            record_id=_require_int(payload, "record_id"),
+            timestamp=_require_str(payload, "timestamp"),
+            game_version=_require_str(payload, "game_version"),
             mode=mode,
             ai_type=ai_type,
-            custom_goal=str(payload["custom_goal"]),
+            custom_goal=_require_str(payload, "custom_goal"),
             playback_mode=playback_mode,
-            seed=int(payload["seed"]),
-            map_size=int(payload["map_size"]),
-            map_difficulty=str(payload["map_difficulty"]),
-            turn_limit=int(payload["turn_limit"]),
-            actual_turns=int(payload["actual_turns"]),
-            final_score=int(payload["final_score"]),
-            city_count=int(payload["city_count"]),
-            building_count=int(payload["building_count"]),
-            tech_count=int(payload["tech_count"]),
-            food=int(payload["food"]),
-            wood=int(payload["wood"]),
-            ore=int(payload["ore"]),
-            science=int(payload["science"]),
-            build_city_count=int(payload["build_city_count"]),
-            build_road_count=int(payload["build_road_count"]),
-            build_farm_count=int(payload["build_farm_count"]),
-            build_lumber_mill_count=int(payload["build_lumber_mill_count"]),
-            build_mine_count=int(payload["build_mine_count"]),
-            build_library_count=int(payload["build_library_count"]),
-            research_agriculture_count=int(payload["research_agriculture_count"]),
-            research_logging_count=int(payload["research_logging_count"]),
-            research_mining_count=int(payload["research_mining_count"]),
-            research_education_count=int(payload["research_education_count"]),
-            skip_count=int(payload["skip_count"]),
-            decision_count=int(payload["decision_count"]),
-            decision_time_ms_total=float(payload["decision_time_ms_total"]),
-            decision_time_ms_avg=float(payload["decision_time_ms_avg"]),
-            decision_time_ms_max=float(payload["decision_time_ms_max"]),
-            turn_elapsed_ms_total=float(payload["turn_elapsed_ms_total"]),
-            turn_elapsed_ms_avg=float(payload["turn_elapsed_ms_avg"]),
-            turn_elapsed_ms_max=float(payload["turn_elapsed_ms_max"]),
-            session_elapsed_ms=float(payload["session_elapsed_ms"]),
-            final_map=[RecordTileSnapshot.from_dict(item) for item in payload.get("final_map", [])],
-            cities=[RecordCitySnapshot.from_dict(item) for item in payload.get("cities", [])],
-            roads=[RecordRoadSnapshot.from_dict(item) for item in payload.get("roads", [])],
+            seed=_require_int(payload, "seed"),
+            map_size=_require_int(payload, "map_size"),
+            map_difficulty=_require_str(payload, "map_difficulty"),
+            turn_limit=_require_int(payload, "turn_limit"),
+            actual_turns=_require_int(payload, "actual_turns"),
+            final_score=_require_int(payload, "final_score"),
+            city_count=_require_int(payload, "city_count"),
+            building_count=_require_int(payload, "building_count"),
+            tech_count=_require_int(payload, "tech_count"),
+            food=_require_int(payload, "food"),
+            wood=_require_int(payload, "wood"),
+            ore=_require_int(payload, "ore"),
+            science=_require_int(payload, "science"),
+            build_city_count=_require_int(payload, "build_city_count"),
+            build_road_count=_require_int(payload, "build_road_count"),
+            build_farm_count=_require_int(payload, "build_farm_count"),
+            build_lumber_mill_count=_require_int(payload, "build_lumber_mill_count"),
+            build_mine_count=_require_int(payload, "build_mine_count"),
+            build_library_count=_require_int(payload, "build_library_count"),
+            research_agriculture_count=_require_int(payload, "research_agriculture_count"),
+            research_logging_count=_require_int(payload, "research_logging_count"),
+            research_mining_count=_require_int(payload, "research_mining_count"),
+            research_education_count=_require_int(payload, "research_education_count"),
+            skip_count=_require_int(payload, "skip_count"),
+            decision_count=_require_int(payload, "decision_count"),
+            decision_time_ms_total=_require_float(payload, "decision_time_ms_total"),
+            decision_time_ms_avg=_require_float(payload, "decision_time_ms_avg"),
+            decision_time_ms_max=_require_float(payload, "decision_time_ms_max"),
+            turn_elapsed_ms_total=_require_float(payload, "turn_elapsed_ms_total"),
+            turn_elapsed_ms_avg=_require_float(payload, "turn_elapsed_ms_avg"),
+            turn_elapsed_ms_max=_require_float(payload, "turn_elapsed_ms_max"),
+            session_elapsed_ms=_require_float(payload, "session_elapsed_ms"),
+            final_map=[
+                RecordTileSnapshot.from_dict(item)
+                for item in _list_of_dicts(payload, "final_map")
+            ],
+            cities=[
+                RecordCitySnapshot.from_dict(item)
+                for item in _list_of_dicts(payload, "cities")
+            ],
+            roads=[
+                RecordRoadSnapshot.from_dict(item)
+                for item in _list_of_dicts(payload, "roads")
+            ],
             networks=[
-                RecordNetworkSnapshot.from_dict(item) for item in payload.get("networks", [])
+                RecordNetworkSnapshot.from_dict(item)
+                for item in _list_of_dicts(payload, "networks")
             ],
             action_log=[
-                RecordActionLogEntry.from_dict(item) for item in payload.get("action_log", [])
+                RecordActionLogEntry.from_dict(item)
+                for item in _list_of_dicts(payload, "action_log")
             ],
             turn_snapshots=[
-                RecordTurnSnapshot.from_dict(item) for item in payload.get("turn_snapshots", [])
+                RecordTurnSnapshot.from_dict(item)
+                for item in _list_of_dicts(payload, "turn_snapshots")
             ],
             decision_contexts=[
                 RecordDecisionContext.from_dict(item)
-                for item in payload.get("decision_contexts", [])
+                for item in _list_of_dicts(payload, "decision_contexts")
             ],
         )
 
@@ -641,9 +742,9 @@ class RecordDatabase:
         if "schema_version" not in payload or "next_record_id" not in payload:
             raise ValueError("Missing schema_version or next_record_id")
         return cls(
-            schema_version=int(payload["schema_version"]),
-            next_record_id=int(payload["next_record_id"]),
-            records=[RecordEntry.from_dict(item) for item in payload.get("records", [])],
+            schema_version=_require_int(payload, "schema_version"),
+            next_record_id=_require_int(payload, "next_record_id"),
+            records=[RecordEntry.from_dict(item) for item in _list_of_dicts(payload, "records")],
         )
 
     def to_dict(self) -> dict[str, object]:

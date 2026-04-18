@@ -901,10 +901,10 @@ class MapGenerator:
             return []
 
         path: list[Coord] = []
-        current: Coord | None = end
-        while current is not None:
-            path.append(current)
-            current = came_from[current]
+        cursor: Coord | None = end
+        while cursor is not None:
+            path.append(cursor)
+            cursor = came_from[cursor]
         path.reverse()
         return path
 
@@ -967,10 +967,10 @@ class MapGenerator:
             return []
 
         path: list[Coord] = []
-        current: Coord | None = end
-        while current is not None:
-            path.append(current)
-            current = came_from[current]
+        cursor: Coord | None = end
+        while cursor is not None:
+            path.append(cursor)
+            cursor = came_from[cursor]
         path.reverse()
         return path
 

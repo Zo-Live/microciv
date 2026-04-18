@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import curses
 import json
 from pathlib import Path
-import curses
 
 from microciv.config import build_app_paths
-from microciv.curses_app import CursesMicroCivApp, MAP_SIZE_OPTIONS, MicroCivController, Rect, ScreenRoute
+from microciv.curses_app import (
+    MAP_SIZE_OPTIONS,
+    CursesMicroCivApp,
+    MicroCivController,
+    Rect,
+    ScreenRoute,
+)
 from microciv.game.actions import Action, validate_action
 from microciv.game.enums import Mode, PlaybackMode, PolicyType
 from microciv.records.models import RecordDatabase, RecordEntry
@@ -124,7 +130,12 @@ def test_app_mouse_dispatch_uses_rendered_hitboxes_and_wheel(tmp_path: Path) -> 
     assert app.controller.current_route is ScreenRoute.SETUP_PLAY
 
     app.controller.current_route = ScreenRoute.RECORDS_GRID
-    app.controller.records = RecordDatabase(records=[make_record(idx, f"2026-04-09T{idx:02d}:00:00+08:00") for idx in range(1, 14)])
+    app.controller.records = RecordDatabase(
+        records=[
+            make_record(idx, f"2026-04-09T{idx:02d}:00:00+08:00")
+            for idx in range(1, 14)
+        ]
+    )
     app._handle_mouse(0, 0, getattr(curses, "BUTTON5_PRESSED", 0))
     assert app.controller.records_scroll == 1
 
