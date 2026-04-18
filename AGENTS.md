@@ -17,7 +17,7 @@ Main features:
 - Local Records system with JSON persistence and export
 - Pixel font rendering (title, score, turn count)
 
-No external runtime dependencies; all code is pure Python standard library.
+Minimal external runtime dependencies; core game logic uses only the Python standard library (`curses`). `pandas` is listed as a runtime dependency solely for `scripts/analyze_batch.py` dataset diagnostics.
 
 ---
 
@@ -182,6 +182,23 @@ GameConfig
 6. **System Layer**: `networks.py`, `resources.py`, `scoring.py`, `mapgen.py`
 7. **Persistence Layer**: `records/store.py`, `records/models.py`, `records/export.py`
 
+**UI page flow** (managed by `ScreenRoute` in `curses_app.py`):
+
+```
+Main Menu
+    -> Play / Autoplay -> Setup (map preview + config)
+        -> Start -> Game Screen (manual or autoplay)
+            -> m key / click -> In-game Menu (Resume / Restart / Menu / Exit)
+            -> select empty tile -> Settlement panel (City / Road + Build / Cancel)
+            -> select city -> City panel (Buildings / Technologies)
+                -> Buildings -> Build subpanel (4 building types + Build / Cancel)
+                -> Technologies -> Tech subpanel (4 techs + Research / Cancel)
+            -> final turn -> Final screen (Restart / Menu / Exit)
+    -> Records -> Records grid (paginated list)
+        -> click slot -> Record detail (final map + stats)
+    -> Exit
+```
+
 ---
 
 ## Coding Conventions & Development Guidelines
@@ -243,7 +260,6 @@ Test framework is `pytest`, configured in `pyproject.toml`.
 
 - `test_smoke.py` — config defaults and enum basic assertions
 - `test_engine.py` — core engine action validation (city build, road build, building, tech, skip, game over)
-- `test_actions.py` — action legality
 - `test_models.py` — data model validation
 - `test_mapgen.py` — map generation reproducibility, size, quality rules, river count
 - `test_networks.py` — network connectivity
@@ -251,7 +267,7 @@ Test framework is `pytest`, configured in `pyproject.toml`.
 - `test_scoring.py` — score calculation
 - `test_ai.py` — Greedy/Random strategy legality, Greedy food rescue behavior, full game completion, score baseline
 - `test_records.py` — RecordEntry serialization, Store persistence, schema migration, FIFO trimming, export
-- `test_grid.py`, `test_curses_app.py`, `test_tui.py`, etc. — utilities and UI tests
+- `test_grid.py`, `test_curses_app.py`, `test_analyze_batch.py` — utilities, UI, and script tests
 
 **Testing style characteristics**:
 
@@ -266,7 +282,7 @@ Test framework is `pytest`, configured in `pyproject.toml`.
 
 - **No traditional deployment pipeline**: this is a locally-run terminal app with no CI/CD, Docker, or cloud deployment config.
 - **Data file location**: runtime data is saved to `data/records.json`; incompatible old files are renamed to `.incompatible` backups.
-- **No external runtime dependencies**: pure standard library implementation, no supply-chain attack surface.
+- **Minimal external runtime dependencies**: core logic is pure standard library; `pandas` is only used by `scripts/analyze_batch.py`.
 - **Input sources**: currently only accepts local mouse/keyboard input via `curses`, no network interfaces, no network attack surface to consider.
 - **When modifying sensitive code**: note that `GameEngine.apply_action()` is the core state mutation path; any changes must be updated in sync in `tests/test_engine.py` and `tests/test_actions.py`.
 

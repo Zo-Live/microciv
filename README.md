@@ -55,6 +55,12 @@ python main.py
 python -m microciv
 ```
 
+若使用 uv，也可直接：
+
+```bash
+uv run python main.py
+```
+
 ### 批量 AI 数据收集与分析
 
 项目提供了无界面的批量运行脚本，用于让 AI 自动执行大量局数并导出结果（JSON + CSV）：
@@ -105,17 +111,21 @@ MicroCiv 以鼠标为主要输入方式。
 ```
 microciv/
 ├── src/microciv/
-│   ├── ai/            # AI 策略（Greedy、Random）
+│   ├── ai/            # AI 策略（Greedy、Random、Custom 占位）
 │   ├── game/          # 核心规则与状态机
-│   ├── records/       # 本地持久化与 JSON 导出
+│   ├── records/       # 本地持久化与导出
 │   ├── tui/           # 终端 UI 组件（像素字体）
-│   ├── session.py     # 运行时会话辅助
-│   ├── curses_app.py  # curses 控制器与渲染
-│   └── app.py         # 程序入口
+│   ├── utils/         # 坐标、邻接、排序、RNG 工具
+│   ├── session.py     # 运行时会话与自动播放辅助
+│   ├── curses_app.py  # curses 控制器、路由与渲染
+│   ├── app.py         # 程序入口
+│   ├── config.py      # 路径配置
+│   └── constants.py   # 全局常量与数值参数
+├── scripts/           # 批量运行与数据分析脚本
 ├── docs/              # 项目文档与流程图
 ├── tests/             # 测试套件
 ├── data/              # 运行时 Records 数据
-└── exports/           # JSON 导出
+└── exports/           # 导出目录（JSON / CSV）
 ```
 
 ## 开发
@@ -130,6 +140,12 @@ microciv/
 
 ```bash
 .venv/bin/ruff check src tests
+```
+
+类型检查：
+
+```bash
+.venv/bin/mypy
 ```
 
 ## 许可证
