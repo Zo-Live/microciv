@@ -376,10 +376,11 @@ def test_analyze_batch_reports_greedy_anomalies_with_turn_diagnostics() -> None:
             legal_research_tech_count=0,
             legal_skip_count=1,
             chosen_action_type="skip",
-            greedy_stage="fill",
+            greedy_stage="expand_reopen",
             greedy_priority="skip",
             greedy_best_delta_score=-2,
             greedy_food_pressure=1,
+            greedy_fill_reopen_reason="repeated_fill_skip",
         ),
     ]
 
@@ -392,7 +393,9 @@ def test_analyze_batch_reports_greedy_anomalies_with_turn_diagnostics() -> None:
     assert int(row["starvation_turns"]) == 3
     assert int(row["longest_starvation_streak"]) == 3
     assert int(row["first_skip_turn"]) == 3
-    assert int(row["fill_stage_turns"]) == 2
+    assert int(row["fill_stage_turns"]) == 1
+    assert int(row["first_stage_expand_reopen_turn"]) == 5
+    assert int(row["expand_reopen_stage_turns"]) == 1
     assert int(row["rescue_stage_turns"]) == 2
     assert int(row["late_game_no_growth_streak"]) == 4
     assert int(row["score_drop_turns"]) == 4
@@ -403,3 +406,5 @@ def test_analyze_batch_reports_greedy_anomalies_with_turn_diagnostics() -> None:
     assert "score_gap=-55" in report
     assert "tail_skip_ratio=0.60" in report
     assert "first_skip=3" in report
+    assert "first_reopen=5" in report
+    assert "reopen_turns=1" in report
