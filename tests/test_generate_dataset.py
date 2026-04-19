@@ -13,7 +13,32 @@ SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "generate_datase
 SPEC = importlib.util.spec_from_file_location("generate_dataset", SCRIPT_PATH)
 assert SPEC is not None and SPEC.loader is not None
 generate_dataset = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = generate_dataset
 SPEC.loader.exec_module(generate_dataset)
+
+
+class _FakeProcessPoolExecutor:
+    def __init__(self, *, max_workers: int) -> None:
+        self.max_workers = max_workers
+        self.map_calls: list[tuple[object, list[object], int]] = []
+
+    def __enter__(self) -> _FakeProcessPoolExecutor:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        del exc_type, exc, tb
+
+    def map(
+        self,
+        fn: object,
+        iterable: object,
+        *,
+        chunksize: int,
+    ) -> list[object]:
+        items = list(iterable)
+        self.map_calls.append((fn, items, chunksize))
+        assert callable(fn)
+        return [fn(item) for item in items]
 
 
 def _make_record(
@@ -111,6 +136,8 @@ def test_generate_dataset_exports_anomaly_json_and_csv(monkeypatch, tmp_path) ->
             "normal",
             "--label",
             "unit",
+            "--workers",
+            "1",
         ],
     )
 
@@ -151,5 +178,103 @@ def test_generate_dataset_exports_anomaly_json_and_csv(monkeypatch, tmp_path) ->
     assert manifest["under_random_anomaly_count"] == 2
     assert manifest["seed_start"] == 1
     assert manifest["seed_end"] == 2
+    assert manifest["execution_mode"] == "serial"
+    assert manifest["workers"] == 1
+    assert manifest["chunksize"] == 8
     assert manifest["anomaly_json_path"].endswith("dataset_unit_anomalies.json")
     assert manifest["anomaly_csv_path"].endswith("dataset_unit_anomalies.csv")
+
+
+def test_build_game_tasks_preserves_seed_pairing_and_record_order() -> None:
+    tasks, seed_end = generate_dataset.build_game_tasks(
+        seed_start=5,
+        games_per_combo=2,
+        policies=[PolicyType.GREEDY, PolicyType.RANDOM],
+        base_combos=[(12, 30, "normal")],
+    )
+
+    assert seed_end == 6
+    assert [task.record_id for task in tasks] == [1, 2, 3, 4]
+    assert [(task.seed, task.policy_type) for task in tasks] == [
+        (5, PolicyType.GREEDY),
+        (5, PolicyType.RANDOM),
+        (6, PolicyType.GREEDY),
+        (6, PolicyType.RANDOM),
+    ]
+
+
+def test_generate_dataset_parallel_path_uses_process_pool_and_keeps_order(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    fake_executor = _FakeProcessPoolExecutor(max_workers=2)
+
+    def fake_executor_factory(*, max_workers: int) -> _FakeProcessPoolExecutor:
+        assert max_workers == 2
+        return fake_executor
+
+    def fake_run_game_task(task: object) -> RecordEntry:
+        assert isinstance(task, generate_dataset.GameTask)
+        score = 20 if task.policy_type is PolicyType.GREEDY else 10
+        return _make_record(
+            record_id=task.record_id,
+            seed=task.seed,
+            policy_type=task.policy_type,
+            final_score=score,
+        )
+
+    monkeypatch.setattr(generate_dataset, "ProcessPoolExecutor", fake_executor_factory)
+    monkeypatch.setattr(generate_dataset, "run_game_task", fake_run_game_task)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_dataset.py",
+            "-n",
+            "2",
+            "--seed-start",
+            "7",
+            "--output-dir",
+            str(tmp_path),
+            "--policies",
+            "greedy,random",
+            "--map-sizes",
+            "12",
+            "--turn-limits",
+            "30",
+            "--difficulties",
+            "normal",
+            "--label",
+            "parallel",
+            "--workers",
+            "2",
+            "--chunksize",
+            "3",
+        ],
+    )
+
+    exit_code = generate_dataset.main()
+
+    assert exit_code == 0
+    assert len(fake_executor.map_calls) == 1
+    _, tasks, chunksize = fake_executor.map_calls[0]
+    assert chunksize == 3
+    assert [task.record_id for task in tasks] == [1, 2, 3, 4]
+    assert [(task.seed, task.policy_type) for task in tasks] == [
+        (7, PolicyType.GREEDY),
+        (7, PolicyType.RANDOM),
+        (8, PolicyType.GREEDY),
+        (8, PolicyType.RANDOM),
+    ]
+
+    database = RecordDatabase.from_dict(
+        json.loads((tmp_path / "dataset_parallel.json").read_text(encoding="utf-8"))
+    )
+    manifest = json.loads((tmp_path / "dataset_parallel_manifest.json").read_text(encoding="utf-8"))
+
+    assert [record.record_id for record in database.records] == [1, 2, 3, 4]
+    assert manifest["execution_mode"] == "parallel"
+    assert manifest["workers"] == 2
+    assert manifest["chunksize"] == 3
+    assert manifest["seed_start"] == 7
+    assert manifest["seed_end"] == 8
