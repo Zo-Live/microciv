@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import product
 from pathlib import Path
@@ -24,6 +27,30 @@ from microciv.session import create_game_session  # noqa: E402
 
 GREEDY_LABEL: Final[str] = "Greedy"
 RANDOM_LABEL: Final[str] = "Random"
+PROGRESS_STEPS: Final[int] = 20
+
+
+@dataclass(frozen=True, slots=True)
+class GameTask:
+    task_index: int
+    record_id: int
+    seed: int
+    policy_type: PolicyType
+    map_size: int
+    turn_limit: int
+    map_difficulty: MapDifficulty
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("value must be at least 1")
+    return parsed
+
+
+def _default_worker_count() -> int:
+    cpu_count = os.process_cpu_count() or 1
+    return max(1, cpu_count - 1)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -69,6 +96,18 @@ def _parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="Optional label appended to output filenames.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=_positive_int,
+        default=_default_worker_count(),
+        help="Number of worker processes (default: CPU count minus one).",
+    )
+    parser.add_argument(
+        "--chunksize",
+        type=_positive_int,
+        default=8,
+        help="Process pool chunksize for task dispatch (default: 8).",
     )
     return parser.parse_args()
 
@@ -122,6 +161,17 @@ def run_game(
         record_id=record_id,
         timestamp=timestamp,
         state=session.state,
+    )
+
+
+def run_game_task(task: GameTask) -> RecordEntry:
+    return run_game(
+        record_id=task.record_id,
+        seed=task.seed,
+        policy_type=task.policy_type,
+        map_size=task.map_size,
+        turn_limit=task.turn_limit,
+        map_difficulty=task.map_difficulty,
     )
 
 
@@ -182,6 +232,93 @@ def _write_database_csv(path: Path, records: list[RecordEntry]) -> None:
             writer.writerow(record.to_csv_row())
 
 
+def build_game_tasks(
+    *,
+    seed_start: int,
+    games_per_combo: int,
+    policies: list[PolicyType],
+    base_combos: list[tuple[int, int, str]],
+) -> tuple[list[GameTask], int]:
+    tasks: list[GameTask] = []
+    next_record_id = 1
+    seed = seed_start
+    for map_size, turn_limit, difficulty in base_combos:
+        map_difficulty = _map_difficulty(difficulty)
+        for _ in range(games_per_combo):
+            for policy_type in policies:
+                tasks.append(
+                    GameTask(
+                        task_index=len(tasks),
+                        record_id=next_record_id,
+                        seed=seed,
+                        policy_type=policy_type,
+                        map_size=map_size,
+                        turn_limit=turn_limit,
+                        map_difficulty=map_difficulty,
+                    )
+                )
+                next_record_id += 1
+            seed += 1
+    return tasks, seed - 1
+
+
+def _progress_interval(total_tasks: int) -> int:
+    return max(1, total_tasks // PROGRESS_STEPS)
+
+
+def _print_progress(
+    *,
+    completed: int,
+    total: int,
+    started_at: float,
+    mode: str,
+) -> None:
+    elapsed = perf_counter() - started_at
+    average = elapsed / max(completed, 1)
+    remaining = average * max(total - completed, 0)
+    print(
+        f"[{mode}] {completed}/{total} games complete in {elapsed:.2f}s "
+        f"({average:.3f}s per game, eta {remaining:.2f}s)",
+        file=sys.stderr,
+    )
+
+
+def run_tasks_serial(tasks: list[GameTask]) -> list[RecordEntry]:
+    records: list[RecordEntry] = []
+    progress_interval = _progress_interval(len(tasks))
+    started_at = perf_counter()
+    for index, task in enumerate(tasks, start=1):
+        records.append(run_game_task(task))
+        if index == len(tasks) or index % progress_interval == 0:
+            _print_progress(completed=index, total=len(tasks), started_at=started_at, mode="serial")
+    return records
+
+
+def run_tasks_parallel(
+    tasks: list[GameTask],
+    *,
+    workers: int,
+    chunksize: int,
+) -> list[RecordEntry]:
+    records: list[RecordEntry] = []
+    progress_interval = _progress_interval(len(tasks))
+    started_at = perf_counter()
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        for index, record in enumerate(
+            executor.map(run_game_task, tasks, chunksize=chunksize),
+            start=1,
+        ):
+            records.append(record)
+            if index == len(tasks) or index % progress_interval == 0:
+                _print_progress(
+                    completed=index,
+                    total=len(tasks),
+                    started_at=started_at,
+                    mode="parallel",
+                )
+    return records
+
+
 def main() -> int:
     args = _parse_args()
     output_dir: Path = args.output_dir
@@ -205,14 +342,18 @@ def main() -> int:
             param_grid["map_difficulty"],
         )
     )
-    total_games = len(base_combos) * args.games_per_combo * len(policies)
-    records: list[RecordEntry] = []
-    global_seed = args.seed_start
-    next_record_id = 1
+    tasks, seed_end = build_game_tasks(
+        seed_start=args.seed_start,
+        games_per_combo=args.games_per_combo,
+        policies=policies,
+        base_combos=base_combos,
+    )
+    total_games = len(tasks)
     run_tag = args.label.strip().replace(" ", "_")
     base_name = "dataset"
     if run_tag:
         base_name = f"{base_name}_{run_tag}"
+    execution_mode = "serial" if args.workers == 1 else "parallel"
 
     print(
         f"Dataset plan: {len(base_combos)} base combos x {len(policies)} policies x "
@@ -220,31 +361,17 @@ def main() -> int:
         f"{total_games} total",
         file=sys.stderr,
     )
+    print(
+        f"Execution mode: {execution_mode} (workers={args.workers}, chunksize={args.chunksize})",
+        file=sys.stderr,
+    )
     batch_start = perf_counter()
 
-    for combo_idx, (map_size, turn_limit, difficulty) in enumerate(base_combos, start=1):
-        combo_start = perf_counter()
-        map_difficulty = _map_difficulty(difficulty)
-        for _ in range(args.games_per_combo):
-            seed = global_seed
-            for policy_type in policies:
-                record = run_game(
-                    record_id=next_record_id,
-                    seed=seed,
-                    policy_type=policy_type,
-                    map_size=map_size,
-                    turn_limit=turn_limit,
-                    map_difficulty=map_difficulty,
-                )
-                records.append(record)
-                next_record_id += 1
-            global_seed += 1
-        combo_elapsed = perf_counter() - combo_start
-        print(
-            f"[{combo_idx}/{len(base_combos)}] {map_size}/{turn_limit}/{difficulty} "
-            f"done in {combo_elapsed:.2f}s",
-            file=sys.stderr,
-        )
+    records = (
+        run_tasks_serial(tasks)
+        if args.workers == 1
+        else run_tasks_parallel(tasks, workers=args.workers, chunksize=args.chunksize)
+    )
 
     total_elapsed = perf_counter() - batch_start
     print(
@@ -278,11 +405,14 @@ def main() -> int:
     manifest = {
         "games_per_combo": args.games_per_combo,
         "seed_start": args.seed_start,
-        "seed_end": global_seed - 1,
+        "seed_end": seed_end,
         "param_grid": param_grid,
         "combo_count": len(base_combos) * len(policies),
         "base_combo_count": len(base_combos),
         "policy_count": len(policies),
+        "workers": args.workers,
+        "chunksize": args.chunksize,
+        "execution_mode": execution_mode,
         "total_games": total_games,
         "total_elapsed_seconds": round(total_elapsed, 3),
         "avg_elapsed_seconds": round(total_elapsed / total_games, 3),
