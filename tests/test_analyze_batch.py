@@ -23,7 +23,12 @@ from microciv.game.models import (
     Road,
     Tile,
 )
-from microciv.records.models import RecordEntry
+from microciv.records.models import (
+    RecordActionLogEntry,
+    RecordDecisionContext,
+    RecordEntry,
+    RecordTurnSnapshot,
+)
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "analyze_batch.py"
 SPEC = importlib.util.spec_from_file_location("analyze_batch", SCRIPT_PATH)
@@ -191,3 +196,210 @@ def test_generate_report_is_descriptive_and_uses_current_score_fields() -> None:
     assert "score_total_mean" in report
     assert "tech_utilization_score" not in report
     assert score_df["river_access_score"].gt(0).all()
+
+
+def test_analyze_batch_reports_greedy_anomalies_with_turn_diagnostics() -> None:
+    greedy = _make_record(PolicyType.GREEDY, 11)
+    random = _make_record(PolicyType.RANDOM, 11)
+    greedy.record_id = 101
+    random.record_id = 102
+    greedy.final_score = -15
+    random.final_score = 40
+    greedy.skip_count = 3
+    greedy.action_log = [
+        RecordActionLogEntry(turn=1, action_type="build_city", x=0, y=0),
+        RecordActionLogEntry(turn=2, action_type="build_road", x=0, y=2),
+        RecordActionLogEntry(turn=3, action_type="skip"),
+        RecordActionLogEntry(turn=4, action_type="skip"),
+        RecordActionLogEntry(turn=5, action_type="skip"),
+    ]
+    greedy.turn_snapshots = [
+        RecordTurnSnapshot(
+            turn=1,
+            score=50,
+            food=5,
+            wood=10,
+            ore=4,
+            science=3,
+            city_count=1,
+            building_count=2,
+            tech_count=2,
+            road_count=1,
+            network_count=1,
+            connected_city_count=0,
+            isolated_city_count=1,
+            largest_network_size=1,
+            starving_network_count=0,
+            legal_actions_count=4,
+            score_breakdown={"total": 50, "starving_network_penalty": 0},
+        ),
+        RecordTurnSnapshot(
+            turn=2,
+            score=40,
+            food=-1,
+            wood=10,
+            ore=4,
+            science=3,
+            city_count=1,
+            building_count=2,
+            tech_count=2,
+            road_count=1,
+            network_count=1,
+            connected_city_count=0,
+            isolated_city_count=1,
+            largest_network_size=1,
+            starving_network_count=1,
+            legal_actions_count=3,
+            score_breakdown={"total": 40, "starving_network_penalty": 35},
+        ),
+        RecordTurnSnapshot(
+            turn=3,
+            score=35,
+            food=-2,
+            wood=9,
+            ore=4,
+            science=3,
+            city_count=1,
+            building_count=2,
+            tech_count=2,
+            road_count=1,
+            network_count=1,
+            connected_city_count=0,
+            isolated_city_count=1,
+            largest_network_size=1,
+            starving_network_count=1,
+            legal_actions_count=2,
+            score_breakdown={"total": 35, "starving_network_penalty": 70},
+        ),
+        RecordTurnSnapshot(
+            turn=4,
+            score=20,
+            food=0,
+            wood=9,
+            ore=4,
+            science=3,
+            city_count=1,
+            building_count=2,
+            tech_count=2,
+            road_count=1,
+            network_count=1,
+            connected_city_count=0,
+            isolated_city_count=1,
+            largest_network_size=1,
+            starving_network_count=1,
+            legal_actions_count=1,
+            score_breakdown={"total": 20, "starving_network_penalty": 105},
+        ),
+        RecordTurnSnapshot(
+            turn=5,
+            score=18,
+            food=1,
+            wood=9,
+            ore=4,
+            science=3,
+            city_count=1,
+            building_count=2,
+            tech_count=2,
+            road_count=1,
+            network_count=1,
+            connected_city_count=0,
+            isolated_city_count=1,
+            largest_network_size=1,
+            starving_network_count=0,
+            legal_actions_count=1,
+            score_breakdown={"total": 18, "starving_network_penalty": 105},
+        ),
+    ]
+    greedy.decision_contexts = [
+        RecordDecisionContext(
+            turn=1,
+            legal_actions_count=4,
+            legal_build_city_count=1,
+            legal_build_road_count=1,
+            legal_build_building_count=1,
+            legal_research_tech_count=1,
+            legal_skip_count=1,
+            chosen_action_type="build_city",
+            greedy_stage="expand",
+            greedy_priority="city",
+            greedy_best_delta_score=8,
+            greedy_food_pressure=2,
+        ),
+        RecordDecisionContext(
+            turn=2,
+            legal_actions_count=3,
+            legal_build_city_count=0,
+            legal_build_road_count=1,
+            legal_build_building_count=1,
+            legal_research_tech_count=0,
+            legal_skip_count=1,
+            chosen_action_type="build_road",
+            greedy_stage="rescue",
+            greedy_priority="food_rescue",
+            greedy_best_delta_score=-2,
+            greedy_food_pressure=4,
+        ),
+        RecordDecisionContext(
+            turn=3,
+            legal_actions_count=2,
+            legal_build_city_count=0,
+            legal_build_road_count=0,
+            legal_build_building_count=1,
+            legal_research_tech_count=0,
+            legal_skip_count=1,
+            chosen_action_type="skip",
+            greedy_stage="rescue",
+            greedy_priority="skip",
+            greedy_best_delta_score=-4,
+            greedy_food_pressure=6,
+        ),
+        RecordDecisionContext(
+            turn=4,
+            legal_actions_count=1,
+            legal_build_city_count=0,
+            legal_build_road_count=0,
+            legal_build_building_count=0,
+            legal_research_tech_count=0,
+            legal_skip_count=1,
+            chosen_action_type="skip",
+            greedy_stage="fill",
+            greedy_priority="skip",
+            greedy_best_delta_score=-8,
+            greedy_food_pressure=3,
+        ),
+        RecordDecisionContext(
+            turn=5,
+            legal_actions_count=1,
+            legal_build_city_count=0,
+            legal_build_road_count=0,
+            legal_build_building_count=0,
+            legal_research_tech_count=0,
+            legal_skip_count=1,
+            chosen_action_type="skip",
+            greedy_stage="fill",
+            greedy_priority="skip",
+            greedy_best_delta_score=-2,
+            greedy_food_pressure=1,
+        ),
+    ]
+
+    anomaly_df = analyze_batch.build_anomaly_df([greedy, random])
+    report = analyze_batch.generate_report([greedy, random])
+
+    assert len(anomaly_df) == 1
+    row = anomaly_df.iloc[0]
+    assert int(row["negative_food_turns"]) == 2
+    assert int(row["starvation_turns"]) == 3
+    assert int(row["longest_starvation_streak"]) == 3
+    assert int(row["first_skip_turn"]) == 3
+    assert int(row["fill_stage_turns"]) == 2
+    assert int(row["rescue_stage_turns"]) == 2
+    assert int(row["late_game_no_growth_streak"]) == 4
+    assert int(row["score_drop_turns"]) == 4
+    assert int(row["worst_score_drop"]) == -15
+    assert float(row["tail_skip_ratio"]) == 0.6
+    assert "## 10. Anomaly Summary" in report
+    assert "## 11. Anomaly Cases" in report
+    assert "score_gap=-55" in report
+    assert "tail_skip_ratio=0.60" in report
+    assert "first_skip=3" in report

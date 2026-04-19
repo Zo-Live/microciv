@@ -6,8 +6,9 @@ import argparse
 import json
 import sys
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 try:
     import pandas as pd
@@ -46,6 +47,8 @@ from microciv.game.scoring import score_breakdown  # noqa: E402
 from microciv.records.models import RecordDatabase, RecordEntry  # noqa: E402
 
 TAIL_WINDOW: Final[int] = 20
+GREEDY_LABEL: Final[str] = "Greedy"
+RANDOM_LABEL: Final[str] = "Random"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -103,6 +106,221 @@ def _metric_mean(df: pd.DataFrame, column: str) -> float:
     if column not in df:
         return 0.0
     return float(df[column].fillna(0).mean())
+
+
+def _record_match_key(record: RecordEntry) -> tuple[int, int, int, str]:
+    return (record.seed, record.map_size, record.turn_limit, record.map_difficulty)
+
+
+def _build_random_index(
+    records: list[RecordEntry],
+) -> dict[tuple[int, int, int, str], RecordEntry]:
+    return {
+        _record_match_key(record): record
+        for record in records
+        if record.ai_type == RANDOM_LABEL
+    }
+
+
+def _first_turn_matching(items: list[Any], predicate: Callable[[Any], bool]) -> int | None:
+    for item in items:
+        if predicate(item):
+            return int(item.turn)
+    return None
+
+
+def _count_turns_matching(items: list[Any], predicate: Callable[[Any], bool]) -> int:
+    count = 0
+    for item in items:
+        if predicate(item):
+            count += 1
+    return count
+
+
+def _longest_streak(items: list[Any], predicate: Callable[[Any], bool]) -> int:
+    best = 0
+    current = 0
+    for item in items:
+        if predicate(item):
+            current += 1
+            best = max(best, current)
+        else:
+            current = 0
+    return best
+
+
+def _late_game_no_growth_streak(record: RecordEntry) -> int:
+    snapshots = record.turn_snapshots[-TAIL_WINDOW:]
+    if len(snapshots) < 2:
+        return 0
+    best = 0
+    current = 0
+    previous_signature = (
+        snapshots[0].city_count,
+        snapshots[0].building_count,
+        snapshots[0].tech_count,
+        snapshots[0].road_count,
+    )
+    for snapshot in snapshots[1:]:
+        current_signature = (
+            snapshot.city_count,
+            snapshot.building_count,
+            snapshot.tech_count,
+            snapshot.road_count,
+        )
+        if current_signature == previous_signature:
+            current += 1
+            best = max(best, current)
+        else:
+            current = 0
+        previous_signature = current_signature
+    return best
+
+
+def _score_drop_metrics(record: RecordEntry) -> tuple[int, int]:
+    snapshots = record.turn_snapshots
+    if len(snapshots) < 2:
+        return 0, 0
+    drop_count = 0
+    worst_drop = 0
+    for previous, current in zip(snapshots, snapshots[1:], strict=False):
+        delta = current.score - previous.score
+        if delta < 0:
+            drop_count += 1
+            worst_drop = min(worst_drop, delta)
+    return drop_count, worst_drop
+
+
+def _connected_city_metrics(record: RecordEntry) -> tuple[int, int]:
+    connected_cities = sum(
+        len(network.city_ids) for network in record.networks if len(network.city_ids) >= 2
+    )
+    largest_network_size = max((len(network.city_ids) for network in record.networks), default=0)
+    return connected_cities, largest_network_size
+
+
+def summarize_record_anomaly(
+    record: RecordEntry,
+    random_peer: RecordEntry | None,
+) -> dict[str, object]:
+    score_drop_turns, worst_score_drop = _score_drop_metrics(record)
+    connected_cities, largest_network_size = _connected_city_metrics(record)
+    tail_actions = record.action_log[-TAIL_WINDOW:]
+    tail_skip_ratio = (
+        sum(1 for action in tail_actions if action.action_type == "skip")
+        / max(len(tail_actions), 1)
+    )
+    greedy_contexts = [context for context in record.decision_contexts if context.greedy_stage]
+    food_pressures = [
+        context.greedy_food_pressure
+        for context in greedy_contexts
+        if context.greedy_food_pressure is not None
+    ]
+    is_negative_score = record.final_score < 0
+    is_under_random = random_peer is not None and record.final_score < random_peer.final_score
+    return {
+        "record_id": record.record_id,
+        "seed": record.seed,
+        "map_size": record.map_size,
+        "turn_limit": record.turn_limit,
+        "map_difficulty": record.map_difficulty,
+        "greedy_record_id": record.record_id,
+        "random_record_id": random_peer.record_id if random_peer is not None else None,
+        "greedy_score": record.final_score,
+        "random_score": random_peer.final_score if random_peer is not None else None,
+        "score_gap": (
+            record.final_score - random_peer.final_score if random_peer is not None else None
+        ),
+        "has_random_peer": int(random_peer is not None),
+        "is_negative_score": int(is_negative_score),
+        "is_under_random": int(is_under_random),
+        "first_negative_food_turn": _first_turn_matching(
+            record.turn_snapshots,
+            lambda snapshot: snapshot.food < 0,
+        ),
+        "negative_food_turns": _count_turns_matching(
+            record.turn_snapshots,
+            lambda snapshot: snapshot.food < 0,
+        ),
+        "first_starvation_turn": _first_turn_matching(
+            record.turn_snapshots,
+            lambda snapshot: snapshot.starving_network_count > 0,
+        ),
+        "starvation_turns": _count_turns_matching(
+            record.turn_snapshots,
+            lambda snapshot: snapshot.starving_network_count > 0,
+        ),
+        "longest_starvation_streak": _longest_streak(
+            record.turn_snapshots,
+            lambda snapshot: snapshot.starving_network_count > 0,
+        ),
+        "first_skip_turn": _first_turn_matching(
+            record.action_log,
+            lambda action: action.action_type == "skip",
+        ),
+        "skip_turns": sum(1 for action in record.action_log if action.action_type == "skip"),
+        "tail_skip_ratio": tail_skip_ratio,
+        "first_stage_fill_turn": _first_turn_matching(
+            greedy_contexts,
+            lambda context: context.greedy_stage == "fill",
+        ),
+        "fill_stage_turns": _count_turns_matching(
+            greedy_contexts,
+            lambda context: context.greedy_stage == "fill",
+        ),
+        "rescue_stage_turns": _count_turns_matching(
+            greedy_contexts,
+            lambda context: context.greedy_stage == "rescue",
+        ),
+        "avg_food_pressure": (
+            sum(food_pressures) / len(food_pressures) if food_pressures else 0.0
+        ),
+        "max_starving_networks_seen": max(
+            (snapshot.starving_network_count for snapshot in record.turn_snapshots),
+            default=0,
+        ),
+        "final_starving_network_count": sum(
+            1 for network in record.networks if network.food <= 0
+        ),
+        "final_largest_network_size": largest_network_size,
+        "final_connected_city_ratio": connected_cities / max(record.city_count, 1),
+        "late_game_no_growth_streak": _late_game_no_growth_streak(record),
+        "score_drop_turns": score_drop_turns,
+        "worst_score_drop": worst_score_drop,
+        "record": record,
+        "random_peer": random_peer,
+    }
+
+
+def collect_greedy_anomaly_cases(records: list[RecordEntry]) -> list[dict[str, object]]:
+    random_index = _build_random_index(records)
+    cases: list[dict[str, object]] = []
+    for record in records:
+        if record.ai_type != GREEDY_LABEL:
+            continue
+        random_peer = random_index.get(_record_match_key(record))
+        if record.final_score >= 0 and (
+            random_peer is None or record.final_score >= random_peer.final_score
+        ):
+            continue
+        cases.append(summarize_record_anomaly(record, random_peer))
+    return sorted(
+        cases,
+        key=lambda case: (
+            case["score_gap"] is None,
+            case["score_gap"] if case["score_gap"] is not None else 0,
+            int(case["greedy_score"]),
+            int(case["record_id"]),
+        ),
+    )
+
+
+def build_anomaly_df(records: list[RecordEntry]) -> pd.DataFrame:
+    rows = []
+    for case in collect_greedy_anomaly_cases(records):
+        row = {key: value for key, value in case.items() if key not in {"record", "random_peer"}}
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def build_macro_df(records: list[RecordEntry]) -> pd.DataFrame:
@@ -449,9 +667,15 @@ def _sample_rows(records: list[RecordEntry]) -> list[dict[str, object]]:
     return deduped
 
 
-def render_turn_log(record: RecordEntry, max_turns: int = 20) -> str:
-    actions = record.action_log[:max_turns]
-    contexts = record.decision_contexts[:max_turns]
+def render_turn_log(record: RecordEntry, max_turns: int = 20, *, from_end: bool = False) -> str:
+    if from_end:
+        actions = record.action_log[-max_turns:]
+        contexts = record.decision_contexts[-len(actions) :]
+    else:
+        actions = record.action_log[:max_turns]
+        contexts = record.decision_contexts[:max_turns]
+    if not actions:
+        return "_No actions_"
     lines = []
     for index, action in enumerate(actions):
         context = contexts[index] if index < len(contexts) else None
@@ -522,6 +746,7 @@ def record_to_state(record: RecordEntry) -> GameState:
                 science=network.science,
             ),
             unlocked_techs={TechType(name) for name in network.unlocked_techs},
+            consecutive_starving_turns=network.consecutive_starving_turns,
         )
         for network in record.networks
     }
@@ -544,6 +769,58 @@ def _playback_mode_from_label(label: str) -> PlaybackMode:
     return PlaybackMode.NONE
 
 
+def render_anomaly_case(case: dict[str, object]) -> list[str]:
+    record = case["record"]
+    assert isinstance(record, RecordEntry)
+    random_score = case["random_score"]
+    score_gap = case["score_gap"]
+    lines = [
+        (
+            f"### Anomaly record_id={record.record_id} seed={record.seed} "
+            f"config={record.map_size}/{record.turn_limit}/{record.map_difficulty}"
+        ),
+        (
+            f"- greedy_score={record.final_score}, random_score="
+            f"{random_score if random_score is not None else 'N/A'}, score_gap="
+            f"{score_gap if score_gap is not None else 'N/A'}, "
+            f"negative_score={bool(case['is_negative_score'])}, "
+            f"under_random={bool(case['is_under_random'])}"
+        ),
+        (
+            f"- starvation: first={case['first_starvation_turn']}, "
+            f"turns={case['starvation_turns']}, "
+            f"longest_streak={case['longest_starvation_streak']}, "
+            f"negative_food_first={case['first_negative_food_turn']}, "
+            f"negative_food_turns={case['negative_food_turns']}"
+        ),
+        (
+            f"- skip_and_stage: first_skip={case['first_skip_turn']}, "
+            f"skip_turns={case['skip_turns']}, tail_skip_ratio={case['tail_skip_ratio']:.2f}, "
+            f"first_fill={case['first_stage_fill_turn']}, fill_turns={case['fill_stage_turns']}, "
+            f"rescue_turns={case['rescue_stage_turns']}"
+        ),
+        (
+            f"- network_and_score: final_starving={case['final_starving_network_count']}, "
+            f"largest_network={case['final_largest_network_size']}, "
+            f"connected_city_ratio={case['final_connected_city_ratio']:.2f}, "
+            f"late_no_growth={case['late_game_no_growth_streak']}, "
+            f"score_drop_turns={case['score_drop_turns']}, "
+            f"worst_score_drop={case['worst_score_drop']}, "
+            f"avg_food_pressure={case['avg_food_pressure']:.1f}"
+        ),
+        "- first 20 actions:",
+        "```",
+        render_turn_log(record),
+        "```",
+        "- last 20 actions:",
+        "```",
+        render_turn_log(record, from_end=True),
+        "```",
+        "",
+    ]
+    return lines
+
+
 def generate_report(records: list[RecordEntry]) -> str:
     if pd is None:  # pragma: no cover - depends on local optional deps
         raise RuntimeError(
@@ -556,6 +833,8 @@ def generate_report(records: list[RecordEntry]) -> str:
     behavior_df = build_behavior_df(records)
     stage_df = build_stage_summary_df(records)
     map_df = build_map_df(records)
+    anomaly_cases = collect_greedy_anomaly_cases(records)
+    anomaly_df = build_anomaly_df(records)
     samples = _sample_rows(records)
 
     dataset_overview = pd.DataFrame(
@@ -707,6 +986,88 @@ def generate_report(records: list[RecordEntry]) -> str:
             "river_turn_ratio",
         ],
     )
+    greedy_total = sum(1 for record in records if record.ai_type == GREEDY_LABEL)
+    anomaly_overview = pd.DataFrame(
+        [
+            {
+                "greedy_games": greedy_total,
+                "anomaly_count": len(anomaly_cases),
+                "anomaly_rate": len(anomaly_cases) / max(greedy_total, 1),
+                "negative_score_count": (
+                    int(anomaly_df["is_negative_score"].sum()) if not anomaly_df.empty else 0
+                ),
+                "under_random_count": (
+                    int(anomaly_df["is_under_random"].sum()) if not anomaly_df.empty else 0
+                ),
+                "avg_score_gap": (
+                    float(anomaly_df["score_gap"].dropna().mean())
+                    if not anomaly_df.empty and anomaly_df["score_gap"].notna().any()
+                    else 0.0
+                ),
+                "worst_score_gap": (
+                    float(anomaly_df["score_gap"].dropna().min())
+                    if not anomaly_df.empty and anomaly_df["score_gap"].notna().any()
+                    else 0.0
+                ),
+            }
+        ]
+    )
+    anomaly_config_summary = pd.DataFrame()
+    if greedy_total > 0:
+        greedy_config_counts = (
+            macro_df[macro_df["ai_type"] == GREEDY_LABEL]
+            .groupby(["map_size", "turn_limit", "map_difficulty"], dropna=False)
+            .size()
+            .reset_index(name="greedy_samples")
+        )
+        anomaly_config_summary = greedy_config_counts.copy()
+        anomaly_config_summary["anomaly_count"] = 0
+        anomaly_config_summary["negative_score_count"] = 0
+        anomaly_config_summary["under_random_count"] = 0
+        anomaly_config_summary["avg_score_gap"] = 0.0
+        anomaly_config_summary["avg_first_skip_turn"] = 0.0
+        anomaly_config_summary["avg_starvation_turns"] = 0.0
+        anomaly_config_summary["avg_longest_starvation_streak"] = 0.0
+        anomaly_config_summary["anomaly_rate"] = 0.0
+        if not anomaly_df.empty:
+            anomaly_config_counts = (
+                anomaly_df.groupby(["map_size", "turn_limit", "map_difficulty"], dropna=False)
+                .agg(
+                    anomaly_count=("record_id", "size"),
+                    negative_score_count=("is_negative_score", "sum"),
+                    under_random_count=("is_under_random", "sum"),
+                    avg_score_gap=("score_gap", "mean"),
+                    avg_first_skip_turn=("first_skip_turn", "mean"),
+                    avg_starvation_turns=("starvation_turns", "mean"),
+                    avg_longest_starvation_streak=("longest_starvation_streak", "mean"),
+                )
+                .reset_index()
+            )
+            anomaly_config_summary = greedy_config_counts.merge(
+                anomaly_config_counts,
+                on=["map_size", "turn_limit", "map_difficulty"],
+                how="left",
+            )
+            fill_zero_cols = [
+                "anomaly_count",
+                "negative_score_count",
+                "under_random_count",
+                "avg_score_gap",
+                "avg_first_skip_turn",
+                "avg_starvation_turns",
+                "avg_longest_starvation_streak",
+            ]
+            anomaly_config_summary[fill_zero_cols] = anomaly_config_summary[
+                fill_zero_cols
+            ].fillna(0)
+            anomaly_config_summary["anomaly_rate"] = (
+                anomaly_config_summary["anomaly_count"]
+                / anomaly_config_summary["greedy_samples"].clip(lower=1)
+            )
+            anomaly_config_summary = anomaly_config_summary.sort_values(
+                ["anomaly_rate", "avg_score_gap", "map_size", "turn_limit", "map_difficulty"],
+                ascending=[False, True, True, True, True],
+            )
 
     lines = [
         f"# {APP_NAME} Dataset Report",
@@ -751,9 +1112,30 @@ def generate_report(records: list[RecordEntry]) -> str:
         "",
         make_table(map_summary, floatfmt=".3f"),
         "",
-        "## 10. Representative Samples",
+        "## 10. Anomaly Summary",
+        "",
+        make_table(anomaly_overview, floatfmt=".3f"),
+        "",
+        "### 10.1 Anomaly Config Summary",
+        "",
+        make_table(anomaly_config_summary),
+        "",
+        "## 11. Anomaly Cases",
         "",
     ]
+
+    if not anomaly_cases:
+        lines.extend(["_No data_", ""])
+    else:
+        for case in anomaly_cases:
+            lines.extend(render_anomaly_case(case))
+
+    lines.extend(
+        [
+            "## 12. Representative Samples",
+            "",
+        ]
+    )
 
     for sample in samples:
         record = sample["record"]
