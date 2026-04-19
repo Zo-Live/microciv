@@ -1660,10 +1660,13 @@ def _future_network_budget(
         network_id = passable_map.get(action.coord)
     if network_id is None:
         return None
-    return _network_budget(simulated.networks[network_id])
+    return _network_budget(simulated.networks[network_id], context)
 
 
-def _network_budget(network: Network) -> NetworkBudget:
+def _network_budget(
+    network: Network,
+    context: HeuristicContext | None = None,
+) -> NetworkBudget:
     return NetworkBudget(
         network_id=network.network_id,
         city_count=len(network.city_ids),
@@ -1671,7 +1674,11 @@ def _network_budget(network: Network) -> NetworkBudget:
         wood=network.resources.wood,
         ore=network.resources.ore,
         science=network.resources.science,
-        pressure=city_network_pressure(network),
+        pressure=(
+            context_city_network_pressure(context, network.network_id)
+            if context is not None
+            else city_network_pressure(network)
+        ),
         starving=network.resources.food <= 0,
     )
 
