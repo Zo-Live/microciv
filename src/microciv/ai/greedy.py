@@ -73,6 +73,8 @@ class GreedyStateProfile:
     breakdown_building_utilization: int
     breakdown_building_mismatch_penalty: int
     breakdown_city_composition_bonus: int
+    breakdown_starving_network_penalty: int
+    breakdown_fragmented_network_penalty: int
     total_food: int
     total_wood: int
     total_ore: int
@@ -125,6 +127,24 @@ class CandidateLimits:
     resource_city_limit: int
     building_limit: int
     research_limit: int
+
+
+@dataclass(slots=True, frozen=True)
+class RescueRecovery:
+    starving_delta: int
+    network_delta: int
+    isolated_delta: int
+    pressure_delta: int
+    starving_penalty_delta: int
+    fragmented_penalty_delta: int
+
+    @property
+    def effective(self) -> bool:
+        return (
+            self.starving_delta > 0
+            or self.network_delta > 0
+            or self.isolated_delta > 0
+        )
 
 
 @dataclass(slots=True, frozen=True)
@@ -415,6 +435,7 @@ class GreedyPolicy(Policy):
         future = _build_state_profile(simulated)
         future_resources = total_resources(simulated)
         future_budget = _future_network_budget(simulated, action)
+        rescue_recovery = _rescue_recovery(profile, future) if stage == STAGE_RESCUE else None
 
         value = _stage_action_bias(stage, action)
         delta_score = future.breakdown_total - profile.breakdown_total
@@ -448,6 +469,7 @@ class GreedyPolicy(Policy):
                 profile,
                 future,
                 future_budget,
+                rescue_recovery,
                 stage,
             )
         elif action.action_type is ActionType.BUILD_BUILDING:
@@ -455,11 +477,20 @@ class GreedyPolicy(Policy):
                 state,
                 action,
                 profile,
+                future,
                 future_budget,
+                rescue_recovery,
                 stage,
             )
         elif action.action_type is ActionType.RESEARCH_TECH:
-            value += self._score_research_action(action, profile, future_budget, stage)
+            value += self._score_research_action(
+                action,
+                profile,
+                future,
+                future_budget,
+                rescue_recovery,
+                stage,
+            )
         elif action.action_type is ActionType.BUILD_CITY:
             value += self._score_city_action(
                 state,
@@ -467,6 +498,7 @@ class GreedyPolicy(Policy):
                 profile,
                 future,
                 future_budget,
+                rescue_recovery,
                 stage,
             )
         elif action.action_type is ActionType.SKIP:
@@ -480,6 +512,7 @@ class GreedyPolicy(Policy):
         profile: GreedyStateProfile,
         future: GreedyStateProfile,
         future_budget: NetworkBudget | None,
+        rescue_recovery: RescueRecovery | None,
         stage: str,
     ) -> int:
         assert action.coord is not None
@@ -506,6 +539,24 @@ class GreedyPolicy(Policy):
             value -= 120
         if stage == STAGE_RESCUE and road_structure < 2:
             value -= 120
+        if rescue_recovery is not None:
+            value += max(0, rescue_recovery.starving_delta) * 320
+            value += max(0, rescue_recovery.network_delta) * 180
+            value += max(0, rescue_recovery.isolated_delta) * 120
+            value += max(0, rescue_recovery.starving_penalty_delta)
+            if not rescue_recovery.effective and rescue_recovery.pressure_delta <= 0:
+                value -= 420
+        if stage == STAGE_FILL and profile.development_saturated:
+            structural_gain = (
+                future.connected_city_count > profile.connected_city_count
+                or future.isolated_city_count < profile.isolated_city_count
+                or future.network_count < profile.network_count
+                or future.starving_network_count < profile.starving_network_count
+            )
+            if not structural_gain:
+                value -= 900
+            if future.breakdown_total <= profile.breakdown_total:
+                value -= 240
         return value
 
     def _score_building_action(
@@ -513,7 +564,9 @@ class GreedyPolicy(Policy):
         state: GameState,
         action: Action,
         profile: GreedyStateProfile,
+        future: GreedyStateProfile,
         future_budget: NetworkBudget | None,
+        rescue_recovery: RescueRecovery | None,
         stage: str,
     ) -> int:
         assert action.building_type is not None
@@ -545,13 +598,28 @@ class GreedyPolicy(Policy):
             value -= 160
         if stage == STAGE_FILL and action.building_type is BuildingType.LIBRARY:
             value += 90
+        if rescue_recovery is not None:
+            if action.building_type is BuildingType.FARM:
+                value += max(0, rescue_recovery.starving_delta) * 420
+                value += max(0, rescue_recovery.pressure_delta) * 24
+                value += max(0, rescue_recovery.starving_penalty_delta)
+                if (
+                    not rescue_recovery.effective
+                    and rescue_recovery.pressure_delta <= 0
+                    and future.starving_network_count >= profile.starving_network_count
+                ):
+                    value -= 220
+            elif not rescue_recovery.effective:
+                value -= 260
         return value
 
     def _score_research_action(
         self,
         action: Action,
         profile: GreedyStateProfile,
+        future: GreedyStateProfile,
         future_budget: NetworkBudget | None,
+        rescue_recovery: RescueRecovery | None,
         stage: str,
     ) -> int:
         assert action.tech_type is not None
@@ -575,6 +643,19 @@ class GreedyPolicy(Policy):
             value += 80
         if profile.breakdown_building_utilization < 0:
             value += 60
+        if rescue_recovery is not None:
+            if action.tech_type is TechType.AGRICULTURE:
+                value += max(0, rescue_recovery.starving_delta) * 360
+                value += max(0, rescue_recovery.pressure_delta) * 18
+                value += max(0, rescue_recovery.starving_penalty_delta)
+                if (
+                    not rescue_recovery.effective
+                    and rescue_recovery.pressure_delta <= 0
+                    and future.starving_network_count >= profile.starving_network_count
+                ):
+                    value -= 180
+            elif not rescue_recovery.effective:
+                value -= 220
         return value
 
     def _score_city_action(
@@ -584,6 +665,7 @@ class GreedyPolicy(Policy):
         profile: GreedyStateProfile,
         future: GreedyStateProfile,
         future_budget: NetworkBudget | None,
+        rescue_recovery: RescueRecovery | None,
         stage: str,
     ) -> int:
         assert action.coord is not None
@@ -591,8 +673,9 @@ class GreedyPolicy(Policy):
         value = 0
         site_budget = _site_budget(state, action.coord)
         connection_steps = _road_steps_to_network(state, action.coord, max_steps=4)
-        immediate_connection = connection_steps == 1
+        immediate_connection = connection_steps is not None and connection_steps <= 1
         site_quality = max(0, city_site_score(state, action.coord) - 60)
+        bootstrap_expansion = profile.city_count <= 1 and profile.total_buildings == 0
 
         value += site_quality * 2
         value += site_budget.food_yield * 26
@@ -634,6 +717,19 @@ class GreedyPolicy(Policy):
                 value -= 720
             if future_budget is not None and future_budget.city_count == 1:
                 value -= 360
+            if not immediate_connection and not bootstrap_expansion:
+                value -= 1200
+            if future.network_count > profile.network_count:
+                value -= 520
+            if (
+                not bootstrap_expansion
+                and (rescue_recovery is None or not rescue_recovery.effective)
+            ):
+                value -= 1200
+            else:
+                value += max(0, rescue_recovery.starving_delta) * 260
+                value += max(0, rescue_recovery.network_delta) * 200
+                value += max(0, rescue_recovery.isolated_delta) * 160
         elif stage == STAGE_CONSOLIDATE:
             if connection_steps is None or connection_steps > 2:
                 value -= 360
@@ -692,6 +788,8 @@ def _build_state_profile(state: GameState) -> GreedyStateProfile:
         breakdown_building_utilization=breakdown.building_utilization_score,
         breakdown_building_mismatch_penalty=breakdown.building_mismatch_penalty,
         breakdown_city_composition_bonus=breakdown.city_composition_bonus,
+        breakdown_starving_network_penalty=breakdown.starving_network_penalty,
+        breakdown_fragmented_network_penalty=breakdown.fragmented_network_penalty,
         total_food=resources.food,
         total_wood=resources.wood,
         total_ore=resources.ore,
@@ -739,6 +837,8 @@ def _decision_context(
     profile: GreedyStateProfile,
 ) -> dict[str, object]:
     simulated = simulate_action(state, action)
+    future_profile = _build_state_profile(simulated)
+    rescue_recovery = _rescue_recovery(profile, future_profile)
     score_delta = score_breakdown(simulated).total - profile.breakdown_total
     site_budget = _site_budget(state, action.coord) if action.coord is not None else None
     future_budget = _future_network_budget(simulated, action)
@@ -759,6 +859,10 @@ def _decision_context(
         "greedy_connected_cities": profile.connected_city_count,
         "greedy_total_food": profile.total_food,
         "greedy_network_count": profile.network_count,
+        "greedy_global_starving_delta": rescue_recovery.starving_delta,
+        "greedy_global_network_delta": rescue_recovery.network_delta,
+        "greedy_global_isolation_delta": rescue_recovery.isolated_delta,
+        "greedy_rescue_effective": rescue_recovery.effective,
         "greedy_score_breakdown": _score_breakdown_dict(score_breakdown(state)),
     }
     if connection_steps is not None:
@@ -961,11 +1065,14 @@ def _city_action_allowed_in_stage(
 ) -> bool:
     site_budget = _site_budget(state, coord)
     connection_steps = _road_steps_to_network(state, coord, max_steps=4)
-    immediate_connection = connection_steps == 1
+    immediate_connection = connection_steps is not None and connection_steps <= 1
     site_value = city_site_score(state, coord)
+    bootstrap_expansion = profile.city_count <= 1 and profile.total_buildings == 0
 
     if stage == STAGE_RESCUE:
-        return immediate_connection or site_budget.food_balance >= 0
+        return immediate_connection or (
+            bootstrap_expansion and site_budget.food_balance >= 1 and site_value >= 110
+        )
     if stage == STAGE_CONSOLIDATE:
         return immediate_connection or (
             connection_steps is not None
@@ -1217,6 +1324,25 @@ def _composition_gap(connected_cities: int, connected_inland: int) -> float:
     if connected_cities < 6:
         return max(0.0, TARGET_INLAND_SHARE - _inland_share(connected_cities, connected_inland))
     return abs(_inland_share(connected_cities, connected_inland) - TARGET_INLAND_SHARE)
+
+
+def _rescue_recovery(
+    profile: GreedyStateProfile,
+    future: GreedyStateProfile,
+) -> RescueRecovery:
+    return RescueRecovery(
+        starving_delta=profile.starving_network_count - future.starving_network_count,
+        network_delta=profile.network_count - future.network_count,
+        isolated_delta=profile.isolated_city_count - future.isolated_city_count,
+        pressure_delta=profile.pressure - future.pressure,
+        starving_penalty_delta=(
+            profile.breakdown_starving_network_penalty - future.breakdown_starving_network_penalty
+        ),
+        fragmented_penalty_delta=(
+            profile.breakdown_fragmented_network_penalty
+            - future.breakdown_fragmented_network_penalty
+        ),
+    )
 
 
 def _road_steps_to_network(
