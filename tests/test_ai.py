@@ -42,6 +42,24 @@ def _run_policy_game(config: GameConfig, policy: GreedyPolicy | RandomPolicy) ->
     return state
 
 
+def _run_autoplay_session_game(
+    config: GameConfig,
+    policy: GreedyPolicy | RandomPolicy,
+) -> GameState:
+    generated = MapGenerator().generate(config)
+    state = GameState.empty(config)
+    state.board = {
+        coord: Tile(base_terrain=tile.base_terrain, occupant=tile.occupant)
+        for coord, tile in generated.board.items()
+    }
+    session = GameSession(state=state, engine=GameEngine(state), policy=policy)
+
+    while not state.is_game_over:
+        session.step_autoplay()
+
+    return state
+
+
 def _snapshot_state(state: GameState) -> dict[str, object]:
     return {
         "turn": state.turn,
@@ -448,6 +466,78 @@ def test_greedy_rescue_prefers_structural_road_over_local_farm() -> None:
     assert action == Action.build_road((0, 1))
 
 
+def test_greedy_reports_food_rescue_stall_and_keeps_structural_road_priority() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 1): Tile(base_terrain=TerrainType.RIVER),
+        (0, 2): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.ROAD),
+        (0, 3): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+    }
+    state.cities = {
+        1: City(
+            city_id=1,
+            coord=(0, 0),
+            founded_turn=1,
+            network_id=1,
+            buildings=BuildingCounts(),
+        ),
+        2: City(
+            city_id=2,
+            coord=(0, 3),
+            founded_turn=2,
+            network_id=2,
+            buildings=BuildingCounts(),
+        ),
+    }
+    state.roads = {1: Road(road_id=1, coord=(0, 2), built_turn=2)}
+    state.networks = {
+        1: Network(
+            network_id=1,
+            city_ids={1},
+            resources=ResourcePool(food=24, wood=20),
+            unlocked_techs={TechType.AGRICULTURE},
+        ),
+        2: Network(
+            network_id=2,
+            city_ids={2},
+            resources=ResourcePool(food=-6),
+        ),
+    }
+
+    base_context = GreedyPolicy().explain_decision(state)
+    pressure = int(base_context["greedy_food_pressure"])
+    for turn in range(1, 4):
+        state.stats.record_decision_context(
+            turn=turn,
+            legal_actions_count=4,
+            legal_build_city_count=0,
+            legal_build_road_count=1,
+            legal_build_building_count=1,
+            legal_research_tech_count=0,
+            legal_skip_count=1,
+            chosen_action_type="build_building",
+            policy_context={
+                "greedy_stage": "rescue",
+                "greedy_priority": "food_rescue",
+                "greedy_best_action_type": "build_building",
+                "greedy_best_delta_score": -12,
+                "greedy_food_pressure": pressure,
+                "greedy_starving_networks": 1,
+            },
+        )
+
+    policy = GreedyPolicy()
+    action = policy.select_action(state)
+    context = policy.explain_decision(state)
+
+    assert action == Action.build_road((0, 1))
+    assert context["greedy_food_rescue_stalled"] is True
+    assert context["greedy_food_rescue_chain"] == 3
+    assert context["greedy_escape_mode"] is True
+    assert context["greedy_escape_reason"] == "negative_delta_stall"
+
+
 def test_greedy_rescue_rejects_isolated_food_positive_city() -> None:
     state = GameState.empty(GameConfig.for_play())
     state.board = {
@@ -526,6 +616,98 @@ def test_greedy_fill_skips_non_structural_road_on_saturated_network() -> None:
     action = GreedyPolicy().select_action(state)
 
     assert action.action_type is not ActionType.BUILD_ROAD
+
+
+def test_greedy_reopens_fill_after_repeated_skip_tail() -> None:
+    state = GameState.empty(GameConfig.for_play(turn_limit=80))
+    state.turn = 50
+    board: dict[tuple[int, int], Tile] = {}
+    for row in range(7):
+        for col in range(7):
+            board[(row, col)] = Tile(base_terrain=TerrainType.PLAIN)
+    board[(0, 0)] = Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY)
+    board[(0, 1)] = Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.ROAD)
+    board[(0, 2)] = Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY)
+    board[(3, 3)] = Tile(base_terrain=TerrainType.PLAIN)
+    board[(2, 2)] = Tile(base_terrain=TerrainType.FOREST)
+    board[(2, 3)] = Tile(base_terrain=TerrainType.FOREST)
+    board[(2, 4)] = Tile(base_terrain=TerrainType.MOUNTAIN)
+    board[(3, 2)] = Tile(base_terrain=TerrainType.FOREST)
+    board[(3, 4)] = Tile(base_terrain=TerrainType.RIVER)
+    board[(4, 2)] = Tile(base_terrain=TerrainType.FOREST)
+    board[(4, 3)] = Tile(base_terrain=TerrainType.MOUNTAIN)
+    board[(4, 4)] = Tile(base_terrain=TerrainType.FOREST)
+    state.board = board
+    state.cities = {
+        1: City(
+            city_id=1,
+            coord=(0, 0),
+            founded_turn=1,
+            network_id=1,
+            buildings=BuildingCounts(farm=1, lumber_mill=1, mine=1, library=1),
+        ),
+        2: City(
+            city_id=2,
+            coord=(0, 2),
+            founded_turn=2,
+            network_id=1,
+            buildings=BuildingCounts(farm=1, lumber_mill=1, mine=1, library=1),
+        ),
+    }
+    state.roads = {1: Road(road_id=1, coord=(0, 1), built_turn=1)}
+    state.networks = {
+        1: Network(
+            network_id=1,
+            city_ids={1, 2},
+            resources=ResourcePool(food=80, wood=40, ore=24, science=120),
+            unlocked_techs=set(TechType),
+        )
+    }
+    for turn in range(45, 50):
+        state.stats.record_turn_snapshot(
+            turn=turn,
+            score=600 + (turn - 45) * 5,
+            food=80,
+            wood=40,
+            ore=24,
+            science=120,
+            city_count=2,
+            building_count=8,
+            tech_count=len(TechType),
+            road_count=1,
+            network_count=1,
+            connected_city_count=2,
+            isolated_city_count=0,
+            largest_network_size=2,
+            starving_network_count=0,
+            legal_actions_count=18,
+            score_breakdown={"total": 600 + (turn - 45) * 5},
+        )
+        state.stats.record_decision_context(
+            turn=turn,
+            legal_actions_count=18,
+            legal_build_city_count=12,
+            legal_build_road_count=4,
+            legal_build_building_count=0,
+            legal_research_tech_count=0,
+            legal_skip_count=1,
+            chosen_action_type="skip",
+            policy_context={
+                "greedy_stage": "fill",
+                "greedy_priority": "skip",
+                "greedy_best_action_type": "skip",
+                "greedy_best_delta_score": -2,
+                "greedy_food_pressure": -72,
+            },
+        )
+
+    policy = GreedyPolicy()
+    action = policy.select_action(state)
+    context = policy.explain_decision(state)
+
+    assert context["greedy_stage"] == "expand_reopen"
+    assert context["greedy_fill_reopen_reason"] == "repeated_fill_skip"
+    assert action.action_type is not ActionType.SKIP
 
 
 def test_random_policy_downweights_city_under_food_pressure() -> None:
@@ -615,6 +797,29 @@ def test_greedy_does_not_stall_on_large_hard_map() -> None:
     assert sum(city.total_buildings for city in state.cities.values()) >= 60
     assert len(state.networks) <= 2
     assert len(state.roads) >= 5 or len(state.networks) == 1
+
+
+def test_greedy_autoplay_session_recovers_from_skip_loop_seed_345() -> None:
+    config = GameConfig.for_autoplay(seed=345, turn_limit=80, map_size=24)
+
+    state = _run_autoplay_session_game(config, GreedyPolicy())
+
+    assert state.score >= 0, state.score
+    assert state.stats.skip_count <= 1, state.stats.skip_count
+
+
+def test_greedy_autoplay_session_recovers_from_food_rescue_loop_seed_298() -> None:
+    config = GameConfig.for_autoplay(
+        seed=298,
+        turn_limit=150,
+        map_size=20,
+        map_difficulty=MapDifficulty.HARD,
+    )
+
+    state = _run_autoplay_session_game(config, GreedyPolicy())
+
+    assert state.score >= 3000, state.score
+    assert state.stats.skip_count == 0, state.stats.skip_count
 
 
 def test_simulate_action_matches_deepcopy_engine_result() -> None:

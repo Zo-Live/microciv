@@ -15,7 +15,12 @@ from microciv.game.models import (
     Tile,
 )
 from microciv.records.export import export_records_json
-from microciv.records.models import RECORDS_SCHEMA_VERSION, RecordDatabase, RecordEntry
+from microciv.records.models import (
+    RECORDS_SCHEMA_VERSION,
+    RecordDatabase,
+    RecordDecisionContext,
+    RecordEntry,
+)
 from microciv.records.store import RecordStore
 
 
@@ -34,7 +39,7 @@ def test_record_entry_from_game_state_captures_frozen_fields() -> None:
     assert entry.ai_type == "Human"
     assert entry.playback_mode == ""
     assert entry.actual_turns == 30
-    assert entry.final_score == 308
+    assert entry.final_score == 299
     assert entry.city_count == 1
     assert entry.building_count == 2
     assert entry.tech_count == 2
@@ -72,7 +77,7 @@ def test_record_store_persists_and_reloads_completed_games(tmp_path) -> None:
     assert reloaded.next_record_id == 2
     assert len(reloaded.records) == 1
     assert reloaded.records[0].timestamp == "2026-04-09T12:00:00+08:00"
-    assert reloaded.records[0].final_score == 308
+    assert reloaded.records[0].final_score == 299
 
 
 def test_record_store_resets_old_schema_file(tmp_path) -> None:
@@ -208,6 +213,55 @@ def test_record_store_can_delete_and_clear_records(tmp_path) -> None:
 
     store.clear()
     assert store.load().records == []
+
+
+def test_record_decision_context_roundtrip_preserves_greedy_history_fields() -> None:
+    context = RecordDecisionContext(
+        turn=12,
+        legal_actions_count=7,
+        legal_build_city_count=3,
+        legal_build_road_count=2,
+        legal_build_building_count=1,
+        legal_research_tech_count=0,
+        legal_skip_count=1,
+        chosen_action_type="build_road",
+        greedy_stage="rescue",
+        greedy_priority="food_rescue",
+        greedy_best_action_type="build_road",
+        greedy_best_score=812.5,
+        greedy_best_delta_score=-9,
+        greedy_food_pressure=14,
+        greedy_starving_networks=1,
+        greedy_connected_cities=0,
+        greedy_total_food=18,
+        greedy_network_count=2,
+        greedy_global_starving_delta=1,
+        greedy_global_network_delta=1,
+        greedy_global_isolation_delta=2,
+        greedy_rescue_effective=False,
+        greedy_escape_mode=True,
+        greedy_escape_reason="negative_delta_stall",
+        greedy_food_rescue_stalled=True,
+        greedy_food_rescue_chain=3,
+        greedy_fill_reopen_reason="repeated_fill_skip",
+        greedy_best_connection_steps=1,
+        greedy_best_future_network_starving=False,
+        greedy_score_breakdown={"total": 320, "starving_network_penalty": 70},
+        greedy_best_site_budget={"food_balance": 1, "total_yield": 9},
+        greedy_best_future_network_budget={"network_id": 1, "pressure": 4},
+        random_type_weights={"build_road": 2.5},
+    )
+
+    restored = RecordDecisionContext.from_dict(context.to_dict())
+
+    assert restored.greedy_global_starving_delta == 1
+    assert restored.greedy_global_network_delta == 1
+    assert restored.greedy_global_isolation_delta == 2
+    assert restored.greedy_escape_mode is True
+    assert restored.greedy_escape_reason == "negative_delta_stall"
+    assert restored.greedy_food_rescue_stalled is True
+    assert restored.greedy_food_rescue_chain == 3
+    assert restored.greedy_fill_reopen_reason == "repeated_fill_skip"
 
 
 def build_completed_state(*, seed: int = 7) -> GameState:

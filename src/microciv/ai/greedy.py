@@ -68,7 +68,20 @@ TARGET_INLAND_SHARE = 0.45
 STAGE_RESCUE = "rescue"
 STAGE_CONSOLIDATE = "consolidate"
 STAGE_EXPAND = "expand"
+STAGE_EXPAND_REOPEN = "expand_reopen"
 STAGE_FILL = "fill"
+
+ESCAPE_REASON_NEGATIVE_DELTA_STALL = "negative_delta_stall"
+ESCAPE_REASON_SKIP_WITH_MANY_LEGAL_EXPANSIONS = "skip_with_many_legal_expansions"
+ESCAPE_REASON_REPEATED_SKIP_WITHOUT_PRESSURE_RELIEF = (
+    "repeated_skip_without_pressure_relief"
+)
+
+FILL_REOPEN_REASON_REPEATED_FILL_SKIP = "repeated_fill_skip"
+FILL_REOPEN_REASON_LOW_DELTA_SKIP_WITH_MANY_CITY_OPTIONS = (
+    "low_delta_skip_with_many_city_options"
+)
+FILL_REOPEN_REASON_LATE_GAME_GROWTH_STALL = "late_game_growth_stall"
 
 
 @dataclass(slots=True, frozen=True)
@@ -191,6 +204,16 @@ class NetworkBudget:
     starving: bool
 
 
+@dataclass(slots=True, frozen=True)
+class HistorySignals:
+    food_rescue_chain: int
+    food_rescue_stalled: bool
+    negative_delta_stall: bool
+    repeated_skip_without_pressure_relief: bool
+    repeated_fill_skip: bool
+    late_game_growth_stall: bool
+
+
 class GreedyPolicy(Policy):
     """A deterministic one-ply greedy policy used as the default benchmark."""
 
@@ -233,15 +256,109 @@ class GreedyPolicy(Policy):
         groups = partition_actions(legal_actions)
         current_context = build_heuristic_context(state)
         profile = _build_state_profile(state, current_context)
+        history = _history_signals(state, profile)
         stage = _select_stage(profile)
         catalog = _build_candidate_catalog(state, groups, current_context)
-        candidates = self._candidate_actions(
+        fill_reopen_reason: str | None = None
+
+        best_action, best_value, best_priority, evaluations = self._pick_best_action(
             state,
             groups,
             profile,
             catalog,
             stage,
             current_context,
+            history=history,
+            escape_mode=False,
+        )
+
+        if stage == STAGE_FILL:
+            fill_reopen_reason = _fill_reopen_reason(
+                state,
+                groups,
+                profile,
+                best_action,
+                evaluations[best_action].future_profile.breakdown_total - profile.breakdown_total,
+                history,
+            )
+            if fill_reopen_reason is not None:
+                stage = STAGE_EXPAND_REOPEN
+                best_action, best_value, best_priority, evaluations = self._pick_best_action(
+                    state,
+                    groups,
+                    profile,
+                    catalog,
+                    stage,
+                    current_context,
+                    history=history,
+                    escape_mode=False,
+                )
+
+        escape_reason: str | None = None
+        if stage == STAGE_RESCUE:
+            escape_reason = _escape_reason(state, groups, profile, best_action, history)
+            if escape_reason is not None:
+                best_action, best_value, best_priority, evaluations = self._pick_best_action(
+                    state,
+                    groups,
+                    profile,
+                    catalog,
+                    stage,
+                    current_context,
+                    history=history,
+                    escape_mode=True,
+                )
+
+        decision = PlannedDecision(
+            action=best_action,
+            context=_decision_context(
+                state=state,
+                action=best_action,
+                stage=stage,
+                priority=best_priority,
+                best_value=best_value,
+                profile=profile,
+                current_context=current_context,
+                evaluation=evaluations[best_action],
+                history=history,
+                escape_mode=escape_reason is not None,
+                escape_reason=escape_reason,
+                fill_reopen_reason=fill_reopen_reason,
+            ),
+        )
+        self._cache_key = cache_key
+        self._cached_decision = decision
+        return decision
+
+    def _pick_best_action(
+        self,
+        state: GameState,
+        groups: dict[ActionType, list[Action]],
+        profile: GreedyStateProfile,
+        catalog: CandidateCatalog,
+        stage: str,
+        current_context: HeuristicContext,
+        *,
+        history: HistorySignals,
+        escape_mode: bool,
+    ) -> tuple[Action, int, str, dict[Action, SimulatedEvaluation]]:
+        candidates = (
+            self._escape_candidate_actions(
+                state,
+                groups,
+                profile,
+                catalog,
+                current_context,
+            )
+            if escape_mode
+            else self._candidate_actions(
+                state,
+                groups,
+                profile,
+                catalog,
+                stage,
+                current_context,
+            )
         )
         evaluations: dict[Action, SimulatedEvaluation] = {}
 
@@ -256,6 +373,9 @@ class GreedyPolicy(Policy):
                 stage,
                 current_context,
                 evaluations,
+                escape_mode=escape_mode,
+                food_rescue_stalled=history.food_rescue_stalled,
+                food_rescue_chain=history.food_rescue_chain,
             )
             priority = _priority_label(action)
             if value > best_value or (
@@ -266,23 +386,7 @@ class GreedyPolicy(Policy):
                 best_action = action
                 best_value = value
                 best_priority = priority
-
-        decision = PlannedDecision(
-            action=best_action,
-            context=_decision_context(
-                state=state,
-                action=best_action,
-                stage=stage,
-                priority=best_priority,
-                best_value=best_value,
-                profile=profile,
-                current_context=current_context,
-                evaluation=evaluations[best_action],
-            ),
-        )
-        self._cache_key = cache_key
-        self._cached_decision = decision
-        return decision
+        return best_action, best_value, best_priority, evaluations
 
     def _candidate_actions(
         self,
@@ -305,6 +409,54 @@ class GreedyPolicy(Policy):
             limits,
             stage,
             current_context,
+        )
+        candidates.extend(groups.get(ActionType.SKIP, [])[:1])
+        return _dedupe_actions(candidates)
+
+    def _escape_candidate_actions(
+        self,
+        state: GameState,
+        groups: dict[ActionType, list[Action]],
+        profile: GreedyStateProfile,
+        catalog: CandidateCatalog,
+        current_context: HeuristicContext,
+    ) -> list[Action]:
+        candidates: list[Action] = []
+        candidates.extend(
+            _stage_filter_city_actions(
+                state,
+                catalog.city_actions,
+                STAGE_RESCUE,
+                profile,
+                12,
+                current_context,
+                escape_mode=True,
+            )
+        )
+        candidates.extend(
+            _stage_filter_city_actions(
+                state,
+                catalog.resource_city_actions,
+                STAGE_RESCUE,
+                profile,
+                8,
+                current_context,
+                escape_mode=True,
+            )
+        )
+        candidates.extend(catalog.gap_building_actions[:4])
+        candidates.extend(catalog.building_actions[:8])
+        agriculture = [
+            action
+            for action in catalog.research_actions
+            if action.tech_type is TechType.AGRICULTURE
+        ]
+        candidates.extend(agriculture[:1])
+        candidates.extend(catalog.research_actions[:3])
+        primary_roads = catalog.road_actions[:10]
+        candidates.extend(primary_roads)
+        candidates.extend(
+            _escape_road_actions(state, groups, current_context, primary_roads)[:6]
         )
         candidates.extend(groups.get(ActionType.SKIP, [])[:1])
         return _dedupe_actions(candidates)
@@ -459,7 +611,7 @@ class GreedyPolicy(Policy):
                 )
             )
 
-        river_limit = 4 if stage == STAGE_EXPAND else 2
+        river_limit = 4 if stage in {STAGE_EXPAND, STAGE_EXPAND_REOPEN} else 2
         candidates.extend(
             _stage_filter_city_actions(
                 state,
@@ -489,6 +641,10 @@ class GreedyPolicy(Policy):
         stage: str,
         current_context: HeuristicContext,
         evaluations: dict[Action, SimulatedEvaluation],
+        *,
+        escape_mode: bool,
+        food_rescue_stalled: bool,
+        food_rescue_chain: int,
     ) -> int:
         evaluation = _get_simulated_evaluation(state, action, profile, evaluations)
         future = evaluation.future_profile
@@ -542,6 +698,8 @@ class GreedyPolicy(Policy):
                 rescue_recovery,
                 stage,
                 current_context,
+                food_rescue_stalled,
+                food_rescue_chain,
             )
         elif action.action_type is ActionType.RESEARCH_TECH:
             value += self._score_research_action(
@@ -551,6 +709,8 @@ class GreedyPolicy(Policy):
                 future_budget,
                 rescue_recovery,
                 stage,
+                food_rescue_stalled,
+                food_rescue_chain,
             )
         elif action.action_type is ActionType.BUILD_CITY:
             value += self._score_city_action(
@@ -565,6 +725,34 @@ class GreedyPolicy(Policy):
             )
         elif action.action_type is ActionType.SKIP:
             value += self._score_skip_action(profile, stage)
+
+        if (
+            food_rescue_stalled
+            and stage == STAGE_RESCUE
+            and action.action_type in {ActionType.BUILD_ROAD, ActionType.BUILD_CITY}
+            and _structural_recovery_gain(
+                state,
+                action,
+                profile,
+                future,
+                future_budget,
+                current_context,
+            )
+        ):
+            value += 180
+
+        if escape_mode:
+            if action.action_type is ActionType.SKIP:
+                value -= 2000
+            elif _structural_recovery_gain(
+                state,
+                action,
+                profile,
+                future,
+                future_budget,
+                current_context,
+            ):
+                value += 900
         return value
 
     def _score_road_action(
@@ -632,6 +820,8 @@ class GreedyPolicy(Policy):
         rescue_recovery: RescueRecovery | None,
         stage: str,
         current_context: HeuristicContext,
+        food_rescue_stalled: bool,
+        food_rescue_chain: int,
     ) -> int:
         assert action.building_type is not None
 
@@ -675,6 +865,20 @@ class GreedyPolicy(Policy):
                     value -= 220
             elif not rescue_recovery.effective:
                 value -= 260
+        if action.building_type is BuildingType.FARM and food_rescue_stalled:
+            if not (
+                future.starving_network_count < profile.starving_network_count
+                or future.pressure <= profile.pressure - 3
+            ):
+                value -= 260
+                if food_rescue_chain >= 4:
+                    value -= 180
+                if (
+                    future_budget is not None
+                    and future_budget.starving
+                    and future_budget.pressure >= profile.pressure
+                ):
+                    value -= 220
         return value
 
     def _score_research_action(
@@ -685,6 +889,8 @@ class GreedyPolicy(Policy):
         future_budget: NetworkBudget | None,
         rescue_recovery: RescueRecovery | None,
         stage: str,
+        food_rescue_stalled: bool,
+        food_rescue_chain: int,
     ) -> int:
         assert action.tech_type is not None
 
@@ -720,6 +926,20 @@ class GreedyPolicy(Policy):
                     value -= 180
             elif not rescue_recovery.effective:
                 value -= 220
+        if action.tech_type is TechType.AGRICULTURE and food_rescue_stalled:
+            if not (
+                future.starving_network_count < profile.starving_network_count
+                or future.pressure <= profile.pressure - 3
+            ):
+                value -= 260
+                if food_rescue_chain >= 4:
+                    value -= 180
+                if (
+                    future_budget is not None
+                    and future_budget.starving
+                    and future_budget.pressure >= profile.pressure
+                ):
+                    value -= 220
         return value
 
     def _score_city_action(
@@ -760,7 +980,7 @@ class GreedyPolicy(Policy):
         )
         value += (profile.composition_gap - future_gap) * 1000
 
-        if profile.development_saturated:
+        if profile.development_saturated and stage != STAGE_EXPAND_REOPEN:
             value += 140
             value += profile.tech_count * 18
 
@@ -808,6 +1028,13 @@ class GreedyPolicy(Policy):
         elif stage == STAGE_FILL and future_budget is not None and future_budget.city_count == 1:
             value -= 220
 
+        if (
+            stage == STAGE_EXPAND_REOPEN
+            and site_quality >= 80
+            and site_budget.food_balance >= 1
+        ):
+            value += 120
+
         if profile.infrastructure_gap > 0:
             value -= profile.infrastructure_gap * 70
         if profile.total_buildings < profile.city_count * 1.8:
@@ -834,6 +1061,8 @@ class GreedyPolicy(Policy):
             value -= min(260, profile.infrastructure_gap * 35)
         if stage in {STAGE_RESCUE, STAGE_CONSOLIDATE}:
             value -= 120
+        if stage == STAGE_EXPAND_REOPEN:
+            value -= 200
         return value
 
 
@@ -940,6 +1169,10 @@ def _decision_context(
     profile: GreedyStateProfile,
     current_context: HeuristicContext,
     evaluation: SimulatedEvaluation,
+    history: HistorySignals,
+    escape_mode: bool,
+    escape_reason: str | None,
+    fill_reopen_reason: str | None,
 ) -> dict[str, object]:
     future_profile = evaluation.future_profile
     rescue_recovery = evaluation.rescue_recovery
@@ -971,8 +1204,15 @@ def _decision_context(
         "greedy_global_network_delta": rescue_recovery.network_delta,
         "greedy_global_isolation_delta": rescue_recovery.isolated_delta,
         "greedy_rescue_effective": rescue_recovery.effective,
+        "greedy_escape_mode": escape_mode,
+        "greedy_food_rescue_stalled": history.food_rescue_stalled,
+        "greedy_food_rescue_chain": history.food_rescue_chain,
         "greedy_score_breakdown": _score_breakdown_dict(score_breakdown(state)),
     }
+    if escape_reason is not None:
+        context["greedy_escape_reason"] = escape_reason
+    if fill_reopen_reason is not None:
+        context["greedy_fill_reopen_reason"] = fill_reopen_reason
     if connection_steps is not None:
         context["greedy_best_connection_steps"] = connection_steps
     if site_budget is not None:
@@ -1112,6 +1352,10 @@ def _candidate_limits(
         resource_city_limit = max(1, resource_city_limit - 2)
         building_limit = min(18, building_limit + 4)
         research_limit = min(max(3, len(state.networks) + 1), research_action_count)
+    elif stage == STAGE_EXPAND_REOPEN:
+        city_limit = min(12, city_limit + 2)
+        resource_city_limit = min(city_limit, resource_city_limit + 2)
+        road_limit = min(8, road_limit + 2)
 
     if profile.turns_remaining <= 40:
         city_limit = max(1, city_limit - 1)
@@ -1151,6 +1395,128 @@ def _select_stage(profile: GreedyStateProfile) -> str:
     return STAGE_EXPAND
 
 
+def _history_signals(state: GameState, profile: GreedyStateProfile) -> HistorySignals:
+    contexts = state.stats.decision_contexts
+    recent_three = contexts[-3:]
+    recent_four = contexts[-4:]
+    recent_five = contexts[-5:]
+
+    food_rescue_chain = 0
+    for context in reversed(contexts):
+        if context.get("greedy_priority") != "food_rescue":
+            break
+        food_rescue_chain += 1
+
+    recent_food_rescue = sum(
+        1 for context in recent_three if context.get("greedy_priority") == "food_rescue"
+    )
+    recent_starving = [
+        _context_int(context, "greedy_starving_networks") for context in recent_three
+    ]
+    recent_pressures = [
+        _context_int(context, "greedy_food_pressure") for context in recent_three
+    ]
+    valid_starving = [value for value in recent_starving if value is not None]
+    valid_pressures = [value for value in recent_pressures if value is not None]
+    food_rescue_stalled = (
+        recent_food_rescue >= 2
+        and len(valid_starving) == len(recent_three)
+        and len(valid_pressures) == len(recent_three)
+        and all(value == valid_starving[0] for value in valid_starving)
+        and valid_starving[0] >= profile.starving_network_count
+        and min(valid_pressures) >= profile.pressure - 2
+    )
+
+    negative_delta_stall = (
+        len(recent_three) == 3
+        and all(
+            (_context_int(context, "greedy_best_delta_score") or 0) < 0
+            for context in recent_three
+        )
+        and len(valid_starving) == len(recent_three)
+        and min(valid_starving) >= profile.starving_network_count
+    )
+
+    repeated_skip_without_pressure_relief = (
+        len(recent_four) == 4
+        and sum(1 for context in recent_four if context.get("chosen_action_type") == "skip") >= 3
+        and (
+            not recent_four
+            or min(
+                _context_int(context, "greedy_food_pressure") or profile.pressure
+                for context in recent_four
+            )
+            >= profile.pressure
+        )
+    )
+
+    repeated_fill_skip = (
+        len(recent_five) == 5
+        and sum(1 for context in recent_five if context.get("chosen_action_type") == "skip") >= 4
+    )
+
+    recent_snapshots = state.stats.turn_snapshots[-5:]
+    late_game_growth_stall = False
+    if len(recent_snapshots) >= 5:
+        positive_growth = 0
+        for previous, current in zip(recent_snapshots, recent_snapshots[1:], strict=False):
+            delta = int(current["score"]) - int(previous["score"])
+            positive_growth += max(0, delta)
+        late_game_growth_stall = positive_growth < 40
+
+    return HistorySignals(
+        food_rescue_chain=food_rescue_chain,
+        food_rescue_stalled=food_rescue_stalled,
+        negative_delta_stall=negative_delta_stall,
+        repeated_skip_without_pressure_relief=repeated_skip_without_pressure_relief,
+        repeated_fill_skip=repeated_fill_skip,
+        late_game_growth_stall=late_game_growth_stall,
+    )
+
+
+def _escape_reason(
+    state: GameState,
+    groups: dict[ActionType, list[Action]],
+    profile: GreedyStateProfile,
+    best_action: Action,
+    history: HistorySignals,
+) -> str | None:
+    legal_expansions = len(groups.get(ActionType.BUILD_CITY, [])) + len(
+        groups.get(ActionType.BUILD_ROAD, [])
+    )
+    if best_action.action_type is ActionType.SKIP and legal_expansions >= 8:
+        return ESCAPE_REASON_SKIP_WITH_MANY_LEGAL_EXPANSIONS
+    if history.repeated_skip_without_pressure_relief:
+        return ESCAPE_REASON_REPEATED_SKIP_WITHOUT_PRESSURE_RELIEF
+    if history.negative_delta_stall:
+        return ESCAPE_REASON_NEGATIVE_DELTA_STALL
+    return None
+
+
+def _fill_reopen_reason(
+    state: GameState,
+    groups: dict[ActionType, list[Action]],
+    profile: GreedyStateProfile,
+    best_action: Action,
+    best_delta_score: int,
+    history: HistorySignals,
+) -> str | None:
+    if (
+        profile.turns_remaining < 20
+        or len(groups.get(ActionType.BUILD_CITY, [])) < 10
+        or profile.starving_network_count > 0
+        or profile.total_food < profile.food_buffer_target
+    ):
+        return None
+    if history.repeated_fill_skip:
+        return FILL_REOPEN_REASON_REPEATED_FILL_SKIP
+    if best_action.action_type is ActionType.SKIP and best_delta_score <= 8:
+        return FILL_REOPEN_REASON_LOW_DELTA_SKIP_WITH_MANY_CITY_OPTIONS
+    if history.late_game_growth_stall:
+        return FILL_REOPEN_REASON_LATE_GAME_GROWTH_STALL
+    return None
+
+
 def _stage_filter_city_actions(
     state: GameState,
     actions: list[Action],
@@ -1158,12 +1524,21 @@ def _stage_filter_city_actions(
     profile: GreedyStateProfile,
     limit: int,
     context: HeuristicContext,
+    *,
+    escape_mode: bool = False,
 ) -> list[Action]:
     selected: list[Action] = []
     for action in actions:
         if action.coord is None:
             continue
-        if not _city_action_allowed_in_stage(state, action.coord, stage, profile, context):
+        if not _city_action_allowed_in_stage(
+            state,
+            action.coord,
+            stage,
+            profile,
+            context,
+            escape_mode=escape_mode,
+        ):
             continue
         selected.append(action)
         if len(selected) >= limit:
@@ -1177,6 +1552,8 @@ def _city_action_allowed_in_stage(
     stage: str,
     profile: GreedyStateProfile,
     context: HeuristicContext,
+    *,
+    escape_mode: bool = False,
 ) -> bool:
     site_budget = _site_budget(state, coord, context)
     connection_steps = _road_steps_to_network(state, coord, max_steps=4, context=context)
@@ -1184,6 +1561,20 @@ def _city_action_allowed_in_stage(
     site_value = city_site_score_for_context(context, coord)
     bootstrap_expansion = profile.city_count <= 1 and profile.total_buildings == 0
 
+    if stage == STAGE_RESCUE and escape_mode:
+        return (
+            immediate_connection
+            or (
+                connection_steps is not None
+                and connection_steps <= 3
+                and site_budget.food_balance >= 0
+            )
+            or (
+                connection_steps is not None
+                and connection_steps <= 4
+                and site_value >= 120
+            )
+        )
     if stage == STAGE_RESCUE:
         return immediate_connection or (
             bootstrap_expansion and site_budget.food_balance >= 1 and site_value >= 110
@@ -1427,6 +1818,15 @@ def _action_coord(action: Action) -> Coord:
     return action.coord
 
 
+def _context_int(context: dict[str, object], key: str) -> int | None:
+    value = context.get(key)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    return None
+
+
 def _is_river_adjacent_site(
     state: GameState,
     coord: Coord,
@@ -1485,6 +1885,44 @@ def _rescue_recovery(
             profile.breakdown_fragmented_network_penalty
             - future.breakdown_fragmented_network_penalty
         ),
+    )
+
+
+def _structural_recovery_gain(
+    state: GameState,
+    action: Action,
+    profile: GreedyStateProfile,
+    future: GreedyStateProfile,
+    future_budget: NetworkBudget | None,
+    current_context: HeuristicContext,
+) -> bool:
+    if future.network_count < profile.network_count:
+        return True
+    if future.connected_city_count > profile.connected_city_count:
+        return True
+    if future.isolated_city_count < profile.isolated_city_count:
+        return True
+    if future.starving_network_count < profile.starving_network_count:
+        return True
+    if future_budget is not None and not future_budget.starving:
+        return True
+    if future.pressure <= profile.pressure - 3:
+        return True
+    return (
+        action.action_type is ActionType.BUILD_CITY
+        and action.coord is not None
+        and (
+            (
+                steps := _road_steps_to_network(
+                    state,
+                    action.coord,
+                    max_steps=4,
+                    context=current_context,
+                )
+            )
+            is not None
+        )
+        and steps <= 3
     )
 
 
@@ -1633,6 +2071,50 @@ def _road_structure_score(
             structural_score += 2
             break
     return structural_score
+
+
+def _escape_road_actions(
+    state: GameState,
+    groups: dict[ActionType, list[Action]],
+    context: HeuristicContext,
+    existing: list[Action],
+) -> list[Action]:
+    existing_set = set(existing)
+    candidates = [
+        action
+        for action in groups.get(ActionType.BUILD_ROAD, [])
+        if action.coord is not None and action not in existing_set
+    ]
+    return sorted(
+        candidates,
+        key=lambda action: (
+            _escape_road_distance(state, _action_coord(action), context),
+            -road_site_score_for_context(context, _action_coord(action)),
+            -_road_structure_score(state, _action_coord(action), context),
+            _action_coord(action),
+        ),
+    )
+
+
+def _escape_road_distance(
+    state: GameState,
+    coord: Coord,
+    context: HeuristicContext,
+) -> int:
+    passable_map = context_passable_network_map(context)
+    adjacent_network_ids = {
+        passable_map[neighbor]
+        for neighbor in cardinal_neighbors(coord)
+        if neighbor in passable_map
+    }
+    return min(
+        (
+            abs(coord[0] - city.coord[0]) + abs(coord[1] - city.coord[1])
+            for city in state.cities.values()
+            if city.network_id not in adjacent_network_ids
+        ),
+        default=99,
+    )
 
 
 TECH_UNLOCK_PRIORITY_TO_BUILDING: dict[TechType, BuildingType] = {

@@ -268,6 +268,14 @@ def summarize_record_anomaly(
             greedy_contexts,
             lambda context: context.greedy_stage == "fill",
         ),
+        "first_stage_expand_reopen_turn": _first_turn_matching(
+            greedy_contexts,
+            lambda context: context.greedy_stage == "expand_reopen",
+        ),
+        "expand_reopen_stage_turns": _count_turns_matching(
+            greedy_contexts,
+            lambda context: context.greedy_stage == "expand_reopen",
+        ),
         "rescue_stage_turns": _count_turns_matching(
             greedy_contexts,
             lambda context: context.greedy_stage == "rescue",
@@ -797,6 +805,8 @@ def render_anomaly_case(case: dict[str, object]) -> list[str]:
             f"- skip_and_stage: first_skip={case['first_skip_turn']}, "
             f"skip_turns={case['skip_turns']}, tail_skip_ratio={case['tail_skip_ratio']:.2f}, "
             f"first_fill={case['first_stage_fill_turn']}, fill_turns={case['fill_stage_turns']}, "
+            f"first_reopen={case['first_stage_expand_reopen_turn']}, "
+            f"reopen_turns={case['expand_reopen_stage_turns']}, "
             f"rescue_turns={case['rescue_stage_turns']}"
         ),
         (

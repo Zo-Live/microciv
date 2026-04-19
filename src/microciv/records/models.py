@@ -505,6 +505,15 @@ class RecordDecisionContext:
     greedy_connected_cities: int | None = None
     greedy_total_food: int | None = None
     greedy_network_count: int | None = None
+    greedy_global_starving_delta: int | None = None
+    greedy_global_network_delta: int | None = None
+    greedy_global_isolation_delta: int | None = None
+    greedy_rescue_effective: bool | None = None
+    greedy_escape_mode: bool | None = None
+    greedy_escape_reason: str | None = None
+    greedy_food_rescue_stalled: bool | None = None
+    greedy_food_rescue_chain: int | None = None
+    greedy_fill_reopen_reason: str | None = None
     greedy_best_connection_steps: int | None = None
     greedy_best_future_network_starving: bool | None = None
     greedy_score_breakdown: dict[str, int] = field(default_factory=dict)
@@ -541,6 +550,15 @@ class RecordDecisionContext:
             greedy_connected_cities=_optional_int(payload, "greedy_connected_cities"),
             greedy_total_food=_optional_int(payload, "greedy_total_food"),
             greedy_network_count=_optional_int(payload, "greedy_network_count"),
+            greedy_global_starving_delta=_optional_int(payload, "greedy_global_starving_delta"),
+            greedy_global_network_delta=_optional_int(payload, "greedy_global_network_delta"),
+            greedy_global_isolation_delta=_optional_int(payload, "greedy_global_isolation_delta"),
+            greedy_rescue_effective=_optional_bool(payload, "greedy_rescue_effective"),
+            greedy_escape_mode=_optional_bool(payload, "greedy_escape_mode"),
+            greedy_escape_reason=_optional_str(payload, "greedy_escape_reason"),
+            greedy_food_rescue_stalled=_optional_bool(payload, "greedy_food_rescue_stalled"),
+            greedy_food_rescue_chain=_optional_int(payload, "greedy_food_rescue_chain"),
+            greedy_fill_reopen_reason=_optional_str(payload, "greedy_fill_reopen_reason"),
             greedy_best_connection_steps=_optional_int(payload, "greedy_best_connection_steps"),
             greedy_best_future_network_starving=_optional_bool(
                 payload, "greedy_best_future_network_starving"
@@ -585,6 +603,24 @@ class RecordDecisionContext:
             result["greedy_total_food"] = self.greedy_total_food
         if self.greedy_network_count is not None:
             result["greedy_network_count"] = self.greedy_network_count
+        if self.greedy_global_starving_delta is not None:
+            result["greedy_global_starving_delta"] = self.greedy_global_starving_delta
+        if self.greedy_global_network_delta is not None:
+            result["greedy_global_network_delta"] = self.greedy_global_network_delta
+        if self.greedy_global_isolation_delta is not None:
+            result["greedy_global_isolation_delta"] = self.greedy_global_isolation_delta
+        if self.greedy_rescue_effective is not None:
+            result["greedy_rescue_effective"] = self.greedy_rescue_effective
+        if self.greedy_escape_mode is not None:
+            result["greedy_escape_mode"] = self.greedy_escape_mode
+        if self.greedy_escape_reason is not None:
+            result["greedy_escape_reason"] = self.greedy_escape_reason
+        if self.greedy_food_rescue_stalled is not None:
+            result["greedy_food_rescue_stalled"] = self.greedy_food_rescue_stalled
+        if self.greedy_food_rescue_chain is not None:
+            result["greedy_food_rescue_chain"] = self.greedy_food_rescue_chain
+        if self.greedy_fill_reopen_reason is not None:
+            result["greedy_fill_reopen_reason"] = self.greedy_fill_reopen_reason
         if self.greedy_best_connection_steps is not None:
             result["greedy_best_connection_steps"] = self.greedy_best_connection_steps
         if self.greedy_best_future_network_starving is not None:
