@@ -1,5 +1,9 @@
 # Extra dependencies for data analysis scripts in this directory.
 # The main game has zero runtime dependencies (standard library only).
+# These packages are also available via the project's `analysis` extras:
+#   uv sync --extra analysis
+#   pip install -e ".[analysis]"
+# This file is kept as an alternative for environments without uv / pyproject extras.
 
-pandas>=2.0
-tabulate>=0.9
+pandas>=3.0.2
+tabulate>=0.10

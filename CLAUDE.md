@@ -34,7 +34,7 @@ ruff check src tests
 mypy
 ```
 
-Install with `uv sync` (preferred) or `pip install -e ".[dev]"`.
+Install with `uv sync` (preferred) or `pip install -e ".[dev]"`. For analysis scripts (`scripts/analyze_batch.py`, needs `pandas` + `tabulate`) install the optional extras: `uv sync --extra analysis` or `pip install -e ".[analysis]"`.
 
 ## Architecture
 
