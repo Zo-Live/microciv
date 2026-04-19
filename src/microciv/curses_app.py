@@ -1076,7 +1076,7 @@ class CursesMicroCivApp:
         self._render_board(stdscr, state.board, board_x, board_y, state.selection.selected_coord)
         self._safe_addstr(stdscr, SCORE_LABEL_Y, panel_x, "Score", "text")
         pixel_render_number(
-            stdscr, panel_x, SCORE_VALUE_Y, state.score, 4,
+            stdscr, panel_x, SCORE_VALUE_Y, state.score, 5,
             color_pair=self._attr("pixel_red"),
         )
         self._safe_addstr(stdscr, TURN_LABEL_Y, panel_x, "Turn", "text")
@@ -1271,7 +1271,7 @@ class CursesMicroCivApp:
         final_score = record.final_score if record is not None else state.score
         self._safe_addstr(stdscr, 2, panel_x, "Score", "text")
         pixel_render_number(
-            stdscr, panel_x, 3, final_score, 4,
+            stdscr, panel_x, 3, final_score, 5,
             color_pair=self._attr("pixel_red"),
         )
         y = 3 + GLYPH_HEIGHT + 2
