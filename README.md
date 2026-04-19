@@ -44,6 +44,16 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+### （可选）安装数据分析脚本依赖
+
+`scripts/analyze_batch.py` 依赖 `pandas` 与 `tabulate`，主游戏本身零运行依赖。按需安装：
+
+```bash
+uv sync --extra analysis        # uv
+pip install -e ".[analysis]"    # pip
+pip install -r scripts/requirements.txt  # 无 pyproject extras 环境
+```
+
 ## 运行
 
 ```bash
@@ -77,12 +87,14 @@ python scripts/generate_dataset.py -n <games-per-combo> --label <tag>
 python scripts/analyze_batch.py --input <dataset.json> --output <report.md>
 ```
 
-数据分析脚本依赖 `pandas` 和 `tabulate`，可通过以下方式安装：
+数据分析脚本依赖 `pandas` 和 `tabulate`；推荐通过项目的 `analysis` extras 安装：
 
 ```bash
-uv add --dev pandas tabulate
+uv sync --extra analysis
 # 或
-pip install pandas tabulate
+pip install -e ".[analysis]"
+# 或（无 pyproject extras 环境）
+pip install -r scripts/requirements.txt
 ```
 
 常用参数：
@@ -108,7 +120,7 @@ MicroCiv 以鼠标为主要输入方式。
 - `t`：跳转到 Records 列表顶部
 - `d`：跳转到 Records 列表底部
 - `q`：退出程序
-- 方向键：移动地图选中格或滚动 Records
+- 方向键：移动地图选中格或滚动 Records 列表
 
 ## 项目结构
 

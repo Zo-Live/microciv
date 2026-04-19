@@ -17,7 +17,7 @@ Main features:
 - Local Records system with JSON persistence and export
 - Pixel font rendering (title, score, turn count)
 
-Minimal external runtime dependencies; core game logic uses only the Python standard library (`curses`). `pandas` is listed as a runtime dependency solely for `scripts/analyze_batch.py` dataset diagnostics.
+The core game has **zero** runtime dependencies — it uses only the Python standard library (`curses`). `pandas` and `tabulate` are provided through the optional `analysis` extras, and are only needed by `scripts/analyze_batch.py` for dataset diagnostics.
 
 ---
 
@@ -50,6 +50,16 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 python main.py
+```
+
+### Optional: analysis scripts extras
+
+`scripts/analyze_batch.py` needs `pandas` and `tabulate`, which are declared under the `analysis` optional-dependencies group:
+
+```bash
+uv sync --extra analysis
+# or
+pip install -e ".[analysis]"
 ```
 
 ### Entry Points
@@ -270,7 +280,10 @@ Test framework is `pytest`, configured in `pyproject.toml`.
 - `test_scoring.py` — score calculation
 - `test_ai.py` — Greedy/Random strategy legality, staged Greedy food rescue behavior, full game completion, fixed-seed score baselines
 - `test_records.py` — RecordEntry serialization, Store persistence, schema migration, FIFO trimming, export
-- `test_grid.py`, `test_curses_app.py`, `test_analyze_batch.py` — utilities, UI, and script tests
+- `test_batch_autoplay.py` — `scripts/batch_autoplay.py` single-config bulk run + JSON/CSV/summary outputs
+- `test_generate_dataset.py` — `scripts/generate_dataset.py` parameter-grid dataset generation and manifest
+- `test_analyze_batch.py` — `scripts/analyze_batch.py` Markdown report generation (requires `analysis` extras)
+- `test_grid.py`, `test_curses_app.py` — utility and UI tests
 
 **Testing style characteristics**:
 
@@ -287,7 +300,7 @@ Test framework is `pytest`, configured in `pyproject.toml`.
 - **Data file location**: runtime data is saved to `data/records.json`; incompatible old files are renamed to `.incompatible` backups.
 - **Minimal external runtime dependencies**: core logic is pure standard library; `pandas` is only used by `scripts/analyze_batch.py`.
 - **Input sources**: currently only accepts local mouse/keyboard input via `curses`, no network interfaces, no network attack surface to consider.
-- **When modifying sensitive code**: note that `GameEngine.apply_action()` is the core state mutation path; any changes must be updated in sync in `tests/test_engine.py` and `tests/test_actions.py`.
+- **When modifying sensitive code**: note that `GameEngine.apply_action()` is the core state mutation path; any changes must be updated in sync in `tests/test_engine.py` (and related behavior tests such as `tests/test_ai.py`, `tests/test_resources.py`, `tests/test_networks.py`).
 
 ---
 

@@ -148,8 +148,11 @@ wheels = [
 name = "microciv"
 version = "0.1.0"
 source = { editable = "." }
-dependencies = [
+
+[package.optional-dependencies]
+analysis = [
     { name = "pandas" },
+    { name = "tabulate" },
 ]
 
 [package.dev-dependencies]
@@ -158,11 +161,14 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
-    { name = "tabulate" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pandas", specifier = ">=3.0.2" }]
+requires-dist = [
+    { name = "pandas", marker = "extra == 'analysis'", specifier = ">=3.0.2" },
+    { name = "tabulate", marker = "extra == 'analysis'", specifier = ">=0.10.0" },
+]
+provides-extras = ["analysis"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -170,7 +176,6 @@ dev = [
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-cov", specifier = ">=5.0.0" },
     { name = "ruff", specifier = ">=0.11.0" },
-    { name = "tabulate", specifier = ">=0.10.0" },
 ]
 
 [[package]]
