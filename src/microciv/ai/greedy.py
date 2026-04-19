@@ -4,20 +4,30 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from typing import cast
 
 from microciv.ai.heuristics import (
     TECH_UNLOCK_PRIORITY,
+    HeuristicContext,
+    build_heuristic_context,
     building_action_score,
-    city_expansion_score,
+    city_expansion_score_for_context,
     city_key,
     city_network_pressure,
     city_site_score,
+    city_site_score_for_context,
     city_terrain_counts,
+    context_city_network_pressure,
+    context_city_terrain_counts,
+    context_is_river_adjacent_site,
+    context_network_missing_building_types,
+    context_passable_network_map,
+    context_total_resources,
     material_targets,
     partition_actions,
     research_action_score,
-    resource_ring_counts,
-    road_site_score,
+    resource_ring_counts_for_context,
+    road_site_score_for_context,
 )
 from microciv.ai.policy import Policy, get_legal_actions, simulate_action
 from microciv.constants import (
@@ -35,7 +45,7 @@ from microciv.game.enums import (
     TechType,
     TerrainType,
 )
-from microciv.game.models import GameState, Network
+from microciv.game.models import GameState, Network, ResourcePool
 from microciv.game.networks import map_passable_coords_to_networks
 from microciv.game.scoring import (
     ScoreBreakdown,
@@ -65,6 +75,15 @@ STAGE_FILL = "fill"
 class PlannedDecision:
     action: Action
     context: dict[str, object]
+
+
+@dataclass(slots=True, frozen=True)
+class SimulatedEvaluation:
+    future_context: HeuristicContext
+    future_profile: GreedyStateProfile
+    future_resources: ResourcePool
+    future_budget: NetworkBudget | None
+    rescue_recovery: RescueRecovery
 
 
 @dataclass(slots=True, frozen=True)
@@ -212,16 +231,32 @@ class GreedyPolicy(Policy):
             return decision
 
         groups = partition_actions(legal_actions)
-        profile = _build_state_profile(state)
+        current_context = build_heuristic_context(state)
+        profile = _build_state_profile(state, current_context)
         stage = _select_stage(profile)
-        catalog = _build_candidate_catalog(state, groups)
-        candidates = self._candidate_actions(state, groups, profile, catalog, stage)
+        catalog = _build_candidate_catalog(state, groups, current_context)
+        candidates = self._candidate_actions(
+            state,
+            groups,
+            profile,
+            catalog,
+            stage,
+            current_context,
+        )
+        evaluations: dict[Action, SimulatedEvaluation] = {}
 
         best_action = Action.skip()
         best_value = -10**18
         best_priority = "skip"
         for action in candidates:
-            value = self._evaluate_action(state, action, profile, stage)
+            value = self._evaluate_action(
+                state,
+                action,
+                profile,
+                stage,
+                current_context,
+                evaluations,
+            )
             priority = _priority_label(action)
             if value > best_value or (
                 value == best_value
@@ -241,6 +276,8 @@ class GreedyPolicy(Policy):
                 priority=best_priority,
                 best_value=best_value,
                 profile=profile,
+                current_context=current_context,
+                evaluation=evaluations[best_action],
             ),
         )
         self._cache_key = cache_key
@@ -254,12 +291,21 @@ class GreedyPolicy(Policy):
         profile: GreedyStateProfile,
         catalog: CandidateCatalog,
         stage: str,
+        current_context: HeuristicContext,
     ) -> list[Action]:
         candidates: list[Action] = []
         limits = _candidate_limits(state, profile, stage, len(catalog.research_actions))
 
         self._extend_stage_core_candidates(candidates, catalog, profile, limits, stage)
-        self._extend_stage_city_candidates(state, candidates, catalog, profile, limits, stage)
+        self._extend_stage_city_candidates(
+            state,
+            candidates,
+            catalog,
+            profile,
+            limits,
+            stage,
+            current_context,
+        )
         candidates.extend(groups.get(ActionType.SKIP, [])[:1])
         return _dedupe_actions(candidates)
 
@@ -318,6 +364,7 @@ class GreedyPolicy(Policy):
         profile: GreedyStateProfile,
         limits: CandidateLimits,
         stage: str,
+        current_context: HeuristicContext,
     ) -> None:
         city_actions = _stage_filter_city_actions(
             state,
@@ -325,6 +372,7 @@ class GreedyPolicy(Policy):
             stage,
             profile,
             limits.city_limit,
+            current_context,
         )
         resource_city_actions = _stage_filter_city_actions(
             state,
@@ -332,6 +380,7 @@ class GreedyPolicy(Policy):
             stage,
             profile,
             limits.resource_city_limit,
+            current_context,
         )
         candidates.extend(city_actions)
         candidates.extend(resource_city_actions)
@@ -344,6 +393,7 @@ class GreedyPolicy(Policy):
                     stage,
                     profile,
                     min(3, limits.resource_city_limit),
+                    current_context,
                 )
             )
             candidates.extend(
@@ -353,6 +403,7 @@ class GreedyPolicy(Policy):
                     stage,
                     profile,
                     min(3, limits.resource_city_limit),
+                    current_context,
                 )
             )
             return
@@ -368,6 +419,7 @@ class GreedyPolicy(Policy):
                     stage,
                     profile,
                     min(4, limits.city_limit),
+                    current_context,
                 )
             )
 
@@ -379,6 +431,7 @@ class GreedyPolicy(Policy):
                     stage,
                     profile,
                     min(4, limits.resource_city_limit),
+                    current_context,
                 )
             )
         if profile.total_ore < profile.ore_target or profile.mountain_city_count < 3:
@@ -389,6 +442,7 @@ class GreedyPolicy(Policy):
                     stage,
                     profile,
                     min(4, limits.resource_city_limit),
+                    current_context,
                 )
             )
 
@@ -401,6 +455,7 @@ class GreedyPolicy(Policy):
                     stage,
                     profile,
                     min(4, limits.resource_city_limit),
+                    current_context,
                 )
             )
 
@@ -412,6 +467,7 @@ class GreedyPolicy(Policy):
                 stage,
                 profile,
                 min(river_limit, limits.resource_city_limit),
+                current_context,
             )
         )
         candidates.extend(
@@ -421,6 +477,7 @@ class GreedyPolicy(Policy):
                 stage,
                 profile,
                 min(3, limits.resource_city_limit),
+                current_context,
             )
         )
 
@@ -430,12 +487,14 @@ class GreedyPolicy(Policy):
         action: Action,
         profile: GreedyStateProfile,
         stage: str,
+        current_context: HeuristicContext,
+        evaluations: dict[Action, SimulatedEvaluation],
     ) -> int:
-        simulated = simulate_action(state, action)
-        future = _build_state_profile(simulated)
-        future_resources = total_resources(simulated)
-        future_budget = _future_network_budget(simulated, action)
-        rescue_recovery = _rescue_recovery(profile, future) if stage == STAGE_RESCUE else None
+        evaluation = _get_simulated_evaluation(state, action, profile, evaluations)
+        future = evaluation.future_profile
+        future_resources = evaluation.future_resources
+        future_budget = evaluation.future_budget
+        rescue_recovery = evaluation.rescue_recovery if stage == STAGE_RESCUE else None
 
         value = _stage_action_bias(stage, action)
         delta_score = future.breakdown_total - profile.breakdown_total
@@ -471,6 +530,7 @@ class GreedyPolicy(Policy):
                 future_budget,
                 rescue_recovery,
                 stage,
+                current_context,
             )
         elif action.action_type is ActionType.BUILD_BUILDING:
             value += self._score_building_action(
@@ -481,6 +541,7 @@ class GreedyPolicy(Policy):
                 future_budget,
                 rescue_recovery,
                 stage,
+                current_context,
             )
         elif action.action_type is ActionType.RESEARCH_TECH:
             value += self._score_research_action(
@@ -500,6 +561,7 @@ class GreedyPolicy(Policy):
                 future_budget,
                 rescue_recovery,
                 stage,
+                current_context,
             )
         elif action.action_type is ActionType.SKIP:
             value += self._score_skip_action(profile, stage)
@@ -514,11 +576,12 @@ class GreedyPolicy(Policy):
         future_budget: NetworkBudget | None,
         rescue_recovery: RescueRecovery | None,
         stage: str,
+        current_context: HeuristicContext,
     ) -> int:
         assert action.coord is not None
 
         value = 0
-        road_structure = _road_structure_score(state, action.coord)
+        road_structure = _road_structure_score(state, action.coord, current_context)
         value += road_structure * 140
         value += max(0, profile.network_count - future.network_count) * 220
         value += max(0, profile.starving_network_count - future.starving_network_count) * 420
@@ -568,6 +631,7 @@ class GreedyPolicy(Policy):
         future_budget: NetworkBudget | None,
         rescue_recovery: RescueRecovery | None,
         stage: str,
+        current_context: HeuristicContext,
     ) -> int:
         assert action.building_type is not None
 
@@ -575,7 +639,7 @@ class GreedyPolicy(Policy):
         per_turn_yield = sum(BUILDING_YIELDS[action.building_type].values())
         value += per_turn_yield * 20
         value += profile.infrastructure_gap * 28
-        if _is_gap_build_action(state, action):
+        if _is_gap_build_action(state, action, current_context):
             value += 240
         if profile.development_saturated:
             value -= 90
@@ -667,14 +731,20 @@ class GreedyPolicy(Policy):
         future_budget: NetworkBudget | None,
         rescue_recovery: RescueRecovery | None,
         stage: str,
+        current_context: HeuristicContext,
     ) -> int:
         assert action.coord is not None
 
         value = 0
-        site_budget = _site_budget(state, action.coord)
-        connection_steps = _road_steps_to_network(state, action.coord, max_steps=4)
+        site_budget = _site_budget(state, action.coord, current_context)
+        connection_steps = _road_steps_to_network(
+            state,
+            action.coord,
+            max_steps=4,
+            context=current_context,
+        )
         immediate_connection = connection_steps is not None and connection_steps <= 1
-        site_quality = max(0, city_site_score(state, action.coord) - 60)
+        site_quality = max(0, city_site_score_for_context(current_context, action.coord) - 60)
         bootstrap_expansion = profile.city_count <= 1 and profile.total_buildings == 0
 
         value += site_quality * 2
@@ -767,19 +837,29 @@ class GreedyPolicy(Policy):
         return value
 
 
-def _build_state_profile(state: GameState) -> GreedyStateProfile:
+def _build_state_profile(
+    state: GameState,
+    context: HeuristicContext | None = None,
+) -> GreedyStateProfile:
     breakdown = score_breakdown(state)
-    resources = total_resources(state)
+    resources = context_total_resources(context) if context is not None else total_resources(state)
     total_buildings = building_count(state)
     city_count = len(state.cities)
     food_buffer_target = city_count * FOOD_CONSUMPTION_PER_CITY * 3
-    connected_cities, connected_inland = _connected_city_mix(state)
-    terrain_counts = city_terrain_counts(state)
+    connected_cities, connected_inland = _connected_city_mix(state, context)
+    terrain_counts = (
+        context_city_terrain_counts(context) if context is not None else city_terrain_counts(state)
+    )
     wood_target, ore_target = material_targets(state)
     current_tech_count = tech_count(state)
-    missing_unlocked_buildings = _has_missing_unlocked_buildings(state)
+    missing_unlocked_buildings = _has_missing_unlocked_buildings(state, context)
     pressure = max(
-        (city_network_pressure(network) for network in state.networks.values()),
+        (
+            context_city_network_pressure(context, network.network_id)
+            if context is not None
+            else city_network_pressure(network)
+            for network in state.networks.values()
+        ),
         default=0,
     )
     starvation_count = starving_network_count(state)
@@ -827,6 +907,29 @@ def _build_state_profile(state: GameState) -> GreedyStateProfile:
     )
 
 
+def _get_simulated_evaluation(
+    state: GameState,
+    action: Action,
+    profile: GreedyStateProfile,
+    evaluations: dict[Action, SimulatedEvaluation],
+) -> SimulatedEvaluation:
+    if action in evaluations:
+        return evaluations[action]
+
+    simulated = simulate_action(state, action)
+    future_context = build_heuristic_context(simulated)
+    future_profile = _build_state_profile(simulated, future_context)
+    evaluation = SimulatedEvaluation(
+        future_context=future_context,
+        future_profile=future_profile,
+        future_resources=context_total_resources(future_context),
+        future_budget=_future_network_budget(simulated, action, future_context),
+        rescue_recovery=_rescue_recovery(profile, future_profile),
+    )
+    evaluations[action] = evaluation
+    return evaluation
+
+
 def _decision_context(
     *,
     state: GameState,
@@ -835,15 +938,20 @@ def _decision_context(
     priority: str,
     best_value: int,
     profile: GreedyStateProfile,
+    current_context: HeuristicContext,
+    evaluation: SimulatedEvaluation,
 ) -> dict[str, object]:
-    simulated = simulate_action(state, action)
-    future_profile = _build_state_profile(simulated)
-    rescue_recovery = _rescue_recovery(profile, future_profile)
-    score_delta = score_breakdown(simulated).total - profile.breakdown_total
-    site_budget = _site_budget(state, action.coord) if action.coord is not None else None
-    future_budget = _future_network_budget(simulated, action)
+    future_profile = evaluation.future_profile
+    rescue_recovery = evaluation.rescue_recovery
+    score_delta = future_profile.breakdown_total - profile.breakdown_total
+    site_budget = (
+        _site_budget(state, action.coord, current_context)
+        if action.coord is not None
+        else None
+    )
+    future_budget = evaluation.future_budget
     connection_steps = (
-        _road_steps_to_network(state, action.coord, max_steps=4)
+        _road_steps_to_network(state, action.coord, max_steps=4, context=current_context)
         if action.action_type is ActionType.BUILD_CITY and action.coord is not None
         else None
     )
@@ -878,6 +986,7 @@ def _decision_context(
 def _build_candidate_catalog(
     state: GameState,
     groups: dict[ActionType, list[Action]],
+    context: HeuristicContext,
 ) -> CandidateCatalog:
     city_actions = sorted(
         (
@@ -885,12 +994,15 @@ def _build_candidate_catalog(
             for action in groups.get(ActionType.BUILD_CITY, [])
             if action.coord is not None
         ),
-        key=lambda action: (-city_site_score(state, _action_coord(action)), _action_coord(action)),
+        key=lambda action: (
+            -city_site_score_for_context(context, _action_coord(action)),
+            _action_coord(action),
+        ),
     )
     resource_city_actions = sorted(
         city_actions,
         key=lambda action: (
-            -city_expansion_score(state, _action_coord(action)),
+            -city_expansion_score_for_context(context, _action_coord(action)),
             _action_coord(action),
         ),
     )
@@ -906,27 +1018,28 @@ def _build_candidate_catalog(
         for action in city_actions
         if action.coord is not None
         and state.board[action.coord].base_terrain in {TerrainType.FOREST, TerrainType.MOUNTAIN}
-        and city_site_score(state, action.coord) >= 100
+        and city_site_score_for_context(context, action.coord) >= 100
     ]
     inland_city_actions = [
         action
         for action in resource_city_actions
-        if action.coord is not None and not _is_river_adjacent_site(state, action.coord)
+        if action.coord is not None and not _is_river_adjacent_site(state, action.coord, context)
     ]
     river_city_actions = [
         action
         for action in resource_city_actions
-        if action.coord is not None and resource_ring_counts(state, action.coord)[2] > 0
+        if action.coord is not None
+        and resource_ring_counts_for_context(context, action.coord)[2] > 0
     ]
     road_actions = sorted(
         (
             action
             for action in groups.get(ActionType.BUILD_ROAD, [])
-            if action.coord is not None and _road_structure_score(state, action.coord) > 0
+            if action.coord is not None and _road_structure_score(state, action.coord, context) > 0
         ),
         key=lambda action: (
-            -_road_structure_score(state, _action_coord(action)),
-            -road_site_score(state, _action_coord(action)),
+            -_road_structure_score(state, _action_coord(action), context),
+            -road_site_score_for_context(context, _action_coord(action)),
             _action_coord(action),
         ),
     )
@@ -940,7 +1053,7 @@ def _build_candidate_catalog(
         ),
     )
     gap_building_actions = [
-        action for action in building_actions if _is_gap_build_action(state, action)
+        action for action in building_actions if _is_gap_build_action(state, action, context)
     ]
     research_actions = sorted(
         groups.get(ActionType.RESEARCH_TECH, []),
@@ -1044,12 +1157,13 @@ def _stage_filter_city_actions(
     stage: str,
     profile: GreedyStateProfile,
     limit: int,
+    context: HeuristicContext,
 ) -> list[Action]:
     selected: list[Action] = []
     for action in actions:
         if action.coord is None:
             continue
-        if not _city_action_allowed_in_stage(state, action.coord, stage, profile):
+        if not _city_action_allowed_in_stage(state, action.coord, stage, profile, context):
             continue
         selected.append(action)
         if len(selected) >= limit:
@@ -1062,11 +1176,12 @@ def _city_action_allowed_in_stage(
     coord: Coord,
     stage: str,
     profile: GreedyStateProfile,
+    context: HeuristicContext,
 ) -> bool:
-    site_budget = _site_budget(state, coord)
-    connection_steps = _road_steps_to_network(state, coord, max_steps=4)
+    site_budget = _site_budget(state, coord, context)
+    connection_steps = _road_steps_to_network(state, coord, max_steps=4, context=context)
     immediate_connection = connection_steps is not None and connection_steps <= 1
-    site_value = city_site_score(state, coord)
+    site_value = city_site_score_for_context(context, coord)
     bootstrap_expansion = profile.city_count <= 1 and profile.total_buildings == 0
 
     if stage == STAGE_RESCUE:
@@ -1087,7 +1202,14 @@ def _city_action_allowed_in_stage(
     return immediate_connection or site_budget.food_balance >= -1 or site_value >= 110
 
 
-def _site_budget(state: GameState, coord: Coord) -> SiteBudget:
+def _site_budget(
+    state: GameState,
+    coord: Coord,
+    context: HeuristicContext | None = None,
+) -> SiteBudget:
+    if context is not None and coord in context.site_budgets:
+        return cast(SiteBudget, context.site_budgets[coord])
+
     food_yield = 0
     wood_yield = 0
     ore_yield = 0
@@ -1118,21 +1240,33 @@ def _site_budget(state: GameState, coord: Coord) -> SiteBudget:
             elif resource_type is ResourceType.SCIENCE:
                 science_yield += amount
 
-    return SiteBudget(
+    budget = SiteBudget(
         food_yield=food_yield,
         wood_yield=wood_yield,
         ore_yield=ore_yield,
         science_yield=science_yield,
         food_balance=food_yield - FOOD_CONSUMPTION_PER_CITY,
     )
+    if context is not None:
+        context.site_budgets[coord] = budget
+    return budget
 
 
-def _future_network_budget(simulated: GameState, action: Action) -> NetworkBudget | None:
+def _future_network_budget(
+    simulated: GameState,
+    action: Action,
+    context: HeuristicContext | None = None,
+) -> NetworkBudget | None:
     network_id: int | None = None
     if action.city_id is not None and action.city_id in simulated.cities:
         network_id = simulated.cities[action.city_id].network_id
     elif action.coord is not None:
-        network_id = map_passable_coords_to_networks(simulated).get(action.coord)
+        passable_map = (
+            context_passable_network_map(context)
+            if context is not None
+            else map_passable_coords_to_networks(simulated)
+        )
+        network_id = passable_map.get(action.coord)
     if network_id is None:
         return None
     return _network_budget(simulated.networks[network_id])
@@ -1293,7 +1427,13 @@ def _action_coord(action: Action) -> Coord:
     return action.coord
 
 
-def _is_river_adjacent_site(state: GameState, coord: Coord) -> bool:
+def _is_river_adjacent_site(
+    state: GameState,
+    coord: Coord,
+    context: HeuristicContext | None = None,
+) -> bool:
+    if context is not None:
+        return context_is_river_adjacent_site(context, coord)
     return any(
         (tile := state.board.get(neighbor)) is not None
         and tile.base_terrain is TerrainType.RIVER
@@ -1301,7 +1441,10 @@ def _is_river_adjacent_site(state: GameState, coord: Coord) -> bool:
     )
 
 
-def _connected_city_mix(state: GameState) -> tuple[int, int]:
+def _connected_city_mix(
+    state: GameState,
+    context: HeuristicContext | None = None,
+) -> tuple[int, int]:
     connected = 0
     inland = 0
     for city in state.cities.values():
@@ -1309,7 +1452,7 @@ def _connected_city_mix(state: GameState) -> tuple[int, int]:
         if len(network.city_ids) < 2:
             continue
         connected += 1
-        if not _is_river_adjacent_site(state, city.coord):
+        if not _is_river_adjacent_site(state, city.coord, context):
             inland += 1
     return connected, inland
 
@@ -1349,9 +1492,19 @@ def _road_steps_to_network(
     state: GameState,
     coord: Coord,
     max_steps: int,
+    context: HeuristicContext | None = None,
 ) -> int | None:
-    passable_map = map_passable_coords_to_networks(state)
+    if context is not None and (coord, max_steps) in context.road_steps:
+        return context.road_steps[(coord, max_steps)]
+
+    passable_map = (
+        context_passable_network_map(context)
+        if context is not None
+        else map_passable_coords_to_networks(state)
+    )
     if coord in passable_map:
+        if context is not None:
+            context.road_steps[(coord, max_steps)] = 0
         return 0
 
     frontier: deque[tuple[Coord, int]] = deque([(coord, 0)])
@@ -1367,7 +1520,10 @@ def _road_steps_to_network(
             if tile is None:
                 continue
             if neighbor in passable_map:
-                return steps + 1
+                result = steps + 1
+                if context is not None:
+                    context.road_steps[(coord, max_steps)] = result
+                return result
             if tile.occupant is not OccupantType.NONE:
                 continue
             if tile.base_terrain not in {
@@ -1379,17 +1535,29 @@ def _road_steps_to_network(
                 continue
             seen.add(neighbor)
             frontier.append((neighbor, steps + 1))
+    if context is not None:
+        context.road_steps[(coord, max_steps)] = None
     return None
 
 
-def _has_missing_unlocked_buildings(state: GameState) -> bool:
-    return any(_network_missing_building_types(state, network_id) for network_id in state.networks)
+def _has_missing_unlocked_buildings(
+    state: GameState,
+    context: HeuristicContext | None = None,
+) -> bool:
+    return any(
+        _network_missing_building_types(state, network_id, context)
+        for network_id in state.networks
+    )
 
 
 def _network_missing_building_types(
     state: GameState,
     network_id: int,
+    context: HeuristicContext | None = None,
 ) -> set[BuildingType]:
+    if context is not None:
+        return context_network_missing_building_types(context, network_id)
+
     network = state.networks[network_id]
     missing: set[BuildingType] = set()
     for tech_type in network.unlocked_techs:
@@ -1403,16 +1571,28 @@ def _network_missing_building_types(
     return missing
 
 
-def _is_gap_build_action(state: GameState, action: Action) -> bool:
+def _is_gap_build_action(
+    state: GameState,
+    action: Action,
+    context: HeuristicContext | None = None,
+) -> bool:
     if action.city_id is None or action.building_type is None:
         return False
     city = state.cities[action.city_id]
-    return action.building_type in _network_missing_building_types(state, city.network_id)
+    return action.building_type in _network_missing_building_types(state, city.network_id, context)
 
 
-def _road_structure_score(state: GameState, coord: Coord) -> int:
+def _road_structure_score(
+    state: GameState,
+    coord: Coord,
+    context: HeuristicContext | None = None,
+) -> int:
     structural_score = 0
-    passable_map = map_passable_coords_to_networks(state)
+    passable_map = (
+        context_passable_network_map(context)
+        if context is not None
+        else map_passable_coords_to_networks(state)
+    )
     adjacent_network_ids = {
         passable_map[neighbor]
         for neighbor in cardinal_neighbors(coord)
@@ -1433,7 +1613,12 @@ def _road_structure_score(state: GameState, coord: Coord) -> int:
             continue
         if tile.base_terrain not in {TerrainType.PLAIN, TerrainType.FOREST, TerrainType.MOUNTAIN}:
             continue
-        if city_site_score(state, neighbor) < 120:
+        site_score = (
+            city_site_score_for_context(context, neighbor)
+            if context is not None
+            else city_site_score(state, neighbor)
+        )
+        if site_score < 120:
             continue
         has_prior_access = any(
             (adjacent := state.board.get(n2)) is not None

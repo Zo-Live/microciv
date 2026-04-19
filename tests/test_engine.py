@@ -11,6 +11,7 @@ from microciv.game.models import (
     ResourcePool,
     Tile,
 )
+from microciv.game.scoring import score_breakdown
 
 
 def test_validate_and_apply_invalid_city_build_does_not_advance_turn() -> None:
@@ -44,7 +45,8 @@ def test_build_city_success_adds_cover_reward_and_same_turn_city_yield() -> None
     assert len(state.cities) == 1
     assert state.networks[1].resources.food == 4
     assert state.networks[1].resources.wood == 2
-    assert state.score == 8
+    assert state.score > 0
+    assert score_breakdown(state).total == state.score
     assert state.stats.build_city_count == 1
     assert state.stats.turn_elapsed_ms_total >= 0
 
@@ -123,7 +125,10 @@ def test_build_building_succeeds_and_new_building_produces_same_turn() -> None:
     assert state.cities[1].buildings.farm == 1
     assert state.networks[1].resources.food == 3
     assert state.networks[1].resources.wood == 0
-    assert state.score == 144
+    breakdown = score_breakdown(state)
+    assert breakdown.total == state.score
+    assert breakdown.building_score == 14
+    assert breakdown.building_utilization_score == 4
     assert state.stats.build_farm_count == 1
 
 

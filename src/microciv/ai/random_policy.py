@@ -7,18 +7,21 @@ from random import Random
 
 from microciv.ai.heuristics import (
     TECH_UNLOCK_PRIORITY,
+    HeuristicContext,
+    build_heuristic_context,
     building_action_score,
     city_network_pressure,
-    city_site_score,
+    city_site_score_for_context,
+    context_total_resources,
     partition_actions,
     research_action_score,
-    road_site_score,
+    road_site_score_for_context,
 )
 from microciv.ai.policy import Policy, get_legal_actions
 from microciv.game.actions import Action
 from microciv.game.enums import ActionType, BuildingType, TechType
 from microciv.game.models import GameState
-from microciv.game.scoring import connected_city_count, starving_network_count, total_resources
+from microciv.game.scoring import connected_city_count, starving_network_count
 from microciv.utils.rng import build_rng
 
 
@@ -61,11 +64,12 @@ class RandomPolicy(Policy):
             self._cached_decision = decision
             return decision
 
+        context = build_heuristic_context(state)
         groups = partition_actions(legal_actions)
-        type_weights = self._type_weights(state, groups)
+        type_weights = self._type_weights(context, groups)
         chosen_type = _weighted_choice(self._rng, type_weights)
         chosen_actions = groups.get(chosen_type, [Action.skip()])
-        action_weights = self._action_weights(state, chosen_type, chosen_actions)
+        action_weights = self._action_weights(context, chosen_type, chosen_actions)
         chosen_action = _weighted_choice(self._rng, action_weights)
 
         decision = PlannedRandomDecision(
@@ -84,10 +88,11 @@ class RandomPolicy(Policy):
 
     def _type_weights(
         self,
-        state: GameState,
+        context: HeuristicContext,
         groups: dict[ActionType, list[Action]],
     ) -> dict[ActionType, float]:
-        resources = total_resources(state)
+        state = context.state
+        resources = context_total_resources(context)
         starving = starving_network_count(state)
         connected = connected_city_count(state)
         pressure = max(
@@ -98,7 +103,7 @@ class RandomPolicy(Policy):
         road_count = len(state.roads)
         best_road_score = max(
             (
-                road_site_score(state, action.coord)
+                road_site_score_for_context(context, action.coord)
                 for action in groups.get(ActionType.BUILD_ROAD, [])
                 if action.coord is not None
             ),
@@ -146,16 +151,20 @@ class RandomPolicy(Policy):
 
     def _action_weights(
         self,
-        state: GameState,
+        context: HeuristicContext,
         action_type: ActionType,
         actions: list[Action],
     ) -> dict[Action, float]:
+        state = context.state
         weights: dict[Action, float] = {}
         for action in actions:
             if action_type is ActionType.BUILD_CITY and action.coord is not None:
-                weights[action] = max(0.2, city_site_score(state, action.coord) / 25)
+                weights[action] = max(0.2, city_site_score_for_context(context, action.coord) / 25)
             elif action_type is ActionType.BUILD_ROAD and action.coord is not None:
-                weights[action] = max(0.05, road_site_score(state, action.coord) / 80)
+                weights[action] = max(
+                    0.05,
+                    road_site_score_for_context(context, action.coord) / 80,
+                )
             elif action_type is ActionType.BUILD_BUILDING:
                 base = building_action_score(state, action) / 35
                 if action.building_type is BuildingType.FARM:

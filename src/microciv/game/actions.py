@@ -80,13 +80,22 @@ def list_legal_actions(state: GameState, *, include_skip: bool = True) -> list[A
         return []
 
     actions: list[Action] = []
+    sorted_board_coords = sorted(state.board, key=coord_sort_key)
 
-    for coord in sorted(state.board, key=coord_sort_key):
+    for coord in sorted_board_coords:
         action = Action.build_city(coord)
         if validate_action(state, action).is_valid:
             actions.append(action)
 
-    for coord in sorted(state.board, key=coord_sort_key):
+    road_candidate_coords = {
+        neighbor
+        for coord, tile in state.board.items()
+        if tile.occupant in {OccupantType.CITY, OccupantType.ROAD}
+        for neighbor in cardinal_neighbors(coord)
+        if (neighbor_tile := state.board.get(neighbor)) is not None
+        and neighbor_tile.occupant is OccupantType.NONE
+    }
+    for coord in sorted(road_candidate_coords, key=coord_sort_key):
         action = Action.build_road(coord)
         if validate_action(state, action).is_valid:
             actions.append(action)
