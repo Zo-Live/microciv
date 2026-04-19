@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 from microciv.ai.greedy import GreedyPolicy
 from microciv.ai.heuristics import city_site_score
+from microciv.ai.policy import simulate_action
 from microciv.ai.random_policy import RandomPolicy
-from microciv.game.actions import Action, validate_action
+from microciv.game.actions import Action, list_legal_actions, validate_action
 from microciv.game.engine import GameEngine
 from microciv.game.enums import ActionType, MapDifficulty, OccupantType, TechType, TerrainType
 from microciv.game.mapgen import MapGenerator
@@ -37,6 +40,64 @@ def _run_policy_game(config: GameConfig, policy: GreedyPolicy | RandomPolicy) ->
         assert result.success, (config.seed, action, result.message)
 
     return state
+
+
+def _snapshot_state(state: GameState) -> dict[str, object]:
+    return {
+        "turn": state.turn,
+        "score": state.score,
+        "message": state.message,
+        "is_game_over": state.is_game_over,
+        "board": {
+            coord: (tile.base_terrain.value, tile.occupant.value)
+            for coord, tile in sorted(state.board.items())
+        },
+        "cities": {
+            city_id: {
+                "coord": city.coord,
+                "founded_turn": city.founded_turn,
+                "network_id": city.network_id,
+                "buildings": (
+                    city.buildings.farm,
+                    city.buildings.lumber_mill,
+                    city.buildings.mine,
+                    city.buildings.library,
+                ),
+            }
+            for city_id, city in sorted(state.cities.items())
+        },
+        "roads": {
+            road_id: {"coord": road.coord, "built_turn": road.built_turn}
+            for road_id, road in sorted(state.roads.items())
+        },
+        "networks": {
+            network_id: {
+                "city_ids": sorted(network.city_ids),
+                "resources": (
+                    network.resources.food,
+                    network.resources.wood,
+                    network.resources.ore,
+                    network.resources.science,
+                ),
+                "unlocked_techs": sorted(tech.value for tech in network.unlocked_techs),
+                "consecutive_starving_turns": network.consecutive_starving_turns,
+            }
+            for network_id, network in sorted(state.networks.items())
+        },
+        "stats": {
+            "build_city_count": state.stats.build_city_count,
+            "build_road_count": state.stats.build_road_count,
+            "build_farm_count": state.stats.build_farm_count,
+            "build_lumber_mill_count": state.stats.build_lumber_mill_count,
+            "build_mine_count": state.stats.build_mine_count,
+            "build_library_count": state.stats.build_library_count,
+            "research_agriculture_count": state.stats.research_agriculture_count,
+            "research_logging_count": state.stats.research_logging_count,
+            "research_mining_count": state.stats.research_mining_count,
+            "research_education_count": state.stats.research_education_count,
+            "skip_count": state.stats.skip_count,
+        },
+    }
 
 
 def test_random_policy_returns_legal_action() -> None:
@@ -554,3 +615,150 @@ def test_greedy_does_not_stall_on_large_hard_map() -> None:
     assert sum(city.total_buildings for city in state.cities.values()) >= 60
     assert len(state.networks) <= 2
     assert len(state.roads) >= 5 or len(state.networks) == 1
+
+
+def test_simulate_action_matches_deepcopy_engine_result() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (0, 2): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.ROAD),
+        (0, 3): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1),
+        2: City(city_id=2, coord=(0, 3), founded_turn=2, network_id=2),
+    }
+    state.roads = {1: Road(road_id=1, coord=(0, 2), built_turn=2)}
+    state.networks = {
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=20, wood=20)),
+        2: Network(network_id=2, city_ids={2}, resources=ResourcePool(food=20, wood=20)),
+    }
+    action = Action.build_road((0, 1))
+
+    expected = deepcopy(state)
+    result = GameEngine(expected).apply_action(action)
+    assert result.success
+
+    simulated = simulate_action(state, action)
+
+    assert _snapshot_state(simulated) == _snapshot_state(expected)
+    assert state.board[(0, 1)].occupant is OccupantType.NONE
+    assert len(state.roads) == 1
+    assert len(state.networks) == 2
+
+
+def test_list_legal_actions_order_remains_stable_with_frontier_road_filter() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 0): Tile(base_terrain=TerrainType.FOREST),
+        (1, 1): Tile(base_terrain=TerrainType.RIVER),
+        (2, 0): Tile(base_terrain=TerrainType.MOUNTAIN),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1),
+    }
+    state.networks = {1: Network(network_id=1, city_ids={1}, resources=ResourcePool())}
+
+    actions = list_legal_actions(state)
+
+    assert actions == [
+        Action.build_city((0, 1)),
+        Action.build_city((1, 0)),
+        Action.build_city((2, 0)),
+        Action.build_road((0, 1)),
+        Action.build_road((1, 0)),
+        Action.skip(),
+    ]
+
+
+def test_random_policy_fixed_seed_output_stays_stable() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 0): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (2, 2): Tile(base_terrain=TerrainType.PLAIN),
+    }
+    state.cities = {1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1)}
+    state.networks = {
+        1: Network(
+            network_id=1,
+            city_ids={1},
+            resources=ResourcePool(food=30, wood=20, ore=10, science=12),
+        )
+    }
+
+    action = RandomPolicy(seed=3).select_action(state)
+
+    assert action == Action.build_city((1, 0))
+
+
+def test_greedy_explain_decision_stays_stable_for_network_merge() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (0, 2): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.ROAD),
+        (0, 3): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (2, 0): Tile(base_terrain=TerrainType.PLAIN),
+        (2, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (2, 2): Tile(base_terrain=TerrainType.FOREST),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1),
+        2: City(city_id=2, coord=(0, 3), founded_turn=2, network_id=2),
+    }
+    state.roads = {1: Road(road_id=1, coord=(0, 2), built_turn=2)}
+    state.networks = {
+        1: Network(
+            network_id=1,
+            city_ids={1},
+            resources=ResourcePool(food=20, wood=20, science=0),
+        ),
+        2: Network(
+            network_id=2,
+            city_ids={2},
+            resources=ResourcePool(food=20, wood=20, science=0),
+        ),
+    }
+
+    policy = GreedyPolicy()
+    action = policy.select_action(state)
+    context = policy.explain_decision(state)
+
+    assert action == Action.build_road((0, 1))
+    assert context["greedy_stage"] == "consolidate"
+    assert context["greedy_priority"] == "connective_road"
+    assert context["greedy_best_action_type"] == "build_road"
+    assert context["greedy_best_score"] == 679.2
+    assert context["greedy_best_delta_score"] == 55
+    assert context["greedy_food_pressure"] == -12
+    assert context["greedy_starving_networks"] == 0
+    assert context["greedy_connected_cities"] == 0
+    assert context["greedy_total_food"] == 40
+    assert context["greedy_network_count"] == 2
+    assert context["greedy_global_starving_delta"] == 0
+    assert context["greedy_global_network_delta"] == 1
+    assert context["greedy_global_isolation_delta"] == 2
+    assert context["greedy_rescue_effective"] is True
+    assert context["greedy_best_site_budget"] == {
+        "food_yield": 0,
+        "wood_yield": 0,
+        "ore_yield": 0,
+        "science_yield": 0,
+        "food_balance": -4,
+        "total_yield": 0,
+    }
+    assert context["greedy_best_future_network_budget"] == {
+        "network_id": 1,
+        "city_count": 2,
+        "food": 40,
+        "wood": 40,
+        "ore": 0,
+        "science": 0,
+        "pressure": -24,
+    }

@@ -96,7 +96,6 @@ def calculate_score(state: GameState) -> int:
 
 def score_breakdown(state: GameState) -> ScoreBreakdown:
     resources = total_resources(state)
-    starvation_count = starving_network_count(state)
     fragmentation = max(len(state.networks) - 1, 0)
     return ScoreBreakdown(
         city_score=_city_score(city_count(state)),
