@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-MicroCiv is a terminal-based, turn-based civilization simulator built with Python 3.13+ and curses. It features square-grid procedural maps, city/road/building construction, tech research, resource management, and two AI policies (Greedy, Random). Records are persisted as JSON; batch runners can additionally export CSV.
+MicroCiv is a terminal-based, turn-based civilization simulator built with Python 3.11+ and curses. It features square-grid procedural maps, city/road/building construction, tech research, resource management, and two AI policies (Greedy, Random). Records are persisted as JSON; batch runners can additionally export CSV.
 
 ## Commands
 
@@ -82,7 +82,7 @@ Both runners use `create_game_session()` and `GameSession.step_autoplay()` to ad
 
 ## Ruff Config
 
-Line length 100, target Python 3.13, rules: B (bugbear), E (pycodestyle errors), F (pyflakes), I (isort), UP (pyupgrade).
+Line length 100, target Python 3.11, rules: B (bugbear), E (pycodestyle errors), F (pyflakes), I (isort), UP (pyupgrade).
 
 ## 请使用中文回答所有问题和交流
 

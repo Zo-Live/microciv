@@ -6,7 +6,7 @@ This file is for AI programming assistants to quickly understand and modify the 
 
 ## Project Overview
 
-**MicroCiv** is a terminal-based, turn-based miniature civilization simulator built with Python 3.13+ and the standard library `curses`. It uses a square-grid map, supports mouse-first curses interaction, and renders tiles with Unicode block characters (2×4 pixel blocks).
+**MicroCiv** is a terminal-based, turn-based miniature civilization simulator built with Python 3.11+ and the standard library `curses`. It uses a square-grid map, supports mouse-first curses interaction, and renders tiles with Unicode block characters (2×4 pixel blocks).
 
 Main features:
 
@@ -23,7 +23,7 @@ The core game has **zero** runtime dependencies — it uses only the Python stan
 
 ## Tech Stack
 
-- **Language**: Python >= 3.13
+- **Language**: Python >= 3.11
 - **UI Framework**: Standard library `curses` (mouse events, color pairs, Unicode block rendering)
 - **Package Manager**: `uv` (recommended), `pip` also supported
 - **Build Backend**: `hatchling`
@@ -230,7 +230,7 @@ Main Menu
 ### Ruff Config
 
 - `line-length = 100`
-- `target-version = "py313"`
+- `target-version = "py311"`
 - Enabled rules: `B` (bugbear), `E` (pycodestyle errors), `F` (pyflakes), `I` (isort), `UP` (pyupgrade)
 
 ### Key Classes & Functions Cheatsheet
