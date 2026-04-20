@@ -33,7 +33,7 @@ from microciv.tui.pixel_font import (
 from microciv.tui.pixel_font import (
     render_text as pixel_render_text,
 )
-from microciv.utils.grid import Coord, coord_sort_key
+from microciv.utils.grid import Coord, cardinal_neighbors, coord_sort_key
 
 if TYPE_CHECKING:
     from _curses import window as CursesWindow
@@ -711,13 +711,37 @@ class MicroCivController:
         self.selected_building_type = BuildingType.FARM
         self.selected_tech_type = TechType.AGRICULTURE
 
-    def _has_valid_settlement_actions(self, coord: Coord) -> bool:
+    def _has_settlement_options(self, coord: Coord) -> bool:
         if self.active_session is None:
             return False
-        state = self.active_session.state
         return (
-            validate_action(state, Action.build_city(coord)).is_valid
-            or validate_action(state, Action.build_road(coord)).is_valid
+            self._can_show_build_city_option(coord)
+            or self._can_show_build_road_option(coord)
+        )
+
+    def _can_show_build_city_option(self, coord: Coord) -> bool:
+        if self.active_session is None:
+            return False
+        return validate_action(self.active_session.state, Action.build_city(coord)).is_valid
+
+    def _can_show_build_road_option(self, coord: Coord) -> bool:
+        if self.active_session is None:
+            return False
+        tile = self.active_session.state.board.get(coord)
+        if tile is None or tile.occupant is not OccupantType.NONE:
+            return False
+        if tile.base_terrain not in {
+            TerrainType.PLAIN,
+            TerrainType.FOREST,
+            TerrainType.MOUNTAIN,
+            TerrainType.RIVER,
+            TerrainType.WASTELAND,
+        }:
+            return False
+        return any(
+            (neighbor_tile := self.active_session.state.board.get(neighbor)) is not None
+            and neighbor_tile.occupant in {OccupantType.CITY, OccupantType.ROAD}
+            for neighbor in cardinal_neighbors(coord)
         )
 
     def _can_build_city_at_selection(self) -> bool:
@@ -726,15 +750,15 @@ class MicroCivController:
         coord = self.active_session.state.selection.selected_coord
         if coord is None:
             return False
-        return validate_action(self.active_session.state, Action.build_city(coord)).is_valid
+        return self._can_show_build_city_option(coord)
 
-    def _can_build_road_at_selection(self) -> bool:
+    def _can_show_build_road_at_selection(self) -> bool:
         if self.active_session is None:
             return False
         coord = self.active_session.state.selection.selected_coord
         if coord is None:
             return False
-        return validate_action(self.active_session.state, Action.build_road(coord)).is_valid
+        return self._can_show_build_road_option(coord)
 
     def available_game_actions(self) -> list[str]:
         if self.active_session is None:
@@ -746,11 +770,11 @@ class MicroCivController:
             actions.append("game-skip")
         if (
             selection.selected_coord is not None
-            and self._has_valid_settlement_actions(selection.selected_coord)
+            and self._has_settlement_options(selection.selected_coord)
         ):
-            if validate_action(state, Action.build_city(selection.selected_coord)).is_valid:
+            if self._can_show_build_city_option(selection.selected_coord):
                 actions.append("settle-city")
-            if validate_action(state, Action.build_road(selection.selected_coord)).is_valid:
+            if self._can_show_build_road_option(selection.selected_coord):
                 actions.append("settle-road")
         if selection.selected_city_id is not None:
             actions.extend(["city-buildings", "city-technologies"])
@@ -1028,7 +1052,7 @@ class CursesMicroCivApp:
         has_settlement = (
             selection.selected_coord is not None
             and selection.selected_city_id is None
-            and self.controller._has_valid_settlement_actions(selection.selected_coord)
+            and self.controller._has_settlement_options(selection.selected_coord)
         )
         if has_settlement:
             self._render_settlement_panel(stdscr, width, height)
@@ -1090,7 +1114,7 @@ class CursesMicroCivApp:
         panel_y = SUBPANEL_START_Y
         option_w = 14
         can_city = self.controller._can_build_city_at_selection()
-        can_road = self.controller._can_build_road_at_selection()
+        can_road = self.controller._can_show_build_road_at_selection()
         if can_city and can_road:
             self._draw_option(
                 stdscr, "settle-city", "City", panel_x, panel_y, option_w, 3,

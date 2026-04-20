@@ -106,15 +106,15 @@ def test_cover_reward_and_river_road_cost_helpers_follow_rules() -> None:
     assert network.resources.ore == 10
 
 
-def test_choose_river_road_payment_network_uses_founded_turn_then_coord() -> None:
+def test_choose_river_road_payment_network_uses_lowest_adjacent_coord() -> None:
     state = GameState.empty(GameConfig.for_play())
     state.board = {
         (0, 1): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
-        (2, 1): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (1, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
     }
     state.cities = {
-        1: City(city_id=1, coord=(0, 1), founded_turn=2, network_id=1),
-        2: City(city_id=2, coord=(2, 1), founded_turn=1, network_id=2),
+        1: City(city_id=1, coord=(0, 1), founded_turn=3, network_id=1),
+        2: City(city_id=2, coord=(1, 0), founded_turn=1, network_id=2),
     }
     state.networks = {
         1: Network(network_id=1, city_ids={1}, resources=ResourcePool(wood=15)),
@@ -124,4 +124,25 @@ def test_choose_river_road_payment_network_uses_founded_turn_then_coord() -> Non
 
     chosen_network_id = choose_river_road_payment_network(state, (1, 1))
 
-    assert chosen_network_id == 2
+    assert chosen_network_id == 1
+
+
+def test_choose_river_road_payment_network_does_not_fallback_to_other_network() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (1, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(0, 1), founded_turn=3, network_id=1),
+        2: City(city_id=2, coord=(1, 0), founded_turn=1, network_id=2),
+    }
+    state.networks = {
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool()),
+        2: Network(network_id=2, city_ids={2}, resources=ResourcePool(wood=15)),
+    }
+    recompute_networks(state)
+
+    chosen_network_id = choose_river_road_payment_network(state, (1, 1))
+
+    assert chosen_network_id is None

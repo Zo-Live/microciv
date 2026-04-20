@@ -104,6 +104,55 @@ def test_invalid_river_road_without_resources_does_not_mutate_state() -> None:
     assert not state.roads
 
 
+def test_river_road_uses_lowest_adjacent_coord_network_for_payment() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (1, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (1, 1): Tile(base_terrain=TerrainType.RIVER),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(0, 1), founded_turn=5, network_id=1),
+        2: City(city_id=2, coord=(1, 0), founded_turn=1, network_id=2),
+    }
+    state.networks = {
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(wood=15)),
+        2: Network(network_id=2, city_ids={2}, resources=ResourcePool(ore=10)),
+    }
+    engine = GameEngine(state)
+
+    result = engine.apply_action(Action.build_road((1, 1)))
+
+    assert result.success
+    assert state.networks[1].resources.wood == 0
+    assert state.networks[1].resources.ore == 10
+
+
+def test_river_road_cannot_fallback_to_richer_non_priority_network() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (1, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (1, 1): Tile(base_terrain=TerrainType.RIVER),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(0, 1), founded_turn=5, network_id=1),
+        2: City(city_id=2, coord=(1, 0), founded_turn=1, network_id=2),
+    }
+    state.networks = {
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool()),
+        2: Network(network_id=2, city_ids={2}, resources=ResourcePool(wood=15)),
+    }
+    engine = GameEngine(state)
+
+    result = engine.apply_action(Action.build_road((1, 1)))
+
+    assert not result.success
+    assert result.message == "Not enough resources"
+    assert state.turn == 1
+    assert state.board[(1, 1)].occupant is OccupantType.NONE
+
+
 def test_build_building_succeeds_and_new_building_produces_same_turn() -> None:
     state = GameState.empty(GameConfig.for_play())
     state.board = {(0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY)}
