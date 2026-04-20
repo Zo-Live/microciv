@@ -72,18 +72,21 @@ def charge_river_road_cost(network: Network) -> ResourceType:
 def choose_river_road_payment_network(state: GameState, coord: Coord) -> int | None:
     """Choose the adjacent network that must pay a river-road surcharge."""
     network_coord_map = map_passable_coords_to_networks(state)
-    candidate_network_ids = {
-        network_coord_map[neighbor]
+    adjacent_network_nodes = sorted(
+        (
+            neighbor,
+            network_coord_map[neighbor],
+        )
         for neighbor in cardinal_neighbors(coord)
         if neighbor in network_coord_map
-        and can_pay_river_road_cost(state.networks[network_coord_map[neighbor]])
-    }
-    if not candidate_network_ids:
+    )
+    if not adjacent_network_nodes:
         return None
 
-    return min(
-        candidate_network_ids, key=lambda network_id: _network_priority_key(state, network_id)
-    )
+    _, network_id = adjacent_network_nodes[0]
+    if not can_pay_river_road_cost(state.networks[network_id]):
+        return None
+    return network_id
 
 
 def recompute_resource_ownership(state: GameState) -> ResourceOwnership:
@@ -227,16 +230,3 @@ def _choose_owner(cities: list[City], resource_type: ResourceType) -> City:
 
 def _empty_yield_map(state: GameState) -> dict[int, ResourcePool]:
     return {network_id: ResourcePool() for network_id in state.networks}
-
-
-def _network_priority_key(state: GameState, network_id: int) -> tuple[int, tuple[int, int], int]:
-    city_ids = sorted(
-        state.networks[network_id].city_ids,
-        key=lambda city_id: (
-            state.cities[city_id].founded_turn,
-            coord_sort_key(state.cities[city_id].coord),
-            city_id,
-        ),
-    )
-    first_city = state.cities[city_ids[0]]
-    return (first_city.founded_turn, coord_sort_key(first_city.coord), network_id)

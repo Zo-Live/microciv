@@ -11,9 +11,11 @@ from microciv.curses_app import (
     MicroCivController,
     Rect,
     ScreenRoute,
+    SettlementType,
 )
 from microciv.game.actions import Action, validate_action
-from microciv.game.enums import Mode, PlaybackMode, PolicyType
+from microciv.game.enums import Mode, OccupantType, PlaybackMode, PolicyType, TerrainType
+from microciv.game.models import City, Network, ResourcePool, Tile
 from microciv.records.models import RecordDatabase, RecordEntry
 
 
@@ -61,6 +63,62 @@ def test_controller_can_start_manual_session_and_build_city(tmp_path: Path) -> N
     controller.click("settle-build")
 
     assert len(controller.active_session.state.cities) == 1
+
+
+def test_controller_shows_river_road_option_even_when_resources_are_insufficient(
+    tmp_path: Path,
+) -> None:
+    controller = build_controller(tmp_path)
+    controller.click("menu-play")
+    controller.click("setup-start")
+
+    assert controller.active_session is not None
+    state = controller.active_session.state
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (1, 0): Tile(base_terrain=TerrainType.RIVER),
+    }
+    state.cities = {1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1)}
+    state.networks = {1: Network(network_id=1, city_ids={1}, resources=ResourcePool())}
+    state.roads = {}
+
+    controller.select_coord((1, 0))
+
+    assert controller.current_route is ScreenRoute.MANUAL_GAME
+    assert controller._has_settlement_options((1, 0))
+    assert not controller._can_build_city_at_selection()
+    assert controller._can_show_build_road_at_selection()
+    assert "settle-road" in controller.available_game_actions()
+    assert "settle-city" not in controller.available_game_actions()
+
+    controller.selected_settlement_type = SettlementType.ROAD
+    controller.click("settle-build")
+
+    assert controller.message == "Not enough resources"
+    assert state.selection.selected_coord == (1, 0)
+    assert state.board[(1, 0)].occupant is OccupantType.NONE
+
+
+def test_controller_shows_wasteland_road_option(tmp_path: Path) -> None:
+    controller = build_controller(tmp_path)
+    controller.click("menu-play")
+    controller.click("setup-start")
+
+    assert controller.active_session is not None
+    state = controller.active_session.state
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (1, 0): Tile(base_terrain=TerrainType.WASTELAND),
+    }
+    state.cities = {1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1)}
+    state.networks = {1: Network(network_id=1, city_ids={1}, resources=ResourcePool())}
+    state.roads = {}
+
+    controller.select_coord((1, 0))
+
+    assert controller._has_settlement_options((1, 0))
+    assert not controller._can_build_city_at_selection()
+    assert controller._can_show_build_road_at_selection()
 
 
 def test_controller_keyboard_shortcuts_follow_new_semantics(tmp_path: Path) -> None:
