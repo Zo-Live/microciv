@@ -113,10 +113,10 @@ pip install -r scripts/requirements.txt
 
 MicroCiv 以鼠标为主要输入方式。
 
-- **左键单击**：选择地图格、点击按钮、选择建筑 / 科技 / Records 条目
+- **左键单击**：选择地图格、点击按钮、选择建筑/科技/Records 条目
 - **滚轮**：滚动 Records 列表
 - `m`：打开游戏内菜单或从游戏内菜单返回游戏
-- `b`：返回上一层（Records 详情 → 列表，Records 列表 / 空页 → 主菜单，子面板 → 上级面板）
+- `b`：返回上一层（Records 详情 → 列表，Records 列表/空页 → 主菜单，子面板 → 上级面板）
 - `t`：跳转到 Records 列表顶部
 - `d`：跳转到 Records 列表底部
 - `q`：退出程序
