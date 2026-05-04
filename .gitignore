@@ -201,6 +201,7 @@ cython_debug/
 
 # MicroCiv local state
 .codex
+.claude
 data/*
 !data/.gitkeep
 data/*.incompatible
@@ -210,6 +211,8 @@ exports/*
 .cursorindexingignore
 docs/*
 !docs/项目规则与操作流程.md
+AGENTS.md
+CLAUDE.md
 
 # Marimo
 marimo/_static/
