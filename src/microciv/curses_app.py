@@ -60,6 +60,18 @@ MAP_SIZE_OPTIONS = (12, 16, 20, 24)
 TURN_LIMIT_OPTIONS = (30, 50, 80, 100, 150)
 
 
+def _scoreboard_score_text(score: int) -> str:
+    if score >= -9_999:
+        return str(score)[:5]
+
+    abs_score = abs(score)
+    whole = abs_score // 1_000
+    tenths = abs_score % 1_000 // 100
+    if tenths == 0 or whole >= 100:
+        return f"-{whole}k"
+    return f"-{whole}k{tenths}"
+
+
 class ScreenRoute(StrEnum):
     MAIN_MENU = "main_menu"
     SETUP_PLAY = "setup_play"
@@ -1099,8 +1111,8 @@ class CursesMicroCivApp:
         board_y = max((height - map_display_h) // 2, 1)
         self._render_board(stdscr, state.board, board_x, board_y, state.selection.selected_coord)
         self._safe_addstr(stdscr, SCORE_LABEL_Y, panel_x, "Score", "text")
-        pixel_render_number(
-            stdscr, panel_x, SCORE_VALUE_Y, state.score, 5,
+        pixel_render_text(
+            stdscr, panel_x, SCORE_VALUE_Y, _scoreboard_score_text(state.score),
             color_pair=self._attr("pixel_red"),
         )
         self._safe_addstr(stdscr, TURN_LABEL_Y, panel_x, "Turn", "text")
@@ -1294,8 +1306,8 @@ class CursesMicroCivApp:
         self._render_board(stdscr, state.board, board_x, board_y, None)
         final_score = record.final_score if record is not None else state.score
         self._safe_addstr(stdscr, 2, panel_x, "Score", "text")
-        pixel_render_number(
-            stdscr, panel_x, 3, final_score, 5,
+        pixel_render_text(
+            stdscr, panel_x, 3, _scoreboard_score_text(final_score),
             color_pair=self._attr("pixel_red"),
         )
         y = 3 + GLYPH_HEIGHT + 2

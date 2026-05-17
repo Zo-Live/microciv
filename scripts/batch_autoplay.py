@@ -44,7 +44,7 @@ def _positive_int(value: str) -> int:
 
 
 def _default_worker_count() -> int:
-    cpu_count = os.process_cpu_count() or 1
+    cpu_count = os.cpu_count() or 1
     return max(1, cpu_count - 1)
 
 

@@ -12,11 +12,30 @@ from microciv.curses_app import (
     Rect,
     ScreenRoute,
     SettlementType,
+    _scoreboard_score_text,
 )
 from microciv.game.actions import Action, validate_action
 from microciv.game.enums import Mode, OccupantType, PlaybackMode, PolicyType, TerrainType
 from microciv.game.models import City, Network, ResourcePool, Tile
 from microciv.records.models import RecordDatabase, RecordEntry
+
+
+def test_scoreboard_score_text_uses_k_for_large_negative_scores() -> None:
+    cases = {
+        -9_999: "-9999",
+        -10_000: "-10k",
+        -10_050: "-10k",
+        -12_000: "-12k",
+        -12_345: "-12k3",
+        -99_950: "-99k9",
+        -100_000: "-100k",
+        -999: "-999",
+        0: "0",
+        99_999: "99999",
+    }
+
+    for score, expected in cases.items():
+        assert _scoreboard_score_text(score) == expected
 
 
 def test_controller_can_open_setup_and_cycle_autoplay_options(tmp_path: Path) -> None:

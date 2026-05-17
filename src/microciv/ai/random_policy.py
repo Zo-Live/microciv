@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from random import Random
+from typing import TypeVar
 
 from microciv.ai.heuristics import (
     TECH_UNLOCK_PRIORITY,
@@ -189,7 +190,10 @@ class RandomPolicy(Policy):
         return weights
 
 
-def _weighted_choice[T](rng: Random, weights: dict[T, float]) -> T:
+T = TypeVar("T")
+
+
+def _weighted_choice(rng: Random, weights: dict[T, float]) -> T:
     total = sum(max(weight, 0.0) for weight in weights.values())
     if total <= 0:
         return next(iter(weights))
