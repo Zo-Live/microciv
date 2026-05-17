@@ -27,6 +27,7 @@ from microciv.records.models import (
     RecordActionLogEntry,
     RecordDecisionContext,
     RecordEntry,
+    RecordSearchActionSnapshot,
     RecordTurnSnapshot,
 )
 
@@ -196,6 +197,46 @@ def test_generate_report_is_descriptive_and_uses_current_score_fields() -> None:
     assert "score_total_mean" in report
     assert "tech_utilization_score" not in report
     assert score_df["river_access_score"].gt(0).all()
+
+
+def test_analyze_batch_reports_search_diagnostics() -> None:
+    search = _make_record(PolicyType.SEARCH, 3)
+    search.decision_contexts = [
+        RecordDecisionContext(
+            turn=1,
+            legal_actions_count=8,
+            legal_build_city_count=4,
+            legal_build_road_count=1,
+            legal_build_building_count=1,
+            legal_research_tech_count=1,
+            legal_skip_count=1,
+            chosen_action_type="build_city",
+            search_depth=2,
+            search_base_depth=2,
+            search_max_depth=2,
+            search_depth_reason="fixed",
+            search_beam_width=3,
+            search_candidate_limit=5,
+            search_nodes_expanded=4,
+            search_candidates_considered=16,
+            search_leaf_count=12,
+            search_best_value=12345,
+            search_best_sequence=[
+                RecordSearchActionSnapshot(action_type="build_city", x=0, y=0),
+                RecordSearchActionSnapshot(action_type="skip"),
+            ],
+        )
+    ]
+
+    report = analyze_batch.generate_report([search])
+    summary = analyze_batch.build_search_summary_df([search])
+    restored_state = analyze_batch.record_to_state(search)
+
+    assert restored_state.config.policy_type is PolicyType.SEARCH
+    assert "### 7.1 Search Diagnostic Summary" in report
+    assert "search_nodes_expanded_mean" in report
+    assert int(summary.iloc[0]["search_leaf_count_mean"]) == 12
+    assert int(summary.iloc[0]["search_sequence_length_mean"]) == 2
 
 
 def test_analyze_batch_reports_greedy_anomalies_with_turn_diagnostics() -> None:

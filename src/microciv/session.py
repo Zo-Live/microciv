@@ -8,6 +8,7 @@ from time import perf_counter
 from microciv.ai.greedy import GreedyPolicy
 from microciv.ai.policy import Policy
 from microciv.ai.random_policy import RandomPolicy
+from microciv.ai.search import SearchPolicy
 from microciv.game.actions import Action
 from microciv.game.engine import GameEngine
 from microciv.game.enums import PolicyType
@@ -93,6 +94,9 @@ class GameSession:
                 "total": breakdown.total,
             },
         )
+        decision_started_at = perf_counter()
+        action = self.policy.select_action(self.state)
+        self.state.stats.record_decision_time((perf_counter() - decision_started_at) * 1000)
         policy_context = (
             self.policy.explain_decision(self.state)
             if hasattr(self.policy, "explain_decision")
@@ -114,14 +118,9 @@ class GameSession:
                 1 for a in legal_actions if a.action_type is ActionType.RESEARCH_TECH
             ),
             legal_skip_count=sum(1 for a in legal_actions if a.action_type is ActionType.SKIP),
+            chosen_action_type=action.action_type.value,
             policy_context=policy_context,
         )
-
-        decision_started_at = perf_counter()
-        action = self.policy.select_action(self.state)
-        self.state.stats.record_decision_time((perf_counter() - decision_started_at) * 1000)
-        if self.state.stats.decision_contexts:
-            self.state.stats.decision_contexts[-1]["chosen_action_type"] = action.action_type.value
         self.apply_action(action)
 
 
@@ -134,6 +133,12 @@ def create_game_session(config: GameConfig) -> GameSession:
         policy = GreedyPolicy()
     elif config.policy_type is PolicyType.RANDOM:
         policy = RandomPolicy(seed=config.seed)
+    elif config.policy_type is PolicyType.SEARCH:
+        policy = SearchPolicy(
+            search_depth=config.search_depth,
+            search_beam_width=config.search_beam_width,
+            search_candidate_limit=config.search_candidate_limit,
+        )
 
     return GameSession(state=state, engine=GameEngine(state), policy=policy)
 

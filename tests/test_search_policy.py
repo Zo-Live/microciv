@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import microciv.session as session_module
 from microciv.ai.search import (
     DEFAULT_SEARCH_BEAM_WIDTH,
     DEFAULT_SEARCH_CANDIDATE_LIMIT,
@@ -12,9 +13,10 @@ from microciv.ai.search import (
 )
 from microciv.game.actions import Action, validate_action
 from microciv.game.engine import GameEngine
-from microciv.game.enums import OccupantType, TechType, TerrainType
+from microciv.game.enums import OccupantType, PlaybackMode, PolicyType, TechType, TerrainType
 from microciv.game.mapgen import MapGenerator
 from microciv.game.models import City, GameConfig, GameState, Network, ResourcePool, Tile
+from microciv.session import GameSession, create_game_session
 
 
 class TestDepthStrategy:
@@ -121,6 +123,62 @@ def test_search_policy_can_finish_short_fixed_seed_game() -> None:
 
     assert state.turn == 30
     assert state.is_game_over is True
+
+
+def test_create_game_session_constructs_search_policy_from_config() -> None:
+    config = GameConfig.for_autoplay(
+        map_size=12,
+        turn_limit=30,
+        policy_type=PolicyType.SEARCH,
+        playback_mode=PlaybackMode.SPEED,
+        search_depth=2,
+        search_beam_width=3,
+        search_candidate_limit=5,
+    )
+
+    session = create_game_session(config)
+
+    assert isinstance(session.policy, SearchPolicy)
+    assert session.policy.search_depth == 2
+    assert session.policy.search_beam_width == 3
+    assert session.policy.search_candidate_limit == 5
+
+
+def test_step_autoplay_counts_select_action_time_before_recording_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TimedPolicy:
+        def select_action(self, state: GameState) -> Action:
+            assert state.stats.decision_contexts == []
+            return Action.skip()
+
+        def explain_decision(self, state: GameState) -> dict[str, object]:
+            assert state.stats.decision_count == 1
+            return {"search_nodes_expanded": 99}
+
+    state = GameState.empty(
+        GameConfig.for_autoplay(
+            map_size=12,
+            turn_limit=30,
+            policy_type=PolicyType.SEARCH,
+            playback_mode=PlaybackMode.SPEED,
+        )
+    )
+    timestamps = iter([10.0, 10.125])
+    monkeypatch.setattr(session_module, "perf_counter", lambda: next(timestamps))
+    session = GameSession(
+        state=state,
+        engine=GameEngine(state),
+        policy=TimedPolicy(),  # type: ignore[arg-type]
+        started_at=0.0,
+    )
+
+    session.step_autoplay()
+
+    assert state.stats.decision_count == 1
+    assert state.stats.decision_time_ms_total == pytest.approx(125.0)
+    assert state.stats.decision_contexts[0]["chosen_action_type"] == "skip"
+    assert state.stats.decision_contexts[0]["search_nodes_expanded"] == 99
 
 
 def _mixed_action_state() -> GameState:

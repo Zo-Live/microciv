@@ -49,6 +49,7 @@ from microciv.records.models import RecordDatabase, RecordEntry  # noqa: E402
 TAIL_WINDOW: Final[int] = 20
 GREEDY_LABEL: Final[str] = "Greedy"
 RANDOM_LABEL: Final[str] = "Random"
+SEARCH_LABEL: Final[str] = "Search"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -458,6 +459,22 @@ def build_decision_context_df(records: list[RecordEntry]) -> pd.DataFrame:
                     if context.greedy_best_future_network_starving is not None
                     else None
                 ),
+                "search_depth": context.search_depth,
+                "search_base_depth": context.search_base_depth,
+                "search_max_depth": context.search_max_depth,
+                "search_depth_reason": context.search_depth_reason or "",
+                "search_beam_width": context.search_beam_width,
+                "search_candidate_limit": context.search_candidate_limit,
+                "search_nodes_expanded": context.search_nodes_expanded,
+                "search_candidates_considered": context.search_candidates_considered,
+                "search_leaf_count": context.search_leaf_count,
+                "search_best_value": context.search_best_value,
+                "search_sequence_length": len(context.search_best_sequence),
+                "search_first_action_type": (
+                    context.search_best_sequence[0].action_type
+                    if context.search_best_sequence
+                    else ""
+                ),
             }
             for key, value in context.greedy_score_breakdown.items():
                 row[f"score_{key}"] = value
@@ -584,6 +601,28 @@ def build_stage_summary_df(records: list[RecordEntry]) -> pd.DataFrame:
         }
         rows.append(row)
     return pd.DataFrame(rows).sort_values(["ai_type", "greedy_stage"])
+
+
+def build_search_summary_df(records: list[RecordEntry]) -> pd.DataFrame:
+    decision_df = build_decision_context_df(records)
+    if decision_df.empty or "search_depth" not in decision_df:
+        return pd.DataFrame()
+
+    search_df = decision_df[decision_df["search_depth"].notna()].copy()
+    if search_df.empty:
+        return pd.DataFrame()
+
+    value_cols = [
+        "search_depth",
+        "search_beam_width",
+        "search_candidate_limit",
+        "search_nodes_expanded",
+        "search_candidates_considered",
+        "search_leaf_count",
+        "search_best_value",
+        "search_sequence_length",
+    ]
+    return _summary_table(search_df, ["ai_type"], value_cols)
 
 
 def build_map_df(records: list[RecordEntry]) -> pd.DataFrame:
@@ -757,6 +796,8 @@ def _policy_type_from_label(label: str) -> PolicyType:
         return PolicyType.GREEDY
     if label == "Random":
         return PolicyType.RANDOM
+    if label == SEARCH_LABEL:
+        return PolicyType.SEARCH
     return PolicyType.NONE
 
 
@@ -832,6 +873,7 @@ def generate_report(records: list[RecordEntry]) -> str:
     turn_score_df = build_turn_score_breakdown_df(records)
     behavior_df = build_behavior_df(records)
     stage_df = build_stage_summary_df(records)
+    search_summary = build_search_summary_df(records)
     map_df = build_map_df(records)
     anomaly_cases = collect_greedy_anomaly_cases(records)
     anomaly_df = build_anomaly_df(records)
@@ -1100,6 +1142,10 @@ def generate_report(records: list[RecordEntry]) -> str:
         "## 7. Greedy Stage Summary",
         "",
         make_table(stage_summary),
+        "",
+        "### 7.1 Search Diagnostic Summary",
+        "",
+        make_table(search_summary),
         "",
         "## 8. Network And Risk Summary",
         "",

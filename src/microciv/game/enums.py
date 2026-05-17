@@ -49,6 +49,7 @@ class PolicyType(StrEnum):
     NONE = "none"
     GREEDY = "greedy"
     RANDOM = "random"
+    SEARCH = "search"
 
 
 class PlaybackMode(StrEnum):

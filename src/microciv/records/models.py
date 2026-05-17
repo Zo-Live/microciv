@@ -416,6 +416,43 @@ class RecordActionLogEntry:
 
 
 @dataclass(slots=True, frozen=True)
+class RecordSearchActionSnapshot:
+    """Serializable planned action used in search diagnostics."""
+
+    action_type: str
+    x: int | None = None
+    y: int | None = None
+    city_id: int | None = None
+    building_type: str | None = None
+    tech_type: str | None = None
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> RecordSearchActionSnapshot:
+        return cls(
+            action_type=_require_str(payload, "action_type"),
+            x=_optional_int(payload, "x"),
+            y=_optional_int(payload, "y"),
+            city_id=_optional_int(payload, "city_id"),
+            building_type=_optional_str(payload, "building_type"),
+            tech_type=_optional_str(payload, "tech_type"),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        result: dict[str, object] = {"action_type": self.action_type}
+        if self.x is not None:
+            result["x"] = self.x
+        if self.y is not None:
+            result["y"] = self.y
+        if self.city_id is not None:
+            result["city_id"] = self.city_id
+        if self.building_type is not None:
+            result["building_type"] = self.building_type
+        if self.tech_type is not None:
+            result["tech_type"] = self.tech_type
+        return result
+
+
+@dataclass(slots=True, frozen=True)
 class RecordTurnSnapshot:
     """Serializable snapshot of game state at the start of a turn."""
 
@@ -520,6 +557,17 @@ class RecordDecisionContext:
     greedy_best_site_budget: dict[str, int] = field(default_factory=dict)
     greedy_best_future_network_budget: dict[str, int] = field(default_factory=dict)
     random_type_weights: dict[str, float] = field(default_factory=dict)
+    search_depth: int | None = None
+    search_base_depth: int | None = None
+    search_max_depth: int | None = None
+    search_depth_reason: str | None = None
+    search_beam_width: int | None = None
+    search_candidate_limit: int | None = None
+    search_nodes_expanded: int | None = None
+    search_candidates_considered: int | None = None
+    search_leaf_count: int | None = None
+    search_best_value: int | None = None
+    search_best_sequence: list[RecordSearchActionSnapshot] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordDecisionContext:
@@ -565,6 +613,20 @@ class RecordDecisionContext:
                 payload, "greedy_best_future_network_budget"
             ),
             random_type_weights=_mapping_of_floats(payload, "random_type_weights"),
+            search_depth=_optional_int(payload, "search_depth"),
+            search_base_depth=_optional_int(payload, "search_base_depth"),
+            search_max_depth=_optional_int(payload, "search_max_depth"),
+            search_depth_reason=_optional_str(payload, "search_depth_reason"),
+            search_beam_width=_optional_int(payload, "search_beam_width"),
+            search_candidate_limit=_optional_int(payload, "search_candidate_limit"),
+            search_nodes_expanded=_optional_int(payload, "search_nodes_expanded"),
+            search_candidates_considered=_optional_int(payload, "search_candidates_considered"),
+            search_leaf_count=_optional_int(payload, "search_leaf_count"),
+            search_best_value=_optional_int(payload, "search_best_value"),
+            search_best_sequence=[
+                RecordSearchActionSnapshot.from_dict(item)
+                for item in _list_of_dicts(payload, "search_best_sequence")
+            ],
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -629,6 +691,30 @@ class RecordDecisionContext:
             result["greedy_best_future_network_budget"] = self.greedy_best_future_network_budget
         if self.random_type_weights:
             result["random_type_weights"] = self.random_type_weights
+        if self.search_depth is not None:
+            result["search_depth"] = self.search_depth
+        if self.search_base_depth is not None:
+            result["search_base_depth"] = self.search_base_depth
+        if self.search_max_depth is not None:
+            result["search_max_depth"] = self.search_max_depth
+        if self.search_depth_reason is not None:
+            result["search_depth_reason"] = self.search_depth_reason
+        if self.search_beam_width is not None:
+            result["search_beam_width"] = self.search_beam_width
+        if self.search_candidate_limit is not None:
+            result["search_candidate_limit"] = self.search_candidate_limit
+        if self.search_nodes_expanded is not None:
+            result["search_nodes_expanded"] = self.search_nodes_expanded
+        if self.search_candidates_considered is not None:
+            result["search_candidates_considered"] = self.search_candidates_considered
+        if self.search_leaf_count is not None:
+            result["search_leaf_count"] = self.search_leaf_count
+        if self.search_best_value is not None:
+            result["search_best_value"] = self.search_best_value
+        if self.search_depth is not None or self.search_best_sequence:
+            result["search_best_sequence"] = [
+                action.to_dict() for action in self.search_best_sequence
+            ]
         return result
 
 
@@ -758,7 +844,7 @@ class RecordEntry:
         if mode not in {"play", "autoplay"}:
             raise ValueError(f"Invalid mode: {mode}")
         ai_type = _require_str(payload, "ai_type")
-        if ai_type not in {"Human", "Greedy", "Random"}:
+        if ai_type not in {"Human", "Greedy", "Random", "Search"}:
             raise ValueError(f"Invalid ai_type: {ai_type}")
         playback_mode = _require_str(payload, "playback_mode")
         if playback_mode not in {"", "normal", "speed"}:
@@ -916,4 +1002,6 @@ def _ai_type_label(state: GameState) -> str:
         return "Greedy"
     if state.config.policy_type is PolicyType.RANDOM:
         return "Random"
+    if state.config.policy_type is PolicyType.SEARCH:
+        return "Search"
     return state.config.policy_type.value.title()

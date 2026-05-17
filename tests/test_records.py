@@ -20,6 +20,7 @@ from microciv.records.models import (
     RecordDatabase,
     RecordDecisionContext,
     RecordEntry,
+    RecordSearchActionSnapshot,
 )
 from microciv.records.store import RecordStore
 
@@ -195,6 +196,19 @@ def test_export_records_json_uses_fixed_filename_and_payload(tmp_path) -> None:
     assert payload["records"][1]["playback_mode"] == "speed"
 
 
+def test_record_entry_accepts_search_ai_type_roundtrip() -> None:
+    entry = RecordEntry.from_game_state(
+        record_id=3,
+        timestamp="2026-04-09T12:36:56+08:00",
+        state=build_completed_autoplay_state(policy_type=PolicyType.SEARCH),
+    )
+
+    restored = RecordEntry.from_dict(entry.to_dict())
+
+    assert entry.ai_type == "Search"
+    assert restored.ai_type == "Search"
+
+
 def test_record_store_can_delete_and_clear_records(tmp_path) -> None:
     store = RecordStore(tmp_path / "data" / "records.json")
     store.append_completed_game(
@@ -262,6 +276,50 @@ def test_record_decision_context_roundtrip_preserves_greedy_history_fields() -> 
     assert restored.greedy_fill_reopen_reason == "repeated_fill_skip"
 
 
+def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
+    context = RecordDecisionContext(
+        turn=3,
+        legal_actions_count=5,
+        legal_build_city_count=2,
+        legal_build_road_count=1,
+        legal_build_building_count=0,
+        legal_research_tech_count=1,
+        legal_skip_count=1,
+        chosen_action_type="build_city",
+        search_depth=2,
+        search_base_depth=2,
+        search_max_depth=2,
+        search_depth_reason="fixed",
+        search_beam_width=3,
+        search_candidate_limit=5,
+        search_nodes_expanded=4,
+        search_candidates_considered=11,
+        search_leaf_count=9,
+        search_best_value=12345,
+        search_best_sequence=[
+            RecordSearchActionSnapshot(action_type="build_city", x=1, y=2),
+            RecordSearchActionSnapshot(
+                action_type="research_tech",
+                city_id=1,
+                tech_type="agriculture",
+            ),
+        ],
+    )
+
+    restored = RecordDecisionContext.from_dict(context.to_dict())
+
+    assert restored.search_depth == 2
+    assert restored.search_depth_reason == "fixed"
+    assert restored.search_nodes_expanded == 4
+    assert restored.search_best_value == 12345
+    assert [action.action_type for action in restored.search_best_sequence] == [
+        "build_city",
+        "research_tech",
+    ]
+    assert restored.search_best_sequence[0].x == 1
+    assert restored.search_best_sequence[1].tech_type == "agriculture"
+
+
 def build_completed_state(*, seed: int = 7) -> GameState:
     state = GameState.empty(GameConfig.for_play(turn_limit=30, seed=seed))
     state.board = {
@@ -306,11 +364,15 @@ def build_completed_state(*, seed: int = 7) -> GameState:
     return state
 
 
-def build_completed_autoplay_state(*, seed: int = 13) -> GameState:
+def build_completed_autoplay_state(
+    *,
+    seed: int = 13,
+    policy_type: PolicyType = PolicyType.RANDOM,
+) -> GameState:
     config = GameConfig.for_autoplay(
         turn_limit=30,
         seed=seed,
-        policy_type=PolicyType.RANDOM,
+        policy_type=policy_type,
         playback_mode=PlaybackMode.SPEED,
     )
     state = GameState.empty(config)

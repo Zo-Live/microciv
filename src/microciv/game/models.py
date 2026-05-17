@@ -8,6 +8,9 @@ from dataclasses import dataclass, field
 from microciv.constants import (
     BUILDING_LIMIT_PER_CITY,
     DEFAULT_MAP_SIZE,
+    DEFAULT_SEARCH_BEAM_WIDTH,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT,
+    DEFAULT_SEARCH_DEPTH,
     DEFAULT_TURN_LIMIT,
     MAX_MAP_SIZE,
     MAX_TURN_LIMIT,
@@ -351,6 +354,9 @@ class GameConfig:
     policy_type: PolicyType = PolicyType.NONE
     playback_mode: PlaybackMode = PlaybackMode.NONE
     seed: int = 0
+    search_depth: int = DEFAULT_SEARCH_DEPTH
+    search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH
+    search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT
 
     def __post_init__(self) -> None:
         if not MIN_MAP_SIZE <= self.map_size <= MAX_MAP_SIZE:
@@ -364,6 +370,12 @@ class GameConfig:
             )
         if not isinstance(self.map_difficulty, MapDifficulty):
             raise ValueError("map_difficulty must be a MapDifficulty value.")
+        if self.search_depth < 1:
+            raise ValueError("search_depth must be at least 1.")
+        if self.search_beam_width < 1:
+            raise ValueError("search_beam_width must be at least 1.")
+        if self.search_candidate_limit < 1:
+            raise ValueError("search_candidate_limit must be at least 1.")
         if self.mode is Mode.PLAY:
             if self.policy_type is not PolicyType.NONE:
                 raise ValueError("Play mode requires policy_type=PolicyType.NONE.")
@@ -372,8 +384,8 @@ class GameConfig:
         if self.mode is Mode.AUTOPLAY:
             if self.policy_type is PolicyType.NONE:
                 raise ValueError("Autoplay mode requires a concrete policy_type.")
-            if self.policy_type not in {PolicyType.GREEDY, PolicyType.RANDOM}:
-                raise ValueError("Autoplay mode only supports greedy or random policy types.")
+            if self.policy_type not in {PolicyType.GREEDY, PolicyType.RANDOM, PolicyType.SEARCH}:
+                raise ValueError("Autoplay mode only supports greedy, random, or search policies.")
             if self.playback_mode is PlaybackMode.NONE:
                 raise ValueError("Autoplay mode requires a playback_mode.")
 
@@ -406,6 +418,9 @@ class GameConfig:
         policy_type: PolicyType = PolicyType.GREEDY,
         playback_mode: PlaybackMode = PlaybackMode.NORMAL,
         seed: int = 0,
+        search_depth: int = DEFAULT_SEARCH_DEPTH,
+        search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH,
+        search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT,
     ) -> GameConfig:
         return cls(
             mode=Mode.AUTOPLAY,
@@ -415,6 +430,9 @@ class GameConfig:
             policy_type=policy_type,
             playback_mode=playback_mode,
             seed=seed,
+            search_depth=search_depth,
+            search_beam_width=search_beam_width,
+            search_candidate_limit=search_candidate_limit,
         )
 
 

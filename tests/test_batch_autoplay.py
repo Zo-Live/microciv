@@ -42,7 +42,12 @@ class _FakeProcessPoolExecutor:
 
 
 def _make_record(*, seed: int, policy_type: PolicyType, final_score: int) -> RecordEntry:
-    ai_type = "Greedy" if policy_type is PolicyType.GREEDY else "Random"
+    if policy_type is PolicyType.GREEDY:
+        ai_type = "Greedy"
+    elif policy_type is PolicyType.RANDOM:
+        ai_type = "Random"
+    else:
+        ai_type = "Search"
     return RecordEntry(
         record_id=seed,
         timestamp="2026-04-19T12:00:00+08:00",
@@ -150,6 +155,26 @@ def test_build_batch_tasks_preserves_seed_order() -> None:
     assert all(task.policy_type is PolicyType.RANDOM for task in tasks)
 
 
+def test_build_batch_tasks_preserves_search_parameters() -> None:
+    tasks = batch_autoplay.build_batch_tasks(
+        games=2,
+        seed_start=20,
+        policy_type=PolicyType.SEARCH,
+        map_size=12,
+        turn_limit=30,
+        map_difficulty=batch_autoplay._map_difficulty_from_str("normal"),
+        search_depth=2,
+        search_beam_width=3,
+        search_candidate_limit=5,
+    )
+
+    assert [task.seed for task in tasks] == [20, 21]
+    assert all(task.policy_type is PolicyType.SEARCH for task in tasks)
+    assert all(task.search_depth == 2 for task in tasks)
+    assert all(task.search_beam_width == 3 for task in tasks)
+    assert all(task.search_candidate_limit == 5 for task in tasks)
+
+
 def test_batch_autoplay_parallel_path_uses_process_pool(monkeypatch, tmp_path) -> None:
     fake_executor = _FakeProcessPoolExecutor(max_workers=2)
 
@@ -206,3 +231,58 @@ def test_batch_autoplay_parallel_path_uses_process_pool(monkeypatch, tmp_path) -
     assert summary["execution_mode"] == "parallel"
     assert summary["workers"] == 2
     assert summary["chunksize"] == 4
+
+
+def test_batch_autoplay_exports_search_outputs_with_search_config(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    def fake_run_single_game_task(task: object) -> RecordEntry:
+        assert isinstance(task, batch_autoplay.BatchGameTask)
+        assert task.policy_type is PolicyType.SEARCH
+        assert task.search_depth == 2
+        assert task.search_beam_width == 3
+        assert task.search_candidate_limit == 5
+        return _make_record(seed=task.seed, policy_type=task.policy_type, final_score=50)
+
+    monkeypatch.setattr(batch_autoplay, "run_single_game_task", fake_run_single_game_task)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "batch_autoplay.py",
+            "-n",
+            "1",
+            "--policy",
+            "search",
+            "--search-depth",
+            "2",
+            "--search-beam-width",
+            "3",
+            "--search-candidate-limit",
+            "5",
+            "--seed-start",
+            "12",
+            "--output-dir",
+            str(tmp_path),
+            "--label",
+            "search",
+            "--workers",
+            "1",
+        ],
+    )
+
+    exit_code = batch_autoplay.main()
+
+    assert exit_code == 0
+    base_name = "search_d2_b3_c5_16_80_normal_12_12_search"
+    database = RecordDatabase.from_dict(
+        json.loads((tmp_path / f"{base_name}.json").read_text(encoding="utf-8"))
+    )
+    summary = json.loads((tmp_path / f"{base_name}_summary.json").read_text(encoding="utf-8"))
+
+    assert database.records[0].ai_type == "Search"
+    assert summary["policy"] == "search"
+    assert summary["search_depth"] == 2
+    assert summary["search_beam_width"] == 3
+    assert summary["search_candidate_limit"] == 5

@@ -12,13 +12,15 @@ from microciv.ai.search_support import (
     evaluate_search_leaf,
     generate_search_candidates,
 )
+from microciv.constants import (
+    DEFAULT_SEARCH_BEAM_WIDTH,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT,
+    DEFAULT_SEARCH_DEPTH,
+)
 from microciv.game.actions import Action
 from microciv.game.enums import ActionType, BuildingType, TechType
 from microciv.game.models import GameState
 
-DEFAULT_SEARCH_DEPTH = 3
-DEFAULT_SEARCH_BEAM_WIDTH = 4
-DEFAULT_SEARCH_CANDIDATE_LIMIT = 16
 SEARCH_DEPTH_REASON_FIXED = "fixed"
 
 _ACTION_TYPE_ORDER: dict[ActionType, int] = {

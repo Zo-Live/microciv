@@ -297,6 +297,9 @@ class MicroCivController:
                     policy_type=config.policy_type,
                     playback_mode=config.playback_mode,
                     seed=config.seed,
+                    search_depth=config.search_depth,
+                    search_beam_width=config.search_beam_width,
+                    search_candidate_limit=config.search_candidate_limit,
                 ),
             )
             self.current_route = ScreenRoute.SETUP_AUTOPLAY
@@ -528,7 +531,7 @@ class MicroCivController:
             )
             self._replace_setup_config(map_difficulty=difficulty)
         elif element_id == "setup-ai-type" and self.setup_state.autoplay:
-            policies = [PolicyType.GREEDY, PolicyType.RANDOM]
+            policies = [PolicyType.GREEDY, PolicyType.RANDOM, PolicyType.SEARCH]
             next_policy = policies[(policies.index(config.policy_type) + 1) % len(policies)]
             self._replace_setup_config(policy_type=next_policy)
         elif element_id == "setup-playback" and self.setup_state.autoplay:
@@ -569,6 +572,15 @@ class MicroCivController:
                 PlaybackMode,
                 changes.get("playback_mode", config.playback_mode),
             )
+            search_depth = cast(int, changes.get("search_depth", config.search_depth))
+            search_beam_width = cast(
+                int,
+                changes.get("search_beam_width", config.search_beam_width),
+            )
+            search_candidate_limit = cast(
+                int,
+                changes.get("search_candidate_limit", config.search_candidate_limit),
+            )
             self.setup_state.config = GameConfig.for_autoplay(
                 map_size=map_size,
                 turn_limit=turn_limit,
@@ -576,6 +588,9 @@ class MicroCivController:
                 policy_type=policy_type,
                 playback_mode=playback_mode,
                 seed=seed,
+                search_depth=search_depth,
+                search_beam_width=search_beam_width,
+                search_candidate_limit=search_candidate_limit,
             )
         else:
             self.setup_state.config = GameConfig.for_play(

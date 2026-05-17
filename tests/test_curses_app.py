@@ -49,6 +49,9 @@ def test_controller_can_open_setup_and_cycle_autoplay_options(tmp_path: Path) ->
     assert controller.setup_state.config.policy_type is PolicyType.RANDOM
 
     controller.click("setup-ai-type")
+    assert controller.setup_state.config.policy_type is PolicyType.SEARCH
+
+    controller.click("setup-ai-type")
     assert controller.setup_state.config.policy_type is PolicyType.GREEDY
 
     initial_map_size = controller.setup_state.config.map_size

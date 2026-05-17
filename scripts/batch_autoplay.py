@@ -19,6 +19,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from microciv.constants import (  # noqa: E402
+    DEFAULT_SEARCH_BEAM_WIDTH,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT,
+    DEFAULT_SEARCH_DEPTH,
+)
 from microciv.game.enums import MapDifficulty, PlaybackMode, PolicyType  # noqa: E402
 from microciv.game.models import GameConfig  # noqa: E402
 from microciv.records.models import CSV_FIELD_ORDER, RecordDatabase, RecordEntry  # noqa: E402
@@ -34,6 +39,9 @@ class BatchGameTask:
     map_size: int
     turn_limit: int
     map_difficulty: MapDifficulty
+    search_depth: int = DEFAULT_SEARCH_DEPTH
+    search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH
+    search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT
 
 
 def _positive_int(value: str) -> int:
@@ -57,8 +65,26 @@ def _parse_args() -> argparse.Namespace:
         "--policy",
         type=str,
         default="greedy",
-        choices=["greedy", "random"],
+        choices=["greedy", "random", "search"],
         help="AI policy to use (default: greedy).",
+    )
+    parser.add_argument(
+        "--search-depth",
+        type=_positive_int,
+        default=DEFAULT_SEARCH_DEPTH,
+        help=f"Search horizon depth (default: {DEFAULT_SEARCH_DEPTH}).",
+    )
+    parser.add_argument(
+        "--search-beam-width",
+        type=_positive_int,
+        default=DEFAULT_SEARCH_BEAM_WIDTH,
+        help=f"Search beam width (default: {DEFAULT_SEARCH_BEAM_WIDTH}).",
+    )
+    parser.add_argument(
+        "--search-candidate-limit",
+        type=_positive_int,
+        default=DEFAULT_SEARCH_CANDIDATE_LIMIT,
+        help=f"Search candidate limit per node (default: {DEFAULT_SEARCH_CANDIDATE_LIMIT}).",
     )
     parser.add_argument("--map-size", type=int, default=16, help="Map size (default: 16).")
     parser.add_argument("--turn-limit", type=int, default=80, help="Turn limit (default: 80).")
@@ -119,6 +145,8 @@ def _policy_type_from_str(value: str) -> PolicyType:
         return PolicyType.GREEDY
     if value == "random":
         return PolicyType.RANDOM
+    if value == "search":
+        return PolicyType.SEARCH
     raise ValueError(f"Unknown policy: {value}")
 
 
@@ -137,6 +165,9 @@ def run_single_game(
     map_size: int,
     turn_limit: int,
     map_difficulty: MapDifficulty,
+    search_depth: int = DEFAULT_SEARCH_DEPTH,
+    search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH,
+    search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT,
 ) -> RecordEntry:
     config = GameConfig.for_autoplay(
         map_size=map_size,
@@ -145,6 +176,9 @@ def run_single_game(
         policy_type=policy_type,
         playback_mode=PlaybackMode.SPEED,
         seed=seed,
+        search_depth=search_depth,
+        search_beam_width=search_beam_width,
+        search_candidate_limit=search_candidate_limit,
     )
     session = create_game_session(config)
 
@@ -166,6 +200,9 @@ def run_single_game_task(task: BatchGameTask) -> RecordEntry:
         map_size=task.map_size,
         turn_limit=task.turn_limit,
         map_difficulty=task.map_difficulty,
+        search_depth=task.search_depth,
+        search_beam_width=task.search_beam_width,
+        search_candidate_limit=task.search_candidate_limit,
     )
 
 
@@ -177,6 +214,9 @@ def build_batch_tasks(
     map_size: int,
     turn_limit: int,
     map_difficulty: MapDifficulty,
+    search_depth: int = DEFAULT_SEARCH_DEPTH,
+    search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH,
+    search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT,
 ) -> list[BatchGameTask]:
     return [
         BatchGameTask(
@@ -185,6 +225,9 @@ def build_batch_tasks(
             map_size=map_size,
             turn_limit=turn_limit,
             map_difficulty=map_difficulty,
+            search_depth=search_depth,
+            search_beam_width=search_beam_width,
+            search_candidate_limit=search_candidate_limit,
         )
         for index in range(games)
     ]
@@ -275,6 +318,9 @@ def main() -> int:
         map_size=args.map_size,
         turn_limit=args.turn_limit,
         map_difficulty=map_difficulty,
+        search_depth=args.search_depth,
+        search_beam_width=args.search_beam_width,
+        search_candidate_limit=args.search_candidate_limit,
     )
     execution_mode = "serial" if args.workers == 1 else "parallel"
     total_start = time.perf_counter()
@@ -298,8 +344,14 @@ def main() -> int:
 
     database = RecordDatabase(records=records)
     run_tag = args.label.strip().replace(" ", "_")
+    policy_name = args.policy
+    if policy_type is PolicyType.SEARCH:
+        policy_name = (
+            f"{policy_name}_d{args.search_depth}_b{args.search_beam_width}_"
+            f"c{args.search_candidate_limit}"
+        )
     base_name = (
-        f"{args.policy}_{args.map_size}_{args.turn_limit}_{args.map_difficulty}_"
+        f"{policy_name}_{args.map_size}_{args.turn_limit}_{args.map_difficulty}_"
         f"{args.seed_start}_{args.seed_start + args.games - 1}"
     )
     if run_tag:
@@ -320,6 +372,9 @@ def main() -> int:
         summary = {
             "games": args.games,
             "policy": args.policy,
+            "search_depth": args.search_depth,
+            "search_beam_width": args.search_beam_width,
+            "search_candidate_limit": args.search_candidate_limit,
             "map_size": args.map_size,
             "turn_limit": args.turn_limit,
             "map_difficulty": args.map_difficulty,
