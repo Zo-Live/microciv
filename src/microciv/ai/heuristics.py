@@ -7,9 +7,11 @@ from dataclasses import dataclass, field
 
 from microciv.constants import (
     BUILDING_LIMIT_PER_CITY,
+    CITY_CENTER_YIELDS,
     FOOD_CONSUMPTION_PER_CITY,
     TECH_COSTS,
     TECH_UNLOCKS,
+    TERRAIN_YIELDS,
 )
 from microciv.game.actions import Action
 from microciv.game.enums import (
@@ -40,13 +42,38 @@ TECH_UNLOCK_PRIORITY: tuple[TechType, ...] = (
 )
 
 
+@dataclass(slots=True, frozen=True)
+class SiteBudget:
+    food_yield: int
+    wood_yield: int
+    ore_yield: int
+    science_yield: int
+    food_balance: int
+
+    @property
+    def total_yield(self) -> int:
+        return self.food_yield + self.wood_yield + self.ore_yield + self.science_yield
+
+
+@dataclass(slots=True, frozen=True)
+class NetworkBudget:
+    network_id: int
+    city_count: int
+    food: int
+    wood: int
+    ore: int
+    science: int
+    pressure: int
+    starving: bool
+
+
 @dataclass(slots=True)
 class HeuristicContext:
     state: GameState
     total_resources: ResourcePool | None = None
     terrain_counts: Counter[TerrainType] | None = None
     passable_network_map: dict[Coord, int] | None = None
-    site_budgets: dict[Coord, object] = field(default_factory=dict)
+    site_budgets: dict[Coord, SiteBudget] = field(default_factory=dict)
     road_steps: dict[tuple[Coord, int], int | None] = field(default_factory=dict)
     ring_counts: dict[Coord, tuple[int, int, int, int, int]] = field(default_factory=dict)
     ring_bonuses: dict[Coord, int] = field(default_factory=dict)
@@ -410,6 +437,99 @@ def context_network_missing_building_types(
                 missing.add(building_type)
         context.missing_building_types[network_id] = missing
     return context.missing_building_types[network_id]
+
+
+def site_budget(
+    state: GameState,
+    coord: Coord,
+    context: HeuristicContext | None = None,
+) -> SiteBudget:
+    """Estimate per-turn local yields for a city founded at coord."""
+    if context is not None and coord in context.site_budgets:
+        return context.site_budgets[coord]
+
+    food_yield = 0
+    wood_yield = 0
+    ore_yield = 0
+    science_yield = 0
+
+    center_terrain = state.board[coord].base_terrain
+    for resource_type, amount in CITY_CENTER_YIELDS[center_terrain].items():
+        if resource_type is ResourceType.FOOD:
+            food_yield += amount
+        elif resource_type is ResourceType.WOOD:
+            wood_yield += amount
+        elif resource_type is ResourceType.ORE:
+            ore_yield += amount
+        elif resource_type is ResourceType.SCIENCE:
+            science_yield += amount
+
+    for neighbor in moore_neighbors(coord):
+        tile = state.board.get(neighbor)
+        if tile is None or tile.occupant is not OccupantType.NONE:
+            continue
+        for resource_type, amount in TERRAIN_YIELDS[tile.base_terrain].items():
+            if resource_type is ResourceType.FOOD:
+                food_yield += amount
+            elif resource_type is ResourceType.WOOD:
+                wood_yield += amount
+            elif resource_type is ResourceType.ORE:
+                ore_yield += amount
+            elif resource_type is ResourceType.SCIENCE:
+                science_yield += amount
+
+    budget = SiteBudget(
+        food_yield=food_yield,
+        wood_yield=wood_yield,
+        ore_yield=ore_yield,
+        science_yield=science_yield,
+        food_balance=food_yield - FOOD_CONSUMPTION_PER_CITY,
+    )
+    if context is not None:
+        context.site_budgets[coord] = budget
+    return budget
+
+
+def future_network_budget(
+    simulated: GameState,
+    action: Action,
+    context: HeuristicContext | None = None,
+) -> NetworkBudget | None:
+    """Return the post-action budget for the network affected by action."""
+    network_id: int | None = None
+    if action.city_id is not None and action.city_id in simulated.cities:
+        network_id = simulated.cities[action.city_id].network_id
+    elif action.coord is not None:
+        passable_map = (
+            context_passable_network_map(context)
+            if context is not None
+            else map_passable_coords_to_networks(simulated)
+        )
+        network_id = passable_map.get(action.coord)
+    if network_id is None:
+        return None
+    return network_budget(simulated.networks[network_id], context)
+
+
+def network_budget(
+    network: Network,
+    context: HeuristicContext | None = None,
+) -> NetworkBudget:
+    """Return resource pressure and starvation metadata for a network."""
+    return NetworkBudget(
+        network_id=network.network_id,
+        city_count=len(network.city_ids),
+        food=network.resources.food,
+        wood=network.resources.wood,
+        ore=network.resources.ore,
+        science=network.resources.science,
+        pressure=(
+            context_city_network_pressure(context, network.network_id)
+            if context is not None
+            else city_network_pressure(network)
+        ),
+        starving=network.resources.food <= 0,
+    )
 
 
 def partition_actions(actions: list[Action]) -> dict[ActionType, list[Action]]:

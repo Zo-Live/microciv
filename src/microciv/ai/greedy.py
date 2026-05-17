@@ -9,6 +9,8 @@ from typing import cast
 from microciv.ai.heuristics import (
     TECH_UNLOCK_PRIORITY,
     HeuristicContext,
+    NetworkBudget,
+    SiteBudget,
     build_heuristic_context,
     building_action_score,
     city_expansion_score_for_context,
@@ -29,23 +31,23 @@ from microciv.ai.heuristics import (
     resource_ring_counts_for_context,
     road_site_score_for_context,
 )
-from microciv.ai.policy import Policy, get_legal_actions, simulate_action
-from microciv.constants import (
-    BUILDING_YIELDS,
-    CITY_CENTER_YIELDS,
-    FOOD_CONSUMPTION_PER_CITY,
-    TERRAIN_YIELDS,
+from microciv.ai.heuristics import (
+    future_network_budget as calculate_future_network_budget,
 )
+from microciv.ai.heuristics import (
+    site_budget as calculate_site_budget,
+)
+from microciv.ai.policy import Policy, get_legal_actions, simulate_action
+from microciv.constants import BUILDING_YIELDS, FOOD_CONSUMPTION_PER_CITY
 from microciv.game.actions import Action
 from microciv.game.enums import (
     ActionType,
     BuildingType,
     OccupantType,
-    ResourceType,
     TechType,
     TerrainType,
 )
-from microciv.game.models import GameState, Network, ResourcePool
+from microciv.game.models import GameState, ResourcePool
 from microciv.game.networks import map_passable_coords_to_networks
 from microciv.game.scoring import (
     ScoreBreakdown,
@@ -177,31 +179,6 @@ class RescueRecovery:
             or self.network_delta > 0
             or self.isolated_delta > 0
         )
-
-
-@dataclass(slots=True, frozen=True)
-class SiteBudget:
-    food_yield: int
-    wood_yield: int
-    ore_yield: int
-    science_yield: int
-    food_balance: int
-
-    @property
-    def total_yield(self) -> int:
-        return self.food_yield + self.wood_yield + self.ore_yield + self.science_yield
-
-
-@dataclass(slots=True, frozen=True)
-class NetworkBudget:
-    network_id: int
-    city_count: int
-    food: int
-    wood: int
-    ore: int
-    science: int
-    pressure: int
-    starving: bool
 
 
 @dataclass(slots=True, frozen=True)
@@ -341,7 +318,7 @@ class GreedyPolicy(Policy):
         *,
         history: HistorySignals,
         escape_mode: bool,
-    ) -> tuple[Action, int, str, dict[Action, SimulatedEvaluation]]:
+    ) -> tuple[Action, float, str, dict[Action, SimulatedEvaluation]]:
         candidates = (
             self._escape_candidate_actions(
                 state,
@@ -363,7 +340,7 @@ class GreedyPolicy(Policy):
         evaluations: dict[Action, SimulatedEvaluation] = {}
 
         best_action = Action.skip()
-        best_value = -10**18
+        best_value = float("-inf")
         best_priority = "skip"
         for action in candidates:
             value = self._evaluate_action(
@@ -645,14 +622,14 @@ class GreedyPolicy(Policy):
         escape_mode: bool,
         food_rescue_stalled: bool,
         food_rescue_chain: int,
-    ) -> int:
+    ) -> float:
         evaluation = _get_simulated_evaluation(state, action, profile, evaluations)
         future = evaluation.future_profile
         future_resources = evaluation.future_resources
         future_budget = evaluation.future_budget
         rescue_recovery = evaluation.rescue_recovery if stage == STAGE_RESCUE else None
 
-        value = _stage_action_bias(stage, action)
+        value = float(_stage_action_bias(stage, action))
         delta_score = future.breakdown_total - profile.breakdown_total
         value += future.breakdown_total * 18
         value += delta_score * 46
@@ -952,11 +929,11 @@ class GreedyPolicy(Policy):
         rescue_recovery: RescueRecovery | None,
         stage: str,
         current_context: HeuristicContext,
-    ) -> int:
+    ) -> float:
         assert action.coord is not None
 
-        value = 0
-        site_budget = _site_budget(state, action.coord, current_context)
+        value = 0.0
+        site_budget = calculate_site_budget(state, action.coord, current_context)
         connection_steps = _road_steps_to_network(
             state,
             action.coord,
@@ -1017,6 +994,7 @@ class GreedyPolicy(Policy):
             ):
                 value -= 1200
             else:
+                assert rescue_recovery is not None
                 value += max(0, rescue_recovery.starving_delta) * 260
                 value += max(0, rescue_recovery.network_delta) * 200
                 value += max(0, rescue_recovery.isolated_delta) * 160
@@ -1152,7 +1130,7 @@ def _get_simulated_evaluation(
         future_context=future_context,
         future_profile=future_profile,
         future_resources=context_total_resources(future_context),
-        future_budget=_future_network_budget(simulated, action, future_context),
+        future_budget=calculate_future_network_budget(simulated, action, future_context),
         rescue_recovery=_rescue_recovery(profile, future_profile),
     )
     evaluations[action] = evaluation
@@ -1165,7 +1143,7 @@ def _decision_context(
     action: Action,
     stage: str,
     priority: str,
-    best_value: int,
+    best_value: float,
     profile: GreedyStateProfile,
     current_context: HeuristicContext,
     evaluation: SimulatedEvaluation,
@@ -1178,7 +1156,7 @@ def _decision_context(
     rescue_recovery = evaluation.rescue_recovery
     score_delta = future_profile.breakdown_total - profile.breakdown_total
     site_budget = (
-        _site_budget(state, action.coord, current_context)
+        calculate_site_budget(state, action.coord, current_context)
         if action.coord is not None
         else None
     )
@@ -1460,7 +1438,9 @@ def _history_signals(state: GameState, profile: GreedyStateProfile) -> HistorySi
     if len(recent_snapshots) >= 5:
         positive_growth = 0
         for previous, current in zip(recent_snapshots, recent_snapshots[1:], strict=False):
-            delta = int(current["score"]) - int(previous["score"])
+            current_score = cast(int, current["score"])
+            previous_score = cast(int, previous["score"])
+            delta = current_score - previous_score
             positive_growth += max(0, delta)
         late_game_growth_stall = positive_growth < 40
 
@@ -1555,7 +1535,7 @@ def _city_action_allowed_in_stage(
     *,
     escape_mode: bool = False,
 ) -> bool:
-    site_budget = _site_budget(state, coord, context)
+    site_budget = calculate_site_budget(state, coord, context)
     connection_steps = _road_steps_to_network(state, coord, max_steps=4, context=context)
     immediate_connection = connection_steps is not None and connection_steps <= 1
     site_value = city_site_score_for_context(context, coord)
@@ -1591,96 +1571,6 @@ def _city_action_allowed_in_stage(
     if profile.network_count > 2 and connection_steps is None and site_budget.food_balance < 0:
         return False
     return immediate_connection or site_budget.food_balance >= -1 or site_value >= 110
-
-
-def _site_budget(
-    state: GameState,
-    coord: Coord,
-    context: HeuristicContext | None = None,
-) -> SiteBudget:
-    if context is not None and coord in context.site_budgets:
-        return cast(SiteBudget, context.site_budgets[coord])
-
-    food_yield = 0
-    wood_yield = 0
-    ore_yield = 0
-    science_yield = 0
-
-    center_terrain = state.board[coord].base_terrain
-    for resource_type, amount in CITY_CENTER_YIELDS[center_terrain].items():
-        if resource_type is ResourceType.FOOD:
-            food_yield += amount
-        elif resource_type is ResourceType.WOOD:
-            wood_yield += amount
-        elif resource_type is ResourceType.ORE:
-            ore_yield += amount
-        elif resource_type is ResourceType.SCIENCE:
-            science_yield += amount
-
-    for neighbor in moore_neighbors(coord):
-        tile = state.board.get(neighbor)
-        if tile is None or tile.occupant is not OccupantType.NONE:
-            continue
-        for resource_type, amount in TERRAIN_YIELDS[tile.base_terrain].items():
-            if resource_type is ResourceType.FOOD:
-                food_yield += amount
-            elif resource_type is ResourceType.WOOD:
-                wood_yield += amount
-            elif resource_type is ResourceType.ORE:
-                ore_yield += amount
-            elif resource_type is ResourceType.SCIENCE:
-                science_yield += amount
-
-    budget = SiteBudget(
-        food_yield=food_yield,
-        wood_yield=wood_yield,
-        ore_yield=ore_yield,
-        science_yield=science_yield,
-        food_balance=food_yield - FOOD_CONSUMPTION_PER_CITY,
-    )
-    if context is not None:
-        context.site_budgets[coord] = budget
-    return budget
-
-
-def _future_network_budget(
-    simulated: GameState,
-    action: Action,
-    context: HeuristicContext | None = None,
-) -> NetworkBudget | None:
-    network_id: int | None = None
-    if action.city_id is not None and action.city_id in simulated.cities:
-        network_id = simulated.cities[action.city_id].network_id
-    elif action.coord is not None:
-        passable_map = (
-            context_passable_network_map(context)
-            if context is not None
-            else map_passable_coords_to_networks(simulated)
-        )
-        network_id = passable_map.get(action.coord)
-    if network_id is None:
-        return None
-    return _network_budget(simulated.networks[network_id], context)
-
-
-def _network_budget(
-    network: Network,
-    context: HeuristicContext | None = None,
-) -> NetworkBudget:
-    return NetworkBudget(
-        network_id=network.network_id,
-        city_count=len(network.city_ids),
-        food=network.resources.food,
-        wood=network.resources.wood,
-        ore=network.resources.ore,
-        science=network.resources.science,
-        pressure=(
-            context_city_network_pressure(context, network.network_id)
-            if context is not None
-            else city_network_pressure(network)
-        ),
-        starving=network.resources.food <= 0,
-    )
 
 
 def _score_breakdown_dict(breakdown: ScoreBreakdown) -> dict[str, int]:
