@@ -141,6 +141,53 @@ def test_batch_autoplay_exports_serial_outputs(monkeypatch, tmp_path) -> None:
     assert summary["seed_end"] == 4
 
 
+def test_batch_autoplay_fast_mode_exports_artifacts(monkeypatch, tmp_path) -> None:
+    def fake_run_single_game_task(task: object) -> RecordEntry:
+        assert isinstance(task, batch_autoplay.BatchGameTask)
+        return _make_record(
+            seed=task.seed,
+            policy_type=task.policy_type,
+            final_score=task.seed * 10,
+        )
+
+    monkeypatch.setattr(batch_autoplay, "run_single_game_task", fake_run_single_game_task)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "batch_autoplay.py",
+            "-n",
+            "1",
+            "--policy",
+            "greedy",
+            "--seed-start",
+            "1",
+            "--output-dir",
+            str(tmp_path),
+            "--label",
+            "fast",
+            "--workers",
+            "1",
+            "--artifact-mode",
+            "fast",
+            "--artifact-format",
+            "jsonl",
+        ],
+    )
+
+    exit_code = batch_autoplay.main()
+
+    assert exit_code == 0
+    artifact_dir = tmp_path / "greedy_16_80_normal_1_1_fast_artifacts"
+    summary_path = tmp_path / "greedy_16_80_normal_1_1_fast_summary.json"
+    assert artifact_dir.exists()
+    assert (artifact_dir / "macro.jsonl").exists()
+    assert not (tmp_path / "greedy_16_80_normal_1_1_fast.json").exists()
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["effective_artifact_mode"] == "fast"
+    assert summary["artifact_file_format"] == "jsonl"
+
+
 def test_build_batch_tasks_preserves_seed_order() -> None:
     tasks = batch_autoplay.build_batch_tasks(
         games=3,

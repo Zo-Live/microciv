@@ -35,12 +35,23 @@ def coord_sort_key(coord: Coord) -> tuple[int, int]:
 
 def cardinal_neighbors(coord: Coord) -> list[Coord]:
     """Return the four edge-adjacent coordinates."""
-    return [add_coords(coord, direction) for direction in CARDINAL_DIRECTIONS]
+    x, y = coord
+    return [(x + 1, y), (x, y + 1), (x - 1, y), (x, y - 1)]
 
 
 def moore_neighbors(coord: Coord) -> list[Coord]:
     """Return the eight surrounding coordinates."""
-    return [add_coords(coord, direction) for direction in ALL_DIRECTIONS]
+    x, y = coord
+    return [
+        (x + 1, y),
+        (x, y + 1),
+        (x - 1, y),
+        (x, y - 1),
+        (x + 1, y + 1),
+        (x - 1, y + 1),
+        (x - 1, y - 1),
+        (x + 1, y - 1),
+    ]
 
 
 def manhattan_distance(a: Coord, b: Coord) -> int:

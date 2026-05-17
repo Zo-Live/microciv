@@ -23,6 +23,7 @@ from microciv.game.models import (
     Road,
     Tile,
 )
+from microciv.records.artifacts import write_record_artifacts
 from microciv.records.models import (
     RecordActionLogEntry,
     RecordDecisionContext,
@@ -197,6 +198,22 @@ def test_generate_report_is_descriptive_and_uses_current_score_fields() -> None:
     assert "score_total_mean" in report
     assert "tech_utilization_score" not in report
     assert score_df["river_access_score"].gt(0).all()
+
+
+def test_generate_report_from_artifacts_uses_tabular_input(tmp_path) -> None:
+    records = [
+        _make_record(PolicyType.GREEDY, 1),
+        _make_record(PolicyType.RANDOM, 2),
+    ]
+    write_record_artifacts(records, tmp_path, preferred_format="jsonl")
+
+    frames = analyze_batch.read_artifact_frames(tmp_path, analyze_batch.pd)
+    report = analyze_batch.generate_report_from_artifacts(frames)
+
+    assert "_Source: artifact tables_" in report
+    assert "## 2. Policy Summary" in report
+    assert "Greedy" in report
+    assert "Random" in report
 
 
 def test_analyze_batch_reports_search_diagnostics() -> None:

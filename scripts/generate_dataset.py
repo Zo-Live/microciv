@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -27,6 +26,7 @@ from microciv.constants import (  # noqa: E402
 )
 from microciv.game.enums import MapDifficulty, PlaybackMode, PolicyType  # noqa: E402
 from microciv.game.models import GameConfig  # noqa: E402
+from microciv.records.artifacts import dumps_json_bytes, write_record_artifacts  # noqa: E402
 from microciv.records.models import CSV_FIELD_ORDER, RecordDatabase, RecordEntry  # noqa: E402
 from microciv.session import create_game_session  # noqa: E402
 
@@ -34,6 +34,7 @@ GREEDY_LABEL: Final[str] = "Greedy"
 RANDOM_LABEL: Final[str] = "Random"
 SEARCH_LABEL: Final[str] = "Search"
 PROGRESS_STEPS: Final[int] = 20
+DEFAULT_FULL_JSON_THRESHOLD: Final[int] = 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +136,32 @@ def _parse_args() -> argparse.Namespace:
         type=_positive_int,
         default=8,
         help="Process pool chunksize for task dispatch (default: 8).",
+    )
+    parser.add_argument(
+        "--artifact-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "compat", "fast", "dual"],
+        help=(
+            "Output mode: compat keeps legacy JSON/CSV, fast writes analysis artifacts, "
+            "dual writes both, auto switches by --full-json-threshold."
+        ),
+    )
+    parser.add_argument(
+        "--artifact-format",
+        type=str,
+        default="parquet",
+        choices=["parquet", "jsonl"],
+        help="Preferred artifact file format (default: parquet, falls back to jsonl).",
+    )
+    parser.add_argument(
+        "--full-json-threshold",
+        type=_positive_int,
+        default=DEFAULT_FULL_JSON_THRESHOLD,
+        help=(
+            "Maximum task count for auto mode to keep full legacy JSON "
+            f"(default: {DEFAULT_FULL_JSON_THRESHOLD})."
+        ),
     )
     return parser.parse_args()
 
@@ -339,10 +366,7 @@ def collect_greedy_anomalies(
 
 
 def _write_database_json(path: Path, database: RecordDatabase) -> None:
-    path.write_text(
-        json.dumps(database.to_dict(), ensure_ascii=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    path.write_bytes(dumps_json_bytes(database.to_dict(), indent=True) + b"\n")
 
 
 def _write_database_csv(path: Path, records: list[RecordEntry]) -> None:
@@ -351,6 +375,12 @@ def _write_database_csv(path: Path, records: list[RecordEntry]) -> None:
         writer.writeheader()
         for record in records:
             writer.writerow(record.to_csv_row())
+
+
+def _effective_artifact_mode(raw_mode: str, *, total_games: int, threshold: int) -> str:
+    if raw_mode != "auto":
+        return raw_mode
+    return "compat" if total_games <= threshold else "fast"
 
 
 def build_game_tasks(
@@ -528,6 +558,11 @@ def main() -> int:
     if run_tag:
         base_name = f"{base_name}_{run_tag}"
     execution_mode = "serial" if args.workers == 1 else "parallel"
+    effective_artifact_mode = _effective_artifact_mode(
+        args.artifact_mode,
+        total_games=total_games,
+        threshold=args.full_json_threshold,
+    )
 
     print(
         f"Dataset plan: {len(base_combos)} base combos x {policy_variant_count} policy variants x "
@@ -537,6 +572,10 @@ def main() -> int:
     )
     print(
         f"Execution mode: {execution_mode} (workers={args.workers}, chunksize={args.chunksize})",
+        file=sys.stderr,
+    )
+    print(
+        f"Output mode: requested={args.artifact_mode}, effective={effective_artifact_mode}",
         file=sys.stderr,
     )
     batch_start = perf_counter()
@@ -558,21 +597,42 @@ def main() -> int:
     anomaly_records, anomaly_counts = collect_policy_anomalies(records)
     anomaly_database = RecordDatabase(records=anomaly_records)
 
-    json_path = output_dir / f"{base_name}.json"
-    _write_database_json(json_path, database)
-    print(f"Dataset JSON exported: {json_path}", file=sys.stderr)
+    json_path: Path | None = None
+    csv_path: Path | None = None
+    anomaly_json_path: Path | None = None
+    anomaly_csv_path: Path | None = None
+    artifact_dir: Path | None = None
+    artifact_file_format = ""
+    if effective_artifact_mode in {"compat", "dual"}:
+        json_path = output_dir / f"{base_name}.json"
+        _write_database_json(json_path, database)
+        print(f"Dataset JSON exported: {json_path}", file=sys.stderr)
 
-    csv_path = output_dir / f"{base_name}.csv"
-    _write_database_csv(csv_path, records)
-    print(f"Dataset CSV exported: {csv_path}", file=sys.stderr)
+        csv_path = output_dir / f"{base_name}.csv"
+        _write_database_csv(csv_path, records)
+        print(f"Dataset CSV exported: {csv_path}", file=sys.stderr)
 
-    anomaly_json_path = output_dir / f"{base_name}_anomalies.json"
-    _write_database_json(anomaly_json_path, anomaly_database)
-    print(f"Anomaly dataset JSON exported: {anomaly_json_path}", file=sys.stderr)
+        anomaly_json_path = output_dir / f"{base_name}_anomalies.json"
+        _write_database_json(anomaly_json_path, anomaly_database)
+        print(f"Anomaly dataset JSON exported: {anomaly_json_path}", file=sys.stderr)
 
-    anomaly_csv_path = output_dir / f"{base_name}_anomalies.csv"
-    _write_database_csv(anomaly_csv_path, anomaly_records)
-    print(f"Anomaly dataset CSV exported: {anomaly_csv_path}", file=sys.stderr)
+        anomaly_csv_path = output_dir / f"{base_name}_anomalies.csv"
+        _write_database_csv(anomaly_csv_path, anomaly_records)
+        print(f"Anomaly dataset CSV exported: {anomaly_csv_path}", file=sys.stderr)
+
+    if effective_artifact_mode in {"fast", "dual"}:
+        artifact_dir = output_dir / f"{base_name}_artifacts"
+        artifact_result = write_record_artifacts(
+            records,
+            artifact_dir,
+            preferred_format=args.artifact_format,
+            write_manifest=True,
+        )
+        artifact_file_format = artifact_result.file_format
+        print(
+            f"Dataset artifacts exported: {artifact_dir} ({artifact_file_format})",
+            file=sys.stderr,
+        )
 
     manifest_path = output_dir / f"{base_name}_manifest.json"
     manifest = {
@@ -589,6 +649,14 @@ def main() -> int:
         "workers": args.workers,
         "chunksize": args.chunksize,
         "execution_mode": execution_mode,
+        "artifact_mode": args.artifact_mode,
+        "effective_artifact_mode": effective_artifact_mode,
+        "artifact_format": args.artifact_format,
+        "artifact_file_format": artifact_file_format,
+        "artifact_dir": str(artifact_dir) if artifact_dir is not None else "",
+        "full_json_threshold": args.full_json_threshold,
+        "dataset_json_path": str(json_path) if json_path is not None else "",
+        "dataset_csv_path": str(csv_path) if csv_path is not None else "",
         "total_games": total_games,
         "total_elapsed_seconds": round(total_elapsed, 3),
         "avg_elapsed_seconds": round(total_elapsed / total_games, 3),
@@ -601,13 +669,10 @@ def main() -> int:
         "search_under_random_anomaly_count": anomaly_counts["search_under_random_anomaly_count"],
         "search_under_greedy_anomaly_count": anomaly_counts["search_under_greedy_anomaly_count"],
         "under_random_anomaly_count": anomaly_counts["under_random_anomaly_count"],
-        "anomaly_json_path": str(anomaly_json_path),
-        "anomaly_csv_path": str(anomaly_csv_path),
+        "anomaly_json_path": str(anomaly_json_path) if anomaly_json_path is not None else "",
+        "anomaly_csv_path": str(anomaly_csv_path) if anomaly_csv_path is not None else "",
     }
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    manifest_path.write_bytes(dumps_json_bytes(manifest, indent=True) + b"\n")
     print(f"Dataset manifest exported: {manifest_path}", file=sys.stderr)
     return 0
 

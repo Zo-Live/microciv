@@ -194,6 +194,66 @@ def test_generate_dataset_exports_anomaly_json_and_csv(monkeypatch, tmp_path) ->
     assert manifest["anomaly_csv_path"].endswith("dataset_unit_anomalies.csv")
 
 
+def test_generate_dataset_fast_mode_exports_artifacts_without_full_json(
+    monkeypatch, tmp_path
+) -> None:
+    def fake_run_game_task(task: object) -> RecordEntry:
+        assert isinstance(task, generate_dataset.GameTask)
+        return _make_record(
+            record_id=task.record_id,
+            seed=task.seed,
+            policy_type=task.policy_type,
+            final_score=task.record_id * 10,
+        )
+
+    monkeypatch.setattr(generate_dataset, "run_game_task", fake_run_game_task)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_dataset.py",
+            "-n",
+            "1",
+            "--seed-start",
+            "1",
+            "--output-dir",
+            str(tmp_path),
+            "--policies",
+            "greedy,random",
+            "--map-sizes",
+            "12",
+            "--turn-limits",
+            "30",
+            "--difficulties",
+            "normal",
+            "--label",
+            "fast",
+            "--workers",
+            "1",
+            "--artifact-mode",
+            "fast",
+            "--artifact-format",
+            "jsonl",
+        ],
+    )
+
+    exit_code = generate_dataset.main()
+
+    assert exit_code == 0
+    artifact_dir = tmp_path / "dataset_fast_artifacts"
+    assert artifact_dir.exists()
+    assert (artifact_dir / "macro.jsonl").exists()
+    assert (artifact_dir / "artifact_manifest.json").exists()
+    assert not (tmp_path / "dataset_fast.json").exists()
+    assert not (tmp_path / "dataset_fast.csv").exists()
+
+    manifest = json.loads((tmp_path / "dataset_fast_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["effective_artifact_mode"] == "fast"
+    assert manifest["artifact_file_format"] == "jsonl"
+    assert manifest["dataset_json_path"] == ""
+    assert manifest["artifact_dir"].endswith("dataset_fast_artifacts")
+
+
 def test_generate_dataset_defaults_to_three_policies(monkeypatch, tmp_path) -> None:
     def fake_run_game_task(task: object) -> RecordEntry:
         assert isinstance(task, generate_dataset.GameTask)

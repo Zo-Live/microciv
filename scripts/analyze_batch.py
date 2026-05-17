@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from collections import Counter
 from collections.abc import Callable
@@ -24,26 +23,25 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from microciv.constants import APP_NAME  # noqa: E402
-from microciv.game.enums import (  # noqa: E402
-    MapDifficulty,
-    Mode,
-    OccupantType,
-    PlaybackMode,
-    PolicyType,
-    TechType,
-    TerrainType,
+from microciv.game.enums import PlaybackMode, PolicyType  # noqa: E402
+from microciv.game.models import GameState  # noqa: E402
+from microciv.records.artifacts import (  # noqa: E402
+    is_artifact_dir,
+    loads_json_bytes,
+    read_artifact_frames,
+    record_behavior_row,
+    record_decision_rows,
+    record_macro_row,
+    record_map_row,
+    record_score_breakdown_row,
+    record_turn_score_rows,
 )
-from microciv.game.models import (  # noqa: E402
-    BuildingCounts,
-    City,
-    GameConfig,
-    GameState,
-    Network,
-    ResourcePool,
-    Road,
-    Tile,
+from microciv.records.artifacts import (  # noqa: E402
+    policy_variant_label as artifact_policy_variant_label,
 )
-from microciv.game.scoring import score_breakdown  # noqa: E402
+from microciv.records.artifacts import (  # noqa: E402
+    record_to_state as artifact_record_to_state,
+)
 from microciv.records.models import RecordDatabase, RecordEntry  # noqa: E402
 
 TAIL_WINDOW: Final[int] = 20
@@ -130,22 +128,7 @@ def _build_greedy_index(
 
 
 def policy_variant_label(record: RecordEntry) -> str:
-    if record.ai_type != SEARCH_LABEL:
-        return record.ai_type
-    for context in record.decision_contexts:
-        if (
-            context.search_depth is None
-            and context.search_beam_width is None
-            and context.search_candidate_limit is None
-        ):
-            continue
-        depth = context.search_depth if context.search_depth is not None else "?"
-        beam_width = context.search_beam_width if context.search_beam_width is not None else "?"
-        candidate_limit = (
-            context.search_candidate_limit if context.search_candidate_limit is not None else "?"
-        )
-        return f"Search d{depth} b{beam_width} c{candidate_limit}"
-    return "Search d? b? c?"
+    return artifact_policy_variant_label(record)
 
 
 def _has_starvation(record: RecordEntry) -> bool:
@@ -359,260 +342,37 @@ def build_anomaly_df(records: list[RecordEntry]) -> pd.DataFrame:
 
 
 def build_macro_df(records: list[RecordEntry]) -> pd.DataFrame:
-    rows: list[dict[str, object]] = []
-    for record in records:
-        connected_cities = sum(
-            len(network.city_ids) for network in record.networks if len(network.city_ids) >= 2
-        )
-        isolated_cities = sum(
-            len(network.city_ids) for network in record.networks if len(network.city_ids) == 1
-        )
-        largest_network_size = max(
-            (len(network.city_ids) for network in record.networks),
-            default=0,
-        )
-        first_negative_food_turn = next(
-            (snap.turn for snap in record.turn_snapshots if snap.food < 0),
-            None,
-        )
-        rows.append(
-            {
-                "ai_type": record.ai_type,
-                "policy_variant": policy_variant_label(record),
-                "map_size": record.map_size,
-                "turn_limit": record.turn_limit,
-                "map_difficulty": record.map_difficulty,
-                "final_score": record.final_score,
-                "city_count": record.city_count,
-                "road_count": len(record.roads),
-                "building_count": record.building_count,
-                "tech_count": record.tech_count,
-                "network_count": len(record.networks),
-                "connected_cities": connected_cities,
-                "isolated_cities": isolated_cities,
-                "largest_network_size": largest_network_size,
-                "starving_network_count": sum(
-                    1 for network in record.networks if network.food <= 0
-                ),
-                "food": record.food,
-                "wood": record.wood,
-                "ore": record.ore,
-                "science": record.science,
-                "skip_count": record.skip_count,
-                "actual_turns": record.actual_turns,
-                "decision_count": record.decision_count,
-                "decision_time_ms_total": record.decision_time_ms_total,
-                "decision_time_ms_avg": record.decision_time_ms_avg,
-                "decision_time_ms_max": record.decision_time_ms_max,
-                "has_starvation": int(_has_starvation(record)),
-                "first_negative_food_turn": first_negative_food_turn,
-                "score_per_city": record.final_score / max(record.city_count, 1),
-                "score_per_building": record.final_score / max(record.building_count, 1),
-                "buildings_per_city": record.building_count / max(record.city_count, 1),
-                "roads_per_city": len(record.roads) / max(record.city_count, 1),
-                "connected_city_ratio": connected_cities / max(record.city_count, 1),
-            }
-        )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(record_macro_row(record) for record in records)
 
 
 def build_score_breakdown_df(records: list[RecordEntry]) -> pd.DataFrame:
-    rows: list[dict[str, object]] = []
-    for record in records:
-        breakdown = score_breakdown(record_to_state(record))
-        rows.append(
-            {
-                "ai_type": record.ai_type,
-                "policy_variant": policy_variant_label(record),
-                "map_size": record.map_size,
-                "turn_limit": record.turn_limit,
-                "map_difficulty": record.map_difficulty,
-                "city_score": breakdown.city_score,
-                "connected_city_score": breakdown.connected_city_score,
-                "resource_ring_score": breakdown.resource_ring_score,
-                "river_access_score": breakdown.river_access_score,
-                "city_composition_bonus": breakdown.city_composition_bonus,
-                "building_score": breakdown.building_score,
-                "tech_score": breakdown.tech_score,
-                "building_utilization_score": breakdown.building_utilization_score,
-                "resource_score": breakdown.resource_score,
-                "food_score": breakdown.food_score,
-                "wood_score": breakdown.wood_score,
-                "ore_score": breakdown.ore_score,
-                "science_score": breakdown.science_score,
-                "library_science_bonus": breakdown.library_science_bonus,
-                "building_mismatch_penalty": breakdown.building_mismatch_penalty,
-                "starving_network_penalty": breakdown.starving_network_penalty,
-                "fragmented_network_penalty": breakdown.fragmented_network_penalty,
-                "isolated_city_penalty": breakdown.isolated_city_penalty,
-                "unproductive_road_penalty": breakdown.unproductive_road_penalty,
-                "total_score": breakdown.total,
-            }
-        )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(record_score_breakdown_row(record) for record in records)
 
 
 def build_turn_score_breakdown_df(records: list[RecordEntry]) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for record in records:
-        for snapshot in record.turn_snapshots:
-            if not snapshot.score_breakdown:
-                continue
-            row: dict[str, object] = {
-                "ai_type": record.ai_type,
-                "policy_variant": policy_variant_label(record),
-                "map_size": record.map_size,
-                "turn_limit": record.turn_limit,
-                "map_difficulty": record.map_difficulty,
-                "turn": snapshot.turn,
-                "score": snapshot.score,
-            }
-            for key, value in snapshot.score_breakdown.items():
-                row[f"score_{key}"] = value
-            rows.append(row)
+        rows.extend(record_turn_score_rows(record))
     return pd.DataFrame(rows)
 
 
 def build_decision_context_df(records: list[RecordEntry]) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for record in records:
-        for context in record.decision_contexts:
-            row: dict[str, object] = {
-                "ai_type": record.ai_type,
-                "policy_variant": policy_variant_label(record),
-                "map_size": record.map_size,
-                "turn_limit": record.turn_limit,
-                "map_difficulty": record.map_difficulty,
-                "turn": context.turn,
-                "chosen_action_type": context.chosen_action_type or "",
-                "greedy_stage": context.greedy_stage or "",
-                "greedy_priority": context.greedy_priority or "",
-                "greedy_best_action_type": context.greedy_best_action_type or "",
-                "greedy_best_score": context.greedy_best_score,
-                "greedy_best_delta_score": context.greedy_best_delta_score,
-                "greedy_food_pressure": context.greedy_food_pressure,
-                "greedy_starving_networks": context.greedy_starving_networks,
-                "greedy_connected_cities": context.greedy_connected_cities,
-                "greedy_total_food": context.greedy_total_food,
-                "greedy_network_count": context.greedy_network_count,
-                "greedy_best_connection_steps": context.greedy_best_connection_steps,
-                "greedy_best_future_network_starving": (
-                    int(context.greedy_best_future_network_starving)
-                    if context.greedy_best_future_network_starving is not None
-                    else None
-                ),
-                "search_depth": context.search_depth,
-                "search_base_depth": context.search_base_depth,
-                "search_max_depth": context.search_max_depth,
-                "search_depth_reason": context.search_depth_reason or "",
-                "search_beam_width": context.search_beam_width,
-                "search_candidate_limit": context.search_candidate_limit,
-                "search_nodes_expanded": context.search_nodes_expanded,
-                "search_candidates_considered": context.search_candidates_considered,
-                "search_leaf_count": context.search_leaf_count,
-                "search_best_value": context.search_best_value,
-                "search_sequence_length": len(context.search_best_sequence),
-                "search_first_action_type": (
-                    context.search_best_sequence[0].action_type
-                    if context.search_best_sequence
-                    else ""
-                ),
-            }
-            for key, value in context.greedy_score_breakdown.items():
-                row[f"score_{key}"] = value
-            for key, value in context.greedy_best_site_budget.items():
-                row[f"site_{key}"] = value
-            for key, value in context.greedy_best_future_network_budget.items():
-                row[f"future_network_{key}"] = value
-            rows.append(row)
+        rows.extend(record_decision_rows(record))
     return pd.DataFrame(rows)
 
 
 def build_behavior_df(records: list[RecordEntry]) -> pd.DataFrame:
-    rows: list[dict[str, object]] = []
-    for record in records:
-        action_counts = Counter(entry.action_type for entry in record.action_log)
-        total_actions = sum(action_counts.values()) or 1
-        legal_denominator = sum(ctx.legal_actions_count for ctx in record.decision_contexts) or 1
-        tail_actions = record.action_log[-TAIL_WINDOW:]
-        tail_counts = Counter(entry.action_type for entry in tail_actions)
-        tail_total = len(tail_actions) or 1
-        rows.append(
-            {
-                "ai_type": record.ai_type,
-                "policy_variant": policy_variant_label(record),
-                "map_size": record.map_size,
-                "turn_limit": record.turn_limit,
-                "map_difficulty": record.map_difficulty,
-                "chosen_city_pct": action_counts["build_city"] / total_actions * 100,
-                "chosen_road_pct": action_counts["build_road"] / total_actions * 100,
-                "chosen_building_pct": action_counts["build_building"] / total_actions * 100,
-                "chosen_tech_pct": action_counts["research_tech"] / total_actions * 100,
-                "chosen_skip_pct": action_counts["skip"] / total_actions * 100,
-                "legal_city_pct": (
-                    sum(ctx.legal_build_city_count for ctx in record.decision_contexts)
-                    / legal_denominator
-                    * 100
-                ),
-                "legal_road_pct": (
-                    sum(ctx.legal_build_road_count for ctx in record.decision_contexts)
-                    / legal_denominator
-                    * 100
-                ),
-                "legal_building_pct": (
-                    sum(ctx.legal_build_building_count for ctx in record.decision_contexts)
-                    / legal_denominator
-                    * 100
-                ),
-                "legal_tech_pct": (
-                    sum(ctx.legal_research_tech_count for ctx in record.decision_contexts)
-                    / legal_denominator
-                    * 100
-                ),
-                "chosen_minus_legal_city_pct": (
-                    action_counts["build_city"] / total_actions * 100
-                    - (
-                        sum(ctx.legal_build_city_count for ctx in record.decision_contexts)
-                        / legal_denominator
-                        * 100
-                    )
-                ),
-                "chosen_minus_legal_road_pct": (
-                    action_counts["build_road"] / total_actions * 100
-                    - (
-                        sum(ctx.legal_build_road_count for ctx in record.decision_contexts)
-                        / legal_denominator
-                        * 100
-                    )
-                ),
-                "chosen_minus_legal_building_pct": (
-                    action_counts["build_building"] / total_actions * 100
-                    - (
-                        sum(ctx.legal_build_building_count for ctx in record.decision_contexts)
-                        / legal_denominator
-                        * 100
-                    )
-                ),
-                "chosen_minus_legal_tech_pct": (
-                    action_counts["research_tech"] / total_actions * 100
-                    - (
-                        sum(ctx.legal_research_tech_count for ctx in record.decision_contexts)
-                        / legal_denominator
-                        * 100
-                    )
-                ),
-                "tail_build_city_pct": tail_counts["build_city"] / tail_total * 100,
-                "tail_build_road_pct": tail_counts["build_road"] / tail_total * 100,
-                "tail_build_building_pct": tail_counts["build_building"] / tail_total * 100,
-                "tail_build_tech_pct": tail_counts["research_tech"] / tail_total * 100,
-                "tail_skip_pct": tail_counts["skip"] / tail_total * 100,
-            }
-        )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(record_behavior_row(record) for record in records)
 
 
 def build_stage_summary_df(records: list[RecordEntry]) -> pd.DataFrame:
     decision_df = build_decision_context_df(records)
+    return build_stage_summary_from_decision_df(decision_df)
+
+
+def build_stage_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataFrame:
     if decision_df.empty:
         return decision_df
 
@@ -651,6 +411,10 @@ def build_stage_summary_df(records: list[RecordEntry]) -> pd.DataFrame:
 
 def build_search_summary_df(records: list[RecordEntry]) -> pd.DataFrame:
     decision_df = build_decision_context_df(records)
+    return build_search_summary_from_decision_df(decision_df)
+
+
+def build_search_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataFrame:
     if decision_df.empty or "search_depth" not in decision_df:
         return pd.DataFrame()
 
@@ -672,45 +436,7 @@ def build_search_summary_df(records: list[RecordEntry]) -> pd.DataFrame:
 
 
 def build_map_df(records: list[RecordEntry]) -> pd.DataFrame:
-    rows: list[dict[str, object]] = []
-    for record in records:
-        terrain_counts = Counter(tile.base_terrain for tile in record.final_map)
-        river = {(tile.x, tile.y) for tile in record.final_map if tile.base_terrain == "river"}
-        turns = 0
-        straights = 0
-        for x, y in river:
-            neighbors = [
-                (nx, ny)
-                for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1))
-                if (nx, ny) in river
-            ]
-            if len(neighbors) != 2:
-                continue
-            same_x = neighbors[0][0] == x == neighbors[1][0]
-            same_y = neighbors[0][1] == y == neighbors[1][1]
-            if same_x or same_y:
-                straights += 1
-            else:
-                turns += 1
-
-        total = len(record.final_map) or 1
-        buildable = terrain_counts["plain"] + terrain_counts["forest"] + terrain_counts["mountain"]
-        rows.append(
-            {
-                "ai_type": record.ai_type,
-                "policy_variant": policy_variant_label(record),
-                "map_size": record.map_size,
-                "turn_limit": record.turn_limit,
-                "map_difficulty": record.map_difficulty,
-                "buildable_ratio": buildable / total,
-                "plain_ratio": terrain_counts["plain"] / total,
-                "wasteland_ratio": terrain_counts["wasteland"] / total,
-                "river_ratio": terrain_counts["river"] / total,
-                "river_cells": len(river),
-                "river_turn_ratio": turns / max(turns + straights, 1),
-            }
-        )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(record_map_row(record) for record in records)
 
 
 def _sample_rows(records: list[RecordEntry]) -> list[dict[str, object]]:
@@ -778,64 +504,7 @@ def render_turn_log(record: RecordEntry, max_turns: int = 20, *, from_end: bool 
 
 
 def record_to_state(record: RecordEntry) -> GameState:
-    config = GameConfig(
-        mode=Mode.PLAY if record.mode == "play" else Mode.AUTOPLAY,
-        map_size=record.map_size,
-        turn_limit=record.turn_limit,
-        map_difficulty=MapDifficulty(record.map_difficulty),
-        policy_type=_policy_type_from_label(record.ai_type),
-        playback_mode=_playback_mode_from_label(record.playback_mode),
-        seed=record.seed,
-    )
-    state = GameState.empty(config)
-    state.turn = max(record.actual_turns, 1)
-    state.score = record.final_score
-    state.board = {
-        (tile.x, tile.y): Tile(
-            base_terrain=TerrainType(tile.base_terrain),
-            occupant=OccupantType(tile.occupant),
-        )
-        for tile in record.final_map
-    }
-    state.cities = {
-        city.city_id: City(
-            city_id=city.city_id,
-            coord=(city.x, city.y),
-            founded_turn=city.founded_turn,
-            network_id=city.network_id,
-            buildings=BuildingCounts(
-                farm=city.farm,
-                lumber_mill=city.lumber_mill,
-                mine=city.mine,
-                library=city.library,
-            ),
-        )
-        for city in record.cities
-    }
-    state.roads = {
-        road.road_id: Road(
-            road_id=road.road_id,
-            coord=(road.x, road.y),
-            built_turn=road.built_turn,
-        )
-        for road in record.roads
-    }
-    state.networks = {
-        network.network_id: Network(
-            network_id=network.network_id,
-            city_ids=set(network.city_ids),
-            resources=ResourcePool(
-                food=network.food,
-                wood=network.wood,
-                ore=network.ore,
-                science=network.science,
-            ),
-            unlocked_techs={TechType(name) for name in network.unlocked_techs},
-            consecutive_starving_turns=network.consecutive_starving_turns,
-        )
-        for network in record.networks
-    }
-    return state
+    return artifact_record_to_state(record)
 
 
 def _policy_type_from_label(label: str) -> PolicyType:
@@ -1199,6 +868,501 @@ def render_policy_anomaly_case(case: dict[str, object]) -> list[str]:
     return lines
 
 
+def build_policy_anomaly_df_from_macro(macro_df: pd.DataFrame) -> pd.DataFrame:
+    """Build anomaly rows from artifact macro data."""
+    if macro_df.empty:
+        return pd.DataFrame()
+    random_index = {
+        _macro_match_key(row): row
+        for row in macro_df.to_dict("records")
+        if row.get("ai_type") == RANDOM_LABEL
+    }
+    greedy_index = {
+        _macro_match_key(row): row
+        for row in macro_df.to_dict("records")
+        if row.get("ai_type") == GREEDY_LABEL
+    }
+    rows: list[dict[str, object]] = []
+    for row in macro_df.to_dict("records"):
+        match_key = _macro_match_key(row)
+        random_peer = random_index.get(match_key)
+        greedy_peer = greedy_index.get(match_key)
+        final_score = _number(row.get("final_score"), 0)
+        random_score = (
+            _number(random_peer.get("final_score"), 0) if random_peer is not None else None
+        )
+        greedy_score = (
+            _number(greedy_peer.get("final_score"), 0) if greedy_peer is not None else None
+        )
+        is_negative_score = final_score < 0
+        has_starvation = bool(_number(row.get("has_starvation"), 0))
+        ai_type = str(row.get("ai_type", ""))
+        is_common_anomaly = is_negative_score or has_starvation
+        is_greedy_under_random = (
+            ai_type == GREEDY_LABEL and random_score is not None and final_score < random_score
+        )
+        is_search_under_random = (
+            ai_type == SEARCH_LABEL and random_score is not None and final_score < random_score
+        )
+        is_search_under_greedy = (
+            ai_type == SEARCH_LABEL and greedy_score is not None and final_score < greedy_score
+        )
+        is_anomaly = (
+            is_common_anomaly
+            or is_greedy_under_random
+            or is_search_under_random
+            or is_search_under_greedy
+        )
+        output = dict(row)
+        output.update(
+            {
+                "random_record_id": (
+                    _number(random_peer.get("record_id"), 0) if random_peer is not None else None
+                ),
+                "greedy_record_id": (
+                    _number(greedy_peer.get("record_id"), 0) if greedy_peer is not None else None
+                ),
+                "random_score": random_score,
+                "greedy_baseline_score": greedy_score,
+                "score_gap": final_score - random_score if random_score is not None else None,
+                "score_gap_vs_random": (
+                    final_score - random_score if random_score is not None else None
+                ),
+                "score_gap_vs_greedy": (
+                    final_score - greedy_score if greedy_score is not None else None
+                ),
+                "has_random_peer": int(random_peer is not None),
+                "has_greedy_peer": int(greedy_peer is not None),
+                "is_anomaly": int(is_anomaly),
+                "is_common_anomaly": int(is_common_anomaly),
+                "is_negative_score": int(is_negative_score),
+                "is_greedy_under_random": int(is_greedy_under_random),
+                "is_search_under_random": int(is_search_under_random),
+                "is_search_under_greedy": int(is_search_under_greedy),
+                "is_under_random": int(is_greedy_under_random or is_search_under_random),
+            }
+        )
+        rows.append(output)
+    return pd.DataFrame(rows)
+
+
+def policy_anomaly_summary_from_df(anomaly_df: pd.DataFrame) -> pd.DataFrame:
+    if anomaly_df.empty:
+        return anomaly_df
+    summary = (
+        anomaly_df.groupby(["policy_variant"], dropna=False)
+        .agg(
+            samples=("record_id", "size"),
+            anomaly_count=("is_anomaly", "sum"),
+            common_anomaly_count=("is_common_anomaly", "sum"),
+            negative_score_count=("is_negative_score", "sum"),
+            starvation_count=("has_starvation", "sum"),
+            under_random_count=("is_under_random", "sum"),
+            search_under_greedy_count=("is_search_under_greedy", "sum"),
+            avg_score_gap_vs_random=("score_gap_vs_random", "mean"),
+            avg_score_gap_vs_greedy=("score_gap_vs_greedy", "mean"),
+        )
+        .reset_index()
+    )
+    summary["anomaly_rate"] = summary["anomaly_count"] / summary["samples"].clip(lower=1)
+    return summary.sort_values(["anomaly_rate", "policy_variant"], ascending=[False, True])
+
+
+def policy_anomaly_config_summary_from_df(anomaly_df: pd.DataFrame) -> pd.DataFrame:
+    if anomaly_df.empty:
+        return anomaly_df
+    group_cols = ["policy_variant", "map_size", "turn_limit", "map_difficulty"]
+    summary = (
+        anomaly_df.groupby(group_cols, dropna=False)
+        .agg(
+            samples=("record_id", "size"),
+            anomaly_count=("is_anomaly", "sum"),
+            common_anomaly_count=("is_common_anomaly", "sum"),
+            under_random_count=("is_under_random", "sum"),
+            search_under_greedy_count=("is_search_under_greedy", "sum"),
+            avg_score_gap_vs_random=("score_gap_vs_random", "mean"),
+            avg_score_gap_vs_greedy=("score_gap_vs_greedy", "mean"),
+            avg_starvation_turns=("starvation_turns", "mean"),
+        )
+        .reset_index()
+    )
+    summary["anomaly_rate"] = summary["anomaly_count"] / summary["samples"].clip(lower=1)
+    return summary.sort_values(
+        ["anomaly_rate", "policy_variant", "map_size", "turn_limit", "map_difficulty"],
+        ascending=[False, True, True, True, True],
+    )
+
+
+def render_policy_anomaly_row(row: dict[str, object], action_df: pd.DataFrame) -> list[str]:
+    """Render a compact anomaly case from artifact rows."""
+    lines = [
+        (
+            f"### Anomaly record_id={_number(row.get('record_id'), 0)} "
+            f"seed={_number(row.get('seed'), 0)} policy={row.get('policy_variant', '')} "
+            f"config={_number(row.get('map_size'), 0)}/{_number(row.get('turn_limit'), 0)}/"
+            f"{row.get('map_difficulty', '')}"
+        ),
+        (
+            f"- final_score={_number(row.get('final_score'), 0)}, "
+            f"random_score={_fmt_optional(row.get('random_score'))}, "
+            f"greedy_score={_fmt_optional(row.get('greedy_baseline_score'))}, "
+            f"score_gap={_fmt_optional(row.get('score_gap'))}, "
+            f"score_gap_vs_greedy={_fmt_optional(row.get('score_gap_vs_greedy'))}"
+        ),
+        (
+            f"- anomaly_flags: negative_score={bool(_number(row.get('is_negative_score'), 0))}, "
+            f"starvation={bool(_number(row.get('has_starvation'), 0))}, "
+            f"under_random={bool(_number(row.get('is_under_random'), 0))}, "
+            f"search_under_greedy={bool(_number(row.get('is_search_under_greedy'), 0))}"
+        ),
+        (
+            f"- starvation: first={_fmt_optional(row.get('first_starvation_turn'))}, "
+            f"turns={_number(row.get('starvation_turns'), 0)}, "
+            f"longest_streak={_number(row.get('longest_starvation_streak'), 0)}, "
+            f"negative_food_first={_fmt_optional(row.get('first_negative_food_turn'))}, "
+            f"negative_food_turns={_number(row.get('negative_food_turns'), 0)}"
+        ),
+        "- first 20 actions:",
+        "```",
+        render_action_log_from_df(action_df, int(_number(row.get("record_id"), 0))),
+        "```",
+        "",
+    ]
+    return lines
+
+
+def render_action_log_from_df(
+    action_df: pd.DataFrame,
+    record_id: int,
+    max_turns: int = 20,
+    *,
+    from_end: bool = False,
+) -> str:
+    if action_df.empty or "record_id" not in action_df:
+        return "_No actions_"
+    subset = action_df[action_df["record_id"] == record_id].sort_values("action_index")
+    if subset.empty:
+        return "_No actions_"
+    if from_end:
+        subset = subset.tail(max_turns)
+    else:
+        subset = subset.head(max_turns)
+    lines = []
+    for row in subset.to_dict("records"):
+        coord = (
+            f"({_fmt_optional(row.get('x'))},{_fmt_optional(row.get('y'))})"
+            if not _is_missing(row.get("x"))
+            else "-"
+        )
+        lines.append(
+            f"  T{_number(row.get('turn'), 0):>3} | "
+            f"{str(row.get('action_type', '')):18} | coord={coord:8}"
+        )
+    return "\n".join(lines)
+
+
+def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
+    """Generate a report directly from artifact tables."""
+    macro_df = frames.get("macro", pd.DataFrame())
+    score_df = frames.get("score_breakdowns", pd.DataFrame())
+    turn_score_df = frames.get("turn_scores", pd.DataFrame())
+    behavior_df = frames.get("behavior", pd.DataFrame())
+    decision_df = frames.get("decisions", pd.DataFrame())
+    map_df = frames.get("maps", pd.DataFrame())
+    action_df = frames.get("actions", pd.DataFrame())
+
+    if macro_df.empty:
+        return f"# {APP_NAME} Dataset Report\n\n_No data_"
+
+    stage_summary = build_stage_summary_from_decision_df(decision_df)
+    search_summary = build_search_summary_from_decision_df(decision_df)
+    anomaly_df = build_policy_anomaly_df_from_macro(macro_df)
+    anomaly_summary = policy_anomaly_summary_from_df(anomaly_df)
+    anomaly_config_summary = policy_anomaly_config_summary_from_df(anomaly_df)
+    anomaly_cases = (
+        anomaly_df[anomaly_df["is_anomaly"] == 1]
+        .sort_values(["policy_variant", "seed", "record_id"])
+        .head(50)
+        .to_dict("records")
+        if not anomaly_df.empty
+        else []
+    )
+
+    dataset_overview = pd.DataFrame(
+        [
+            {
+                "total_games": len(macro_df),
+                "policy_count": macro_df["ai_type"].nunique(),
+                "policy_variant_count": macro_df["policy_variant"].nunique(),
+                "map_size_count": macro_df["map_size"].nunique(),
+                "turn_limit_count": macro_df["turn_limit"].nunique(),
+                "difficulty_count": macro_df["map_difficulty"].nunique(),
+                "config_count": macro_df[
+                    ["policy_variant", "map_size", "turn_limit", "map_difficulty"]
+                ]
+                .drop_duplicates()
+                .shape[0],
+            }
+        ]
+    )
+    config_coverage = (
+        macro_df.groupby(
+            ["policy_variant", "map_size", "turn_limit", "map_difficulty"],
+            dropna=False,
+        )
+        .size()
+        .reset_index(name="samples")
+        .sort_values(["policy_variant", "map_size", "turn_limit", "map_difficulty"])
+    )
+    policy_summary = _summary_table(
+        macro_df,
+        ["policy_variant"],
+        [
+            "final_score",
+            "city_count",
+            "road_count",
+            "building_count",
+            "tech_count",
+            "network_count",
+            "largest_network_size",
+            "buildings_per_city",
+            "roads_per_city",
+            "score_per_city",
+            "score_per_building",
+            "connected_city_ratio",
+            "skip_count",
+            "food",
+            "wood",
+            "ore",
+            "science",
+            "decision_time_ms_avg",
+            "decision_time_ms_max",
+            "decision_time_ms_total",
+        ],
+    )
+    config_summary = _summary_table(
+        macro_df,
+        ["policy_variant", "map_size", "turn_limit", "map_difficulty"],
+        [
+            "final_score",
+            "city_count",
+            "road_count",
+            "building_count",
+            "tech_count",
+            "network_count",
+            "buildings_per_city",
+            "roads_per_city",
+            "connected_city_ratio",
+            "skip_count",
+            "first_negative_food_turn",
+            "decision_time_ms_avg",
+        ],
+    )
+    score_summary = (
+        _summary_table(
+            score_df,
+            ["policy_variant"],
+            [
+                "city_score",
+                "connected_city_score",
+                "resource_ring_score",
+                "river_access_score",
+                "city_composition_bonus",
+                "building_score",
+                "tech_score",
+                "building_utilization_score",
+                "resource_score",
+                "library_science_bonus",
+                "building_mismatch_penalty",
+                "fragmented_network_penalty",
+                "isolated_city_penalty",
+                "unproductive_road_penalty",
+                "total_score",
+            ],
+        )
+        if not score_df.empty
+        else pd.DataFrame()
+    )
+    turn_score_value_cols = [
+        "score_total",
+        "score_city_score",
+        "score_connected_city_score",
+        "score_resource_ring_score",
+        "score_building_score",
+        "score_tech_score",
+        "score_resource_score",
+        "score_starving_network_penalty",
+        "score_fragmented_network_penalty",
+        "score_isolated_city_penalty",
+    ]
+    turn_score_summary = (
+        _summary_table(
+            turn_score_df,
+            ["policy_variant"],
+            [column for column in turn_score_value_cols if column in turn_score_df],
+        )
+        if (
+            not turn_score_df.empty
+            and any(column in turn_score_df for column in turn_score_value_cols)
+        )
+        else pd.DataFrame()
+    )
+    behavior_summary = (
+        _summary_table(
+            behavior_df,
+            ["policy_variant"],
+            [
+                "chosen_city_pct",
+                "chosen_road_pct",
+                "chosen_building_pct",
+                "chosen_tech_pct",
+                "chosen_skip_pct",
+                "legal_city_pct",
+                "legal_road_pct",
+                "legal_building_pct",
+                "legal_tech_pct",
+                "chosen_minus_legal_city_pct",
+                "chosen_minus_legal_road_pct",
+                "chosen_minus_legal_building_pct",
+                "chosen_minus_legal_tech_pct",
+                "tail_build_city_pct",
+                "tail_build_road_pct",
+                "tail_build_building_pct",
+                "tail_build_tech_pct",
+                "tail_skip_pct",
+            ],
+        )
+        if not behavior_df.empty
+        else pd.DataFrame()
+    )
+    network_summary = _summary_table(
+        macro_df,
+        ["policy_variant"],
+        [
+            "network_count",
+            "connected_cities",
+            "isolated_cities",
+            "largest_network_size",
+            "starving_network_count",
+            "first_negative_food_turn",
+        ],
+    )
+    map_summary = (
+        _summary_table(
+            map_df,
+            ["map_difficulty"],
+            [
+                "buildable_ratio",
+                "plain_ratio",
+                "wasteland_ratio",
+                "river_ratio",
+                "river_cells",
+                "river_turn_ratio",
+            ],
+        )
+        if not map_df.empty
+        else pd.DataFrame()
+    )
+
+    lines = [
+        f"# {APP_NAME} Dataset Report",
+        "",
+        "_Source: artifact tables_",
+        "",
+        "## 1. Dataset Overview",
+        "",
+        make_table(dataset_overview, floatfmt=".0f"),
+        "",
+        "### 1.1 Config Coverage",
+        "",
+        make_table(config_coverage, floatfmt=".0f"),
+        "",
+        "## 2. Policy Summary",
+        "",
+        make_table(policy_summary),
+        "",
+        "## 3. Config Summary",
+        "",
+        make_table(config_summary),
+        "",
+        "## 4. Score Component Summary",
+        "",
+        make_table(score_summary),
+        "",
+        "## 5. Turn Score Composition Summary",
+        "",
+        make_table(turn_score_summary),
+        "",
+        "## 6. Behavior Summary",
+        "",
+        make_table(behavior_summary),
+        "",
+        "## 7. Greedy Stage Summary",
+        "",
+        make_table(stage_summary),
+        "",
+        "### 7.1 Search Diagnostic Summary",
+        "",
+        make_table(search_summary),
+        "",
+        "## 8. Network And Risk Summary",
+        "",
+        make_table(network_summary),
+        "",
+        "## 9. Map Summary",
+        "",
+        make_table(map_summary, floatfmt=".3f"),
+        "",
+        "## 10. Anomaly Summary",
+        "",
+        make_table(anomaly_summary, floatfmt=".3f"),
+        "",
+        "### 10.1 Anomaly Config Summary",
+        "",
+        make_table(anomaly_config_summary),
+        "",
+        "## 11. Anomaly Cases",
+        "",
+    ]
+    if not anomaly_cases:
+        lines.extend(["_No data_", ""])
+    else:
+        for row in anomaly_cases:
+            lines.extend(render_policy_anomaly_row(row, action_df))
+    return "\n".join(lines)
+
+
+def _macro_match_key(row: dict[str, object]) -> tuple[int, int, int, str]:
+    return (
+        int(_number(row.get("seed"), 0)),
+        int(_number(row.get("map_size"), 0)),
+        int(_number(row.get("turn_limit"), 0)),
+        str(row.get("map_difficulty", "")),
+    )
+
+
+def _number(value: object, default: float) -> float:
+    if _is_missing(value):
+        return default
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str) and value:
+        return float(value)
+    return default
+
+
+def _is_missing(value: object) -> bool:
+    return value is None or bool(pd.isna(value))
+
+
+def _fmt_optional(value: object) -> str:
+    if _is_missing(value):
+        return "N/A"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 def generate_report(records: list[RecordEntry]) -> str:
     if pd is None:  # pragma: no cover - depends on local optional deps
         raise RuntimeError(
@@ -1208,8 +1372,9 @@ def generate_report(records: list[RecordEntry]) -> str:
     score_df = build_score_breakdown_df(records)
     turn_score_df = build_turn_score_breakdown_df(records)
     behavior_df = build_behavior_df(records)
-    stage_df = build_stage_summary_df(records)
-    search_summary = build_search_summary_df(records)
+    decision_df = build_decision_context_df(records)
+    stage_df = build_stage_summary_from_decision_df(decision_df)
+    search_summary = build_search_summary_from_decision_df(decision_df)
     map_df = build_map_df(records)
     anomaly_cases = collect_policy_anomaly_cases(records)
     anomaly_summary = build_policy_anomaly_summary_df(records)
@@ -1486,9 +1651,15 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    raw = json.loads(args.input.read_text(encoding="utf-8"))
-    database = RecordDatabase.from_dict(raw)
-    report = generate_report(database.records)
+    if is_artifact_dir(args.input):
+        frames = read_artifact_frames(args.input, pd)
+        report = generate_report_from_artifacts(frames)
+    else:
+        raw = loads_json_bytes(args.input.read_bytes())
+        if not isinstance(raw, dict):
+            raise ValueError("Input JSON must be an object.")
+        database = RecordDatabase.from_dict(raw)
+        report = generate_report(database.records)
     args.output.write_text(report, encoding="utf-8")
     print(f"Report written to {args.output}", file=sys.stderr)
     return 0

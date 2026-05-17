@@ -77,9 +77,9 @@ def clone_game_state_for_simulation(state: GameState) -> GameState:
     )
     stats = replace(
         state.stats,
-        action_log=list(state.stats.action_log),
-        turn_snapshots=list(state.stats.turn_snapshots),
-        decision_contexts=list(state.stats.decision_contexts),
+        action_log=[],
+        turn_snapshots=[],
+        decision_contexts=[],
     )
     return GameState(
         config=state.config,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import os
 import sys
 import time
@@ -26,10 +25,12 @@ from microciv.constants import (  # noqa: E402
 )
 from microciv.game.enums import MapDifficulty, PlaybackMode, PolicyType  # noqa: E402
 from microciv.game.models import GameConfig  # noqa: E402
+from microciv.records.artifacts import dumps_json_bytes, write_record_artifacts  # noqa: E402
 from microciv.records.models import CSV_FIELD_ORDER, RecordDatabase, RecordEntry  # noqa: E402
 from microciv.session import create_game_session  # noqa: E402
 
 PROGRESS_STEPS: Final[int] = 20
+DEFAULT_FULL_JSON_THRESHOLD: Final[int] = 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +137,32 @@ def _parse_args() -> argparse.Namespace:
         type=_positive_int,
         default=8,
         help="Process pool chunksize for task dispatch (default: 8).",
+    )
+    parser.add_argument(
+        "--artifact-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "compat", "fast", "dual"],
+        help=(
+            "Output mode: compat keeps legacy JSON/CSV, fast writes analysis artifacts, "
+            "dual writes both, auto switches by --full-json-threshold."
+        ),
+    )
+    parser.add_argument(
+        "--artifact-format",
+        type=str,
+        default="parquet",
+        choices=["parquet", "jsonl"],
+        help="Preferred artifact file format (default: parquet, falls back to jsonl).",
+    )
+    parser.add_argument(
+        "--full-json-threshold",
+        type=_positive_int,
+        default=DEFAULT_FULL_JSON_THRESHOLD,
+        help=(
+            "Maximum game count for auto mode to keep full legacy JSON "
+            f"(default: {DEFAULT_FULL_JSON_THRESHOLD})."
+        ),
     )
     return parser.parse_args()
 
@@ -291,10 +318,7 @@ def run_batch_tasks_parallel(
 
 
 def _write_database_json(path: Path, database: RecordDatabase) -> None:
-    path.write_text(
-        json.dumps(database.to_dict(), ensure_ascii=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    path.write_bytes(dumps_json_bytes(database.to_dict(), indent=True) + b"\n")
 
 
 def _write_database_csv(path: Path, records: list[RecordEntry]) -> None:
@@ -303,6 +327,12 @@ def _write_database_csv(path: Path, records: list[RecordEntry]) -> None:
         writer.writeheader()
         for record in records:
             writer.writerow(record.to_csv_row())
+
+
+def _effective_artifact_mode(raw_mode: str, *, total_games: int, threshold: int) -> str:
+    if raw_mode != "auto":
+        return raw_mode
+    return "compat" if total_games <= threshold else "fast"
 
 
 def main() -> int:
@@ -323,10 +353,19 @@ def main() -> int:
         search_candidate_limit=args.search_candidate_limit,
     )
     execution_mode = "serial" if args.workers == 1 else "parallel"
+    effective_artifact_mode = _effective_artifact_mode(
+        args.artifact_mode,
+        total_games=args.games,
+        threshold=args.full_json_threshold,
+    )
     total_start = time.perf_counter()
     print(
         f"Batch plan: {args.games} games, mode={execution_mode}, "
         f"workers={args.workers}, chunksize={args.chunksize}",
+        file=sys.stderr,
+    )
+    print(
+        f"Output mode: requested={args.artifact_mode}, effective={effective_artifact_mode}",
         file=sys.stderr,
     )
     records = (
@@ -342,7 +381,6 @@ def main() -> int:
         file=sys.stderr,
     )
 
-    database = RecordDatabase(records=records)
     run_tag = args.label.strip().replace(" ", "_")
     policy_name = args.policy
     if policy_type is PolicyType.SEARCH:
@@ -357,15 +395,31 @@ def main() -> int:
     if run_tag:
         base_name = f"{base_name}_{run_tag}"
 
-    if not args.no_export_json:
+    json_path: Path | None = None
+    csv_path: Path | None = None
+    artifact_dir: Path | None = None
+    artifact_file_format = ""
+    if effective_artifact_mode in {"compat", "dual"} and not args.no_export_json:
+        database = RecordDatabase(records=records)
         json_path = output_dir / f"{base_name}.json"
         _write_database_json(json_path, database)
         print(f"JSON exported: {json_path}", file=sys.stderr)
 
-    if not args.no_export_csv:
+    if effective_artifact_mode in {"compat", "dual"} and not args.no_export_csv:
         csv_path = output_dir / f"{base_name}.csv"
         _write_database_csv(csv_path, records)
         print(f"CSV exported: {csv_path}", file=sys.stderr)
+
+    if effective_artifact_mode in {"fast", "dual"}:
+        artifact_dir = output_dir / f"{base_name}_artifacts"
+        artifact_result = write_record_artifacts(
+            records,
+            artifact_dir,
+            preferred_format=args.artifact_format,
+            write_manifest=True,
+        )
+        artifact_file_format = artifact_result.file_format
+        print(f"Artifacts exported: {artifact_dir} ({artifact_file_format})", file=sys.stderr)
 
     if not args.no_write_summary:
         summary_path = output_dir / f"{base_name}_summary.json"
@@ -383,6 +437,14 @@ def main() -> int:
             "workers": args.workers,
             "chunksize": args.chunksize,
             "execution_mode": execution_mode,
+            "artifact_mode": args.artifact_mode,
+            "effective_artifact_mode": effective_artifact_mode,
+            "artifact_format": args.artifact_format,
+            "artifact_file_format": artifact_file_format,
+            "artifact_dir": str(artifact_dir) if artifact_dir is not None else "",
+            "full_json_threshold": args.full_json_threshold,
+            "json_path": str(json_path) if json_path is not None else "",
+            "csv_path": str(csv_path) if csv_path is not None else "",
             "total_elapsed_seconds": round(total_elapsed, 3),
             "avg_elapsed_seconds": round(total_elapsed / args.games, 3),
             "avg_score": round(sum(record.final_score for record in records) / len(records), 2),
@@ -396,10 +458,7 @@ def main() -> int:
                 sum(len(record.networks) for record in records) / len(records), 2
             ),
         }
-        summary_path.write_text(
-            json.dumps(summary, ensure_ascii=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        summary_path.write_bytes(dumps_json_bytes(summary, indent=True) + b"\n")
         print(f"Summary exported: {summary_path}", file=sys.stderr)
 
     return 0
