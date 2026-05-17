@@ -48,7 +48,12 @@ def _make_record(
     policy_type: PolicyType,
     final_score: int,
 ) -> RecordEntry:
-    ai_type = "Greedy" if policy_type is PolicyType.GREEDY else "Random"
+    if policy_type is PolicyType.GREEDY:
+        ai_type = "Greedy"
+    elif policy_type is PolicyType.RANDOM:
+        ai_type = "Random"
+    else:
+        ai_type = "Search"
     return RecordEntry(
         record_id=record_id,
         timestamp="2026-04-19T12:00:00+08:00",
@@ -101,8 +106,12 @@ def test_generate_dataset_exports_anomaly_json_and_csv(monkeypatch, tmp_path) ->
         map_size: int,
         turn_limit: int,
         map_difficulty: object,
+        search_depth: int = 3,
+        search_beam_width: int = 4,
+        search_candidate_limit: int = 16,
     ) -> RecordEntry:
-        del map_size, turn_limit, map_difficulty
+        del map_size, turn_limit, map_difficulty, search_depth, search_beam_width
+        del search_candidate_limit
         if policy_type is PolicyType.GREEDY:
             score = 5 if seed == 1 else -3
         else:
@@ -185,6 +194,60 @@ def test_generate_dataset_exports_anomaly_json_and_csv(monkeypatch, tmp_path) ->
     assert manifest["anomaly_csv_path"].endswith("dataset_unit_anomalies.csv")
 
 
+def test_generate_dataset_defaults_to_three_policies(monkeypatch, tmp_path) -> None:
+    def fake_run_game_task(task: object) -> RecordEntry:
+        assert isinstance(task, generate_dataset.GameTask)
+        return _make_record(
+            record_id=task.record_id,
+            seed=task.seed,
+            policy_type=task.policy_type,
+            final_score=task.record_id * 10,
+        )
+
+    monkeypatch.setattr(generate_dataset, "run_game_task", fake_run_game_task)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_dataset.py",
+            "-n",
+            "1",
+            "--seed-start",
+            "3",
+            "--output-dir",
+            str(tmp_path),
+            "--map-sizes",
+            "12",
+            "--turn-limits",
+            "30",
+            "--difficulties",
+            "normal",
+            "--label",
+            "defaults",
+            "--workers",
+            "1",
+        ],
+    )
+
+    exit_code = generate_dataset.main()
+
+    assert exit_code == 0
+    database = RecordDatabase.from_dict(
+        json.loads((tmp_path / "dataset_defaults.json").read_text(encoding="utf-8"))
+    )
+    manifest = json.loads((tmp_path / "dataset_defaults_manifest.json").read_text(encoding="utf-8"))
+
+    assert [(record.ai_type, record.seed) for record in database.records] == [
+        ("Greedy", 3),
+        ("Random", 3),
+        ("Search", 3),
+    ]
+    assert manifest["param_grid"]["policy"] == ["greedy", "random", "search"]
+    assert manifest["policy_count"] == 3
+    assert manifest["policy_variant_count"] == 3
+    assert manifest["search_variant_count"] == 1
+
+
 def test_build_game_tasks_preserves_seed_pairing_and_record_order() -> None:
     tasks, seed_end = generate_dataset.build_game_tasks(
         seed_start=5,
@@ -201,6 +264,34 @@ def test_build_game_tasks_preserves_seed_pairing_and_record_order() -> None:
         (6, PolicyType.GREEDY),
         (6, PolicyType.RANDOM),
     ]
+
+
+def test_build_game_tasks_expands_search_grid_after_fixed_seed_baselines() -> None:
+    tasks, seed_end = generate_dataset.build_game_tasks(
+        seed_start=11,
+        games_per_combo=1,
+        policies=[PolicyType.GREEDY, PolicyType.RANDOM, PolicyType.SEARCH],
+        base_combos=[(12, 30, "normal")],
+        search_depths=[1, 2],
+        search_beam_widths=[3],
+        search_candidate_limits=[4, 5],
+    )
+
+    assert seed_end == 11
+    assert [task.record_id for task in tasks] == [1, 2, 3, 4, 5, 6]
+    assert [(task.seed, task.policy_type) for task in tasks] == [
+        (11, PolicyType.GREEDY),
+        (11, PolicyType.RANDOM),
+        (11, PolicyType.SEARCH),
+        (11, PolicyType.SEARCH),
+        (11, PolicyType.SEARCH),
+        (11, PolicyType.SEARCH),
+    ]
+    assert [
+        (task.search_depth, task.search_beam_width, task.search_candidate_limit)
+        for task in tasks
+        if task.policy_type is PolicyType.SEARCH
+    ] == [(1, 3, 4), (1, 3, 5), (2, 3, 4), (2, 3, 5)]
 
 
 def test_generate_dataset_parallel_path_uses_process_pool_and_keeps_order(
@@ -278,3 +369,87 @@ def test_generate_dataset_parallel_path_uses_process_pool_and_keeps_order(
     assert manifest["chunksize"] == 3
     assert manifest["seed_start"] == 7
     assert manifest["seed_end"] == 8
+
+
+def test_generate_dataset_parallel_path_includes_search_grid_tasks(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    fake_executor = _FakeProcessPoolExecutor(max_workers=2)
+
+    def fake_executor_factory(*, max_workers: int) -> _FakeProcessPoolExecutor:
+        assert max_workers == 2
+        return fake_executor
+
+    def fake_run_game_task(task: object) -> RecordEntry:
+        assert isinstance(task, generate_dataset.GameTask)
+        return _make_record(
+            record_id=task.record_id,
+            seed=task.seed,
+            policy_type=task.policy_type,
+            final_score=task.record_id,
+        )
+
+    monkeypatch.setattr(generate_dataset, "ProcessPoolExecutor", fake_executor_factory)
+    monkeypatch.setattr(generate_dataset, "run_game_task", fake_run_game_task)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_dataset.py",
+            "-n",
+            "1",
+            "--seed-start",
+            "9",
+            "--output-dir",
+            str(tmp_path),
+            "--policies",
+            "greedy,random,search",
+            "--search-depths",
+            "1,2",
+            "--search-beam-widths",
+            "3",
+            "--search-candidate-limits",
+            "4,5",
+            "--map-sizes",
+            "12",
+            "--turn-limits",
+            "30",
+            "--difficulties",
+            "normal",
+            "--label",
+            "searchgrid",
+            "--workers",
+            "2",
+        ],
+    )
+
+    exit_code = generate_dataset.main()
+
+    assert exit_code == 0
+    assert len(fake_executor.map_calls) == 1
+    _, tasks, _chunksize = fake_executor.map_calls[0]
+    assert len(tasks) == 6
+    assert [
+        (task.policy_type, task.search_depth, task.search_beam_width, task.search_candidate_limit)
+        for task in tasks
+    ] == [
+        (PolicyType.GREEDY, 3, 4, 16),
+        (PolicyType.RANDOM, 3, 4, 16),
+        (PolicyType.SEARCH, 1, 3, 4),
+        (PolicyType.SEARCH, 1, 3, 5),
+        (PolicyType.SEARCH, 2, 3, 4),
+        (PolicyType.SEARCH, 2, 3, 5),
+    ]
+
+    manifest = json.loads(
+        (tmp_path / "dataset_searchgrid_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["execution_mode"] == "parallel"
+    assert manifest["policy_variant_count"] == 6
+    assert manifest["search_variant_count"] == 4
+    assert manifest["search_param_grid"] == {
+        "search_depth": [1, 2],
+        "search_beam_width": [3],
+        "search_candidate_limit": [4, 5],
+    }

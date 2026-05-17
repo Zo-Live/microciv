@@ -84,15 +84,16 @@ pip install -r scripts/requirements.txt
 
 常用参数：
 - `-n` / `--games-per-combo`：每参数组合局数
-- `--policy`：`greedy` 或 `random`
+- `--policy`：单配置批跑策略，支持 `greedy`、`random`、`search`
 - `--map-size`：地图尺寸
 - `--turn-limit`：回合上限
 - `--seed-start`：起始种子
 - `--label`：给批量输出文件附加标签
-- `--policies` / `--map-sizes` / `--turn-limits` / `--difficulties`：覆盖数据集参数网格
+- `--policies` / `--map-sizes` / `--turn-limits` / `--difficulties`：覆盖数据集参数网格，数据集默认跑 `greedy,random,search`
+- `--search-depths` / `--search-beam-widths` / `--search-candidate-limits`：覆盖 Search 参数网格
 - `--no-export-json` / `--no-export-csv` / `--no-write-summary`：控制单配置批跑输出
 
-分析报告会额外汇总最终分数组成、逐回合分数组成、Greedy 阶段动作分布、局部预算与网络风险指标。详细参数请使用 `--help` 查看。
+分析报告会额外汇总最终分数组成、逐回合分数组成、Greedy 阶段动作分布、Search 诊断、异常率、决策耗时与网络风险指标。详细参数请使用 `--help` 查看。
 
 ## 操作说明
 
@@ -116,11 +117,11 @@ MicroCiv 是一款回合制文明经营游戏，运行在终端中。游戏以�
 - 正方形网格随机地图生成，包含平原、森林、山地、河流、荒地五种地形
 - 城市建设、道路网络、建筑建造、科技研究与评分系统
 - 手动游玩（Play）与自动演示（Autoplay）两种模式
-- 两种 Autoplay AI 策略：`Greedy`（分阶段贪心）与 `Random`（带权随机）
+- 三种 Autoplay AI 策略：`Greedy`（分阶段贪心）、`Random`（带权随机）与 `Search`（滚动窗口束搜索）
 - 本地 Records 记录系统，支持 JSON 导出
 - 像素字体渲染（标题、分数、回合数）
 - AI 决策计时指标：决策时间、单回合耗时、全局会话耗时
-- Autoplay 诊断指标：`decision_contexts`、逐回合 `score_breakdown`、Greedy 阶段与局部预算上下文
+- Autoplay 诊断指标：`decision_contexts`、逐回合 `score_breakdown`、Greedy 阶段与局部预算上下文、Search 搜索诊断
 
 ## 项目结构
 

@@ -239,6 +239,145 @@ def test_analyze_batch_reports_search_diagnostics() -> None:
     assert int(summary.iloc[0]["search_sequence_length_mean"]) == 2
 
 
+def test_analyze_batch_separates_search_variants_and_reports_timing() -> None:
+    shallow = _make_record(PolicyType.SEARCH, 31)
+    deep = _make_record(PolicyType.SEARCH, 32)
+    shallow.record_id = 301
+    deep.record_id = 302
+    shallow.decision_time_ms_avg = 7.5
+    shallow.decision_time_ms_max = 11.0
+    shallow.decision_time_ms_total = 225.0
+    deep.decision_time_ms_avg = 19.0
+    deep.decision_time_ms_max = 30.0
+    deep.decision_time_ms_total = 570.0
+    shallow.decision_contexts = [
+        RecordDecisionContext(
+            turn=1,
+            legal_actions_count=8,
+            legal_build_city_count=4,
+            legal_build_road_count=1,
+            legal_build_building_count=1,
+            legal_research_tech_count=1,
+            legal_skip_count=1,
+            chosen_action_type="build_city",
+            search_depth=2,
+            search_base_depth=2,
+            search_max_depth=2,
+            search_depth_reason="fixed",
+            search_beam_width=3,
+            search_candidate_limit=5,
+            search_nodes_expanded=4,
+            search_candidates_considered=16,
+            search_leaf_count=12,
+            search_best_value=100,
+            search_best_sequence=[RecordSearchActionSnapshot(action_type="build_city", x=0, y=0)],
+        )
+    ]
+    deep.decision_contexts = [
+        RecordDecisionContext(
+            turn=1,
+            legal_actions_count=8,
+            legal_build_city_count=4,
+            legal_build_road_count=1,
+            legal_build_building_count=1,
+            legal_research_tech_count=1,
+            legal_skip_count=1,
+            chosen_action_type="build_city",
+            search_depth=3,
+            search_base_depth=3,
+            search_max_depth=3,
+            search_depth_reason="fixed",
+            search_beam_width=4,
+            search_candidate_limit=6,
+            search_nodes_expanded=9,
+            search_candidates_considered=32,
+            search_leaf_count=24,
+            search_best_value=150,
+            search_best_sequence=[RecordSearchActionSnapshot(action_type="build_city", x=0, y=0)],
+        )
+    ]
+
+    summary = analyze_batch.build_search_summary_df([shallow, deep])
+    macro_df = analyze_batch.build_macro_df([shallow, deep])
+    report = analyze_batch.generate_report([shallow, deep])
+
+    assert set(summary["policy_variant"]) == {"Search d2 b3 c5", "Search d3 b4 c6"}
+    assert set(macro_df["policy_variant"]) == {"Search d2 b3 c5", "Search d3 b4 c6"}
+    assert "decision_time_ms_avg_mean" in report
+    assert "Search d2 b3 c5" in report
+    assert "Search d3 b4 c6" in report
+
+
+def test_policy_anomaly_summary_uses_mixed_baselines_and_starvation() -> None:
+    random = _make_record(PolicyType.RANDOM, 41)
+    greedy = _make_record(PolicyType.GREEDY, 41)
+    search = _make_record(PolicyType.SEARCH, 41)
+    random.record_id = 401
+    greedy.record_id = 402
+    search.record_id = 403
+    random.final_score = 50
+    greedy.final_score = 40
+    search.final_score = -5
+    random.turn_snapshots = [
+        RecordTurnSnapshot(
+            turn=1,
+            score=50,
+            food=0,
+            wood=10,
+            ore=4,
+            science=3,
+            city_count=1,
+            building_count=2,
+            tech_count=2,
+            road_count=1,
+            network_count=1,
+            connected_city_count=0,
+            isolated_city_count=1,
+            largest_network_size=1,
+            starving_network_count=1,
+            legal_actions_count=4,
+            score_breakdown={"total": 50},
+        )
+    ]
+    search.decision_contexts = [
+        RecordDecisionContext(
+            turn=1,
+            legal_actions_count=8,
+            legal_build_city_count=4,
+            legal_build_road_count=1,
+            legal_build_building_count=1,
+            legal_research_tech_count=1,
+            legal_skip_count=1,
+            chosen_action_type="build_city",
+            search_depth=2,
+            search_base_depth=2,
+            search_max_depth=2,
+            search_depth_reason="fixed",
+            search_beam_width=3,
+            search_candidate_limit=5,
+            search_nodes_expanded=4,
+            search_candidates_considered=16,
+            search_leaf_count=12,
+            search_best_value=100,
+            search_best_sequence=[RecordSearchActionSnapshot(action_type="build_city", x=0, y=0)],
+        )
+    ]
+
+    anomaly_df = analyze_batch.build_policy_anomaly_df([random, greedy, search])
+    summary = analyze_batch.build_policy_anomaly_summary_df([random, greedy, search])
+    report = analyze_batch.generate_report([random, greedy, search])
+
+    rows = {row["policy_variant"]: row for row in anomaly_df.to_dict("records")}
+    assert rows["Random"]["has_starvation"] == 1
+    assert rows["Random"]["is_anomaly"] == 1
+    assert rows["Greedy"]["is_greedy_under_random"] == 1
+    assert rows["Search d2 b3 c5"]["is_search_under_random"] == 1
+    assert rows["Search d2 b3 c5"]["is_search_under_greedy"] == 1
+    assert set(summary["policy_variant"]) == {"Random", "Greedy", "Search d2 b3 c5"}
+    assert "search_under_greedy_count" in report
+    assert "Search d2 b3 c5" in report
+
+
 def test_analyze_batch_reports_greedy_anomalies_with_turn_diagnostics() -> None:
     greedy = _make_record(PolicyType.GREEDY, 11)
     random = _make_record(PolicyType.RANDOM, 11)

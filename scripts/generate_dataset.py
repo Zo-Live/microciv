@@ -20,6 +20,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from microciv.constants import (  # noqa: E402
+    DEFAULT_SEARCH_BEAM_WIDTH,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT,
+    DEFAULT_SEARCH_DEPTH,
+)
 from microciv.game.enums import MapDifficulty, PlaybackMode, PolicyType  # noqa: E402
 from microciv.game.models import GameConfig  # noqa: E402
 from microciv.records.models import CSV_FIELD_ORDER, RecordDatabase, RecordEntry  # noqa: E402
@@ -27,6 +32,7 @@ from microciv.session import create_game_session  # noqa: E402
 
 GREEDY_LABEL: Final[str] = "Greedy"
 RANDOM_LABEL: Final[str] = "Random"
+SEARCH_LABEL: Final[str] = "Search"
 PROGRESS_STEPS: Final[int] = 20
 
 
@@ -39,6 +45,9 @@ class GameTask:
     map_size: int
     turn_limit: int
     map_difficulty: MapDifficulty
+    search_depth: int = DEFAULT_SEARCH_DEPTH
+    search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH
+    search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT
 
 
 def _positive_int(value: str) -> int:
@@ -68,8 +77,28 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--policies",
         type=str,
-        default="greedy,random",
+        default="greedy,random,search",
         help="Comma-separated policies.",
+    )
+    parser.add_argument(
+        "--search-depths",
+        type=str,
+        default=str(DEFAULT_SEARCH_DEPTH),
+        help=f"Comma-separated Search depths (default: {DEFAULT_SEARCH_DEPTH}).",
+    )
+    parser.add_argument(
+        "--search-beam-widths",
+        type=str,
+        default=str(DEFAULT_SEARCH_BEAM_WIDTH),
+        help=f"Comma-separated Search beam widths (default: {DEFAULT_SEARCH_BEAM_WIDTH}).",
+    )
+    parser.add_argument(
+        "--search-candidate-limits",
+        type=str,
+        default=str(DEFAULT_SEARCH_CANDIDATE_LIMIT),
+        help=(
+            f"Comma-separated Search candidate limits (default: {DEFAULT_SEARCH_CANDIDATE_LIMIT})."
+        ),
     )
     parser.add_argument(
         "--map-sizes",
@@ -115,6 +144,8 @@ def _policy_type(value: str) -> PolicyType:
         return PolicyType.GREEDY
     if value == "random":
         return PolicyType.RANDOM
+    if value == "search":
+        return PolicyType.SEARCH
     raise ValueError(value)
 
 
@@ -133,6 +164,14 @@ def _parse_csv_values(raw: str, *, field_name: str) -> list[str]:
     raise ValueError(f"{field_name} must contain at least one value.")
 
 
+def _parse_csv_int_values(raw: str, *, field_name: str) -> list[int]:
+    values = [int(item) for item in _parse_csv_values(raw, field_name=field_name)]
+    for value in values:
+        if value < 1:
+            raise ValueError(f"{field_name} values must be at least 1.")
+    return values
+
+
 def run_game(
     *,
     record_id: int,
@@ -141,6 +180,9 @@ def run_game(
     map_size: int,
     turn_limit: int,
     map_difficulty: MapDifficulty,
+    search_depth: int = DEFAULT_SEARCH_DEPTH,
+    search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH,
+    search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT,
 ) -> RecordEntry:
     config = GameConfig.for_autoplay(
         map_size=map_size,
@@ -149,6 +191,9 @@ def run_game(
         policy_type=policy_type,
         playback_mode=PlaybackMode.SPEED,
         seed=seed,
+        search_depth=search_depth,
+        search_beam_width=search_beam_width,
+        search_candidate_limit=search_candidate_limit,
     )
     session = create_game_session(config)
     while not session.state.is_game_over:
@@ -170,6 +215,9 @@ def run_game_task(task: GameTask) -> RecordEntry:
         map_size=task.map_size,
         turn_limit=task.turn_limit,
         map_difficulty=task.map_difficulty,
+        search_depth=task.search_depth,
+        search_beam_width=task.search_beam_width,
+        search_candidate_limit=task.search_candidate_limit,
     )
 
 
@@ -182,6 +230,85 @@ def _build_random_index(
 ) -> dict[tuple[int, int, int, str], RecordEntry]:
     return {
         _record_match_key(record): record for record in records if record.ai_type == RANDOM_LABEL
+    }
+
+
+def _build_greedy_index(
+    records: list[RecordEntry],
+) -> dict[tuple[int, int, int, str], RecordEntry]:
+    return {
+        _record_match_key(record): record for record in records if record.ai_type == GREEDY_LABEL
+    }
+
+
+def _has_starvation(record: RecordEntry) -> bool:
+    return any(snapshot.starving_network_count > 0 for snapshot in record.turn_snapshots) or any(
+        network.food <= 0 for network in record.networks
+    )
+
+
+def collect_policy_anomalies(
+    records: list[RecordEntry],
+) -> tuple[list[RecordEntry], dict[str, int]]:
+    random_index = _build_random_index(records)
+    greedy_index = _build_greedy_index(records)
+    anomalies: list[RecordEntry] = []
+    negative_score_count = 0
+    starvation_count = 0
+    common_anomaly_count = 0
+    greedy_under_random_count = 0
+    search_under_random_count = 0
+    search_under_greedy_count = 0
+    for record in records:
+        match_key = _record_match_key(record)
+        random_peer = random_index.get(match_key)
+        greedy_peer = greedy_index.get(match_key)
+        is_negative_score = record.final_score < 0
+        has_starvation = _has_starvation(record)
+        is_common_anomaly = is_negative_score or has_starvation
+        is_greedy_under_random = (
+            record.ai_type == GREEDY_LABEL
+            and random_peer is not None
+            and record.final_score < random_peer.final_score
+        )
+        is_search_under_random = (
+            record.ai_type == SEARCH_LABEL
+            and random_peer is not None
+            and record.final_score < random_peer.final_score
+        )
+        is_search_under_greedy = (
+            record.ai_type == SEARCH_LABEL
+            and greedy_peer is not None
+            and record.final_score < greedy_peer.final_score
+        )
+        if not (
+            is_common_anomaly
+            or is_greedy_under_random
+            or is_search_under_random
+            or is_search_under_greedy
+        ):
+            continue
+        if is_negative_score:
+            negative_score_count += 1
+        if has_starvation:
+            starvation_count += 1
+        if is_common_anomaly:
+            common_anomaly_count += 1
+        if is_greedy_under_random:
+            greedy_under_random_count += 1
+        if is_search_under_random:
+            search_under_random_count += 1
+        if is_search_under_greedy:
+            search_under_greedy_count += 1
+        anomalies.append(record)
+    return anomalies, {
+        "common_anomaly_count": common_anomaly_count,
+        "negative_score_anomaly_count": negative_score_count,
+        "starvation_anomaly_count": starvation_count,
+        "greedy_under_random_anomaly_count": greedy_under_random_count,
+        "search_under_random_anomaly_count": search_under_random_count,
+        "search_under_greedy_anomaly_count": search_under_greedy_count,
+        "under_random_anomaly_count": greedy_under_random_count + search_under_random_count,
     }
 
 
@@ -232,14 +359,42 @@ def build_game_tasks(
     games_per_combo: int,
     policies: list[PolicyType],
     base_combos: list[tuple[int, int, str]],
+    search_depths: list[int] | None = None,
+    search_beam_widths: list[int] | None = None,
+    search_candidate_limits: list[int] | None = None,
 ) -> tuple[list[GameTask], int]:
     tasks: list[GameTask] = []
     next_record_id = 1
     seed = seed_start
+    search_depth_values = search_depths or [DEFAULT_SEARCH_DEPTH]
+    search_beam_width_values = search_beam_widths or [DEFAULT_SEARCH_BEAM_WIDTH]
+    search_candidate_limit_values = search_candidate_limits or [DEFAULT_SEARCH_CANDIDATE_LIMIT]
     for map_size, turn_limit, difficulty in base_combos:
         map_difficulty = _map_difficulty(difficulty)
         for _ in range(games_per_combo):
             for policy_type in policies:
+                if policy_type is PolicyType.SEARCH:
+                    for search_depth, search_beam_width, search_candidate_limit in product(
+                        search_depth_values,
+                        search_beam_width_values,
+                        search_candidate_limit_values,
+                    ):
+                        tasks.append(
+                            GameTask(
+                                task_index=len(tasks),
+                                record_id=next_record_id,
+                                seed=seed,
+                                policy_type=policy_type,
+                                map_size=map_size,
+                                turn_limit=turn_limit,
+                                map_difficulty=map_difficulty,
+                                search_depth=search_depth,
+                                search_beam_width=search_beam_width,
+                                search_candidate_limit=search_candidate_limit,
+                            )
+                        )
+                        next_record_id += 1
+                    continue
                 tasks.append(
                     GameTask(
                         task_index=len(tasks),
@@ -317,6 +472,15 @@ def main() -> int:
     args = _parse_args()
     output_dir: Path = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    search_depths = _parse_csv_int_values(args.search_depths, field_name="search_depths")
+    search_beam_widths = _parse_csv_int_values(
+        args.search_beam_widths,
+        field_name="search_beam_widths",
+    )
+    search_candidate_limits = _parse_csv_int_values(
+        args.search_candidate_limits,
+        field_name="search_candidate_limits",
+    )
 
     param_grid = {
         "policy": _parse_csv_values(args.policies, field_name="policies"),
@@ -328,7 +492,20 @@ def main() -> int:
         ],
         "map_difficulty": _parse_csv_values(args.difficulties, field_name="difficulties"),
     }
+    search_param_grid = {
+        "search_depth": search_depths,
+        "search_beam_width": search_beam_widths,
+        "search_candidate_limit": search_candidate_limits,
+    }
     policies = [_policy_type(policy) for policy in param_grid["policy"]]
+    search_variant_count = (
+        len(search_depths) * len(search_beam_widths) * len(search_candidate_limits)
+        if PolicyType.SEARCH in policies
+        else 0
+    )
+    policy_variant_count = sum(
+        search_variant_count if policy is PolicyType.SEARCH else 1 for policy in policies
+    )
     base_combos = list(
         product(
             param_grid["map_size"],
@@ -341,6 +518,9 @@ def main() -> int:
         games_per_combo=args.games_per_combo,
         policies=policies,
         base_combos=base_combos,
+        search_depths=search_depths,
+        search_beam_widths=search_beam_widths,
+        search_candidate_limits=search_candidate_limits,
     )
     total_games = len(tasks)
     run_tag = args.label.strip().replace(" ", "_")
@@ -350,7 +530,7 @@ def main() -> int:
     execution_mode = "serial" if args.workers == 1 else "parallel"
 
     print(
-        f"Dataset plan: {len(base_combos)} base combos x {len(policies)} policies x "
+        f"Dataset plan: {len(base_combos)} base combos x {policy_variant_count} policy variants x "
         f"{args.games_per_combo} games = "
         f"{total_games} total",
         file=sys.stderr,
@@ -375,9 +555,8 @@ def main() -> int:
     )
 
     database = RecordDatabase(records=records)
-    anomaly_records, anomaly_counts = collect_greedy_anomalies(records)
+    anomaly_records, anomaly_counts = collect_policy_anomalies(records)
     anomaly_database = RecordDatabase(records=anomaly_records)
-    greedy_record_count = sum(1 for record in records if record.ai_type == GREEDY_LABEL)
 
     json_path = output_dir / f"{base_name}.json"
     _write_database_json(json_path, database)
@@ -401,9 +580,12 @@ def main() -> int:
         "seed_start": args.seed_start,
         "seed_end": seed_end,
         "param_grid": param_grid,
-        "combo_count": len(base_combos) * len(policies),
+        "search_param_grid": search_param_grid,
+        "combo_count": len(base_combos) * policy_variant_count,
         "base_combo_count": len(base_combos),
         "policy_count": len(policies),
+        "policy_variant_count": policy_variant_count,
+        "search_variant_count": search_variant_count,
         "workers": args.workers,
         "chunksize": args.chunksize,
         "execution_mode": execution_mode,
@@ -411,8 +593,13 @@ def main() -> int:
         "total_elapsed_seconds": round(total_elapsed, 3),
         "avg_elapsed_seconds": round(total_elapsed / total_games, 3),
         "anomaly_count": len(anomaly_records),
-        "anomaly_rate": round(len(anomaly_records) / max(greedy_record_count, 1), 4),
+        "anomaly_rate": round(len(anomaly_records) / max(len(records), 1), 4),
+        "common_anomaly_count": anomaly_counts["common_anomaly_count"],
         "negative_score_anomaly_count": anomaly_counts["negative_score_anomaly_count"],
+        "starvation_anomaly_count": anomaly_counts["starvation_anomaly_count"],
+        "greedy_under_random_anomaly_count": anomaly_counts["greedy_under_random_anomaly_count"],
+        "search_under_random_anomaly_count": anomaly_counts["search_under_random_anomaly_count"],
+        "search_under_greedy_anomaly_count": anomaly_counts["search_under_greedy_anomaly_count"],
         "under_random_anomaly_count": anomaly_counts["under_random_anomaly_count"],
         "anomaly_json_path": str(anomaly_json_path),
         "anomaly_csv_path": str(anomaly_csv_path),
