@@ -113,9 +113,7 @@ class GameSession:
             legal_research_tech_count=sum(
                 1 for a in legal_actions if a.action_type is ActionType.RESEARCH_TECH
             ),
-            legal_skip_count=sum(
-                1 for a in legal_actions if a.action_type is ActionType.SKIP
-            ),
+            legal_skip_count=sum(1 for a in legal_actions if a.action_type is ActionType.SKIP),
             policy_context=policy_context,
         )
 

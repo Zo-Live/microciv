@@ -75,14 +75,10 @@ STAGE_FILL = "fill"
 
 ESCAPE_REASON_NEGATIVE_DELTA_STALL = "negative_delta_stall"
 ESCAPE_REASON_SKIP_WITH_MANY_LEGAL_EXPANSIONS = "skip_with_many_legal_expansions"
-ESCAPE_REASON_REPEATED_SKIP_WITHOUT_PRESSURE_RELIEF = (
-    "repeated_skip_without_pressure_relief"
-)
+ESCAPE_REASON_REPEATED_SKIP_WITHOUT_PRESSURE_RELIEF = "repeated_skip_without_pressure_relief"
 
 FILL_REOPEN_REASON_REPEATED_FILL_SKIP = "repeated_fill_skip"
-FILL_REOPEN_REASON_LOW_DELTA_SKIP_WITH_MANY_CITY_OPTIONS = (
-    "low_delta_skip_with_many_city_options"
-)
+FILL_REOPEN_REASON_LOW_DELTA_SKIP_WITH_MANY_CITY_OPTIONS = "low_delta_skip_with_many_city_options"
 FILL_REOPEN_REASON_LATE_GAME_GROWTH_STALL = "late_game_growth_stall"
 
 
@@ -174,11 +170,7 @@ class RescueRecovery:
 
     @property
     def effective(self) -> bool:
-        return (
-            self.starving_delta > 0
-            or self.network_delta > 0
-            or self.isolated_delta > 0
-        )
+        return self.starving_delta > 0 or self.network_delta > 0 or self.isolated_delta > 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -357,8 +349,7 @@ class GreedyPolicy(Policy):
             priority = _priority_label(action)
             if value > best_value or (
                 value == best_value
-                and _action_tiebreak_key(state, action)
-                < _action_tiebreak_key(state, best_action)
+                and _action_tiebreak_key(state, action) < _action_tiebreak_key(state, best_action)
             ):
                 best_action = action
                 best_value = value
@@ -432,9 +423,7 @@ class GreedyPolicy(Policy):
         candidates.extend(catalog.research_actions[:3])
         primary_roads = catalog.road_actions[:10]
         candidates.extend(primary_roads)
-        candidates.extend(
-            _escape_road_actions(state, groups, current_context, primary_roads)[:6]
-        )
+        candidates.extend(_escape_road_actions(state, groups, current_context, primary_roads)[:6])
         candidates.extend(groups.get(ActionType.SKIP, [])[:1])
         return _dedupe_actions(candidates)
 
@@ -537,10 +526,13 @@ class GreedyPolicy(Policy):
             )
             return
 
-        if _inland_share(
-            profile.connected_city_count,
-            profile.connected_inland_count,
-        ) < TARGET_INLAND_SHARE:
+        if (
+            _inland_share(
+                profile.connected_city_count,
+                profile.connected_inland_count,
+            )
+            < TARGET_INLAND_SHARE
+        ):
             candidates.extend(
                 _stage_filter_city_actions(
                     state,
@@ -642,12 +634,10 @@ class GreedyPolicy(Policy):
             future.breakdown_building_utilization - profile.breakdown_building_utilization
         ) * 18
         value += (
-            profile.breakdown_building_mismatch_penalty
-            - future.breakdown_building_mismatch_penalty
+            profile.breakdown_building_mismatch_penalty - future.breakdown_building_mismatch_penalty
         ) * 14
         value += (
-            future.breakdown_city_composition_bonus
-            - profile.breakdown_city_composition_bonus
+            future.breakdown_city_composition_bonus - profile.breakdown_city_composition_bonus
         ) * 10
         value += max(0, profile.pressure - future.pressure) * 36
         value -= max(0, -future_resources.food) * 18
@@ -988,9 +978,8 @@ class GreedyPolicy(Policy):
                 value -= 1200
             if future.network_count > profile.network_count:
                 value -= 520
-            if (
-                not bootstrap_expansion
-                and (rescue_recovery is None or not rescue_recovery.effective)
+            if not bootstrap_expansion and (
+                rescue_recovery is None or not rescue_recovery.effective
             ):
                 value -= 1200
             else:
@@ -1006,11 +995,7 @@ class GreedyPolicy(Policy):
         elif stage == STAGE_FILL and future_budget is not None and future_budget.city_count == 1:
             value -= 220
 
-        if (
-            stage == STAGE_EXPAND_REOPEN
-            and site_quality >= 80
-            and site_budget.food_balance >= 1
-        ):
+        if stage == STAGE_EXPAND_REOPEN and site_quality >= 80 and site_budget.food_balance >= 1:
             value += 120
 
         if profile.infrastructure_gap > 0:
@@ -1207,11 +1192,7 @@ def _build_candidate_catalog(
     context: HeuristicContext,
 ) -> CandidateCatalog:
     city_actions = sorted(
-        (
-            action
-            for action in groups.get(ActionType.BUILD_CITY, [])
-            if action.coord is not None
-        ),
+        (action for action in groups.get(ActionType.BUILD_CITY, []) if action.coord is not None),
         key=lambda action: (
             -city_site_score_for_context(context, _action_coord(action)),
             _action_coord(action),
@@ -1391,9 +1372,7 @@ def _history_signals(state: GameState, profile: GreedyStateProfile) -> HistorySi
     recent_starving = [
         _context_int(context, "greedy_starving_networks") for context in recent_three
     ]
-    recent_pressures = [
-        _context_int(context, "greedy_food_pressure") for context in recent_three
-    ]
+    recent_pressures = [_context_int(context, "greedy_food_pressure") for context in recent_three]
     valid_starving = [value for value in recent_starving if value is not None]
     valid_pressures = [value for value in recent_pressures if value is not None]
     food_rescue_stalled = (
@@ -1408,8 +1387,7 @@ def _history_signals(state: GameState, profile: GreedyStateProfile) -> HistorySi
     negative_delta_stall = (
         len(recent_three) == 3
         and all(
-            (_context_int(context, "greedy_best_delta_score") or 0) < 0
-            for context in recent_three
+            (_context_int(context, "greedy_best_delta_score") or 0) < 0 for context in recent_three
         )
         and len(valid_starving) == len(recent_three)
         and min(valid_starving) >= profile.starving_network_count
@@ -1549,11 +1527,7 @@ def _city_action_allowed_in_stage(
                 and connection_steps <= 3
                 and site_budget.food_balance >= 0
             )
-            or (
-                connection_steps is not None
-                and connection_steps <= 4
-                and site_value >= 120
-            )
+            or (connection_steps is not None and connection_steps <= 4 and site_value >= 120)
         )
     if stage == STAGE_RESCUE:
         return immediate_connection or (
@@ -1685,10 +1659,7 @@ def _priority_label(action: Action) -> str:
         and action.building_type is BuildingType.FARM
     ):
         return "food_rescue"
-    if (
-        action.action_type is ActionType.RESEARCH_TECH
-        and action.tech_type is TechType.AGRICULTURE
-    ):
+    if action.action_type is ActionType.RESEARCH_TECH and action.tech_type is TechType.AGRICULTURE:
         return "food_rescue"
     if action.action_type is ActionType.BUILD_ROAD:
         return "connective_road"
@@ -1732,8 +1703,7 @@ def _is_river_adjacent_site(
     if context is not None:
         return context_is_river_adjacent_site(context, coord)
     return any(
-        (tile := state.board.get(neighbor)) is not None
-        and tile.base_terrain is TerrainType.RIVER
+        (tile := state.board.get(neighbor)) is not None and tile.base_terrain is TerrainType.RIVER
         for neighbor in cardinal_neighbors(coord)
     )
 
@@ -1880,8 +1850,7 @@ def _has_missing_unlocked_buildings(
     context: HeuristicContext | None = None,
 ) -> bool:
     return any(
-        _network_missing_building_types(state, network_id, context)
-        for network_id in state.networks
+        _network_missing_building_types(state, network_id, context) for network_id in state.networks
     )
 
 
@@ -1898,8 +1867,7 @@ def _network_missing_building_types(
     for tech_type in network.unlocked_techs:
         building_type = TECH_UNLOCK_PRIORITY_TO_BUILDING[tech_type]
         total = sum(
-            state.cities[city_id].buildings.for_type(building_type)
-            for city_id in network.city_ids
+            state.cities[city_id].buildings.for_type(building_type) for city_id in network.city_ids
         )
         if total == 0:
             missing.add(building_type)
@@ -1929,17 +1897,16 @@ def _road_structure_score(
         else map_passable_coords_to_networks(state)
     )
     adjacent_network_ids = {
-        passable_map[neighbor]
-        for neighbor in cardinal_neighbors(coord)
-        if neighbor in passable_map
+        passable_map[neighbor] for neighbor in cardinal_neighbors(coord) if neighbor in passable_map
     }
     if adjacent_network_ids:
         structural_score += 2
     if len(adjacent_network_ids) >= 2:
-        structural_score += 4 + sum(
-            len(state.networks[network_id].city_ids)
-            for network_id in adjacent_network_ids
-        ) // 2
+        structural_score += (
+            4
+            + sum(len(state.networks[network_id].city_ids) for network_id in adjacent_network_ids)
+            // 2
+        )
     if any(len(state.networks[network_id].city_ids) == 1 for network_id in adjacent_network_ids):
         structural_score += 3
     for neighbor in moore_neighbors(coord):
@@ -2000,9 +1967,7 @@ def _escape_road_distance(
 ) -> int:
     passable_map = context_passable_network_map(context)
     adjacent_network_ids = {
-        passable_map[neighbor]
-        for neighbor in cardinal_neighbors(coord)
-        if neighbor in passable_map
+        passable_map[neighbor] for neighbor in cardinal_neighbors(coord) if neighbor in passable_map
     }
     return min(
         (

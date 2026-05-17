@@ -60,12 +60,8 @@ def _parse_args() -> argparse.Namespace:
         choices=["greedy", "random"],
         help="AI policy to use (default: greedy).",
     )
-    parser.add_argument(
-        "--map-size", type=int, default=16, help="Map size (default: 16)."
-    )
-    parser.add_argument(
-        "--turn-limit", type=int, default=80, help="Turn limit (default: 80)."
-    )
+    parser.add_argument("--map-size", type=int, default=16, help="Map size (default: 16).")
+    parser.add_argument("--turn-limit", type=int, default=80, help="Turn limit (default: 80).")
     parser.add_argument(
         "--map-difficulty",
         type=str,

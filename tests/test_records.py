@@ -112,9 +112,7 @@ def test_record_store_resets_schema_version_3(tmp_path) -> None:
 def test_record_store_resets_missing_top_level_fields(tmp_path) -> None:
     records_path = tmp_path / "data" / "records.json"
     records_path.parent.mkdir(parents=True, exist_ok=True)
-    records_path.write_text(
-        json.dumps({"records": []}), encoding="utf-8"
-    )
+    records_path.write_text(json.dumps({"records": []}), encoding="utf-8")
 
     database = RecordStore(records_path).load()
 

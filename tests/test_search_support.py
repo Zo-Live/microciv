@@ -28,12 +28,9 @@ def test_search_candidates_are_legal_stable_and_mixed() -> None:
         candidate.action for candidate in repeated.candidates
     ]
     assert all(
-        validate_action(state, candidate.action).is_valid
-        for candidate in candidate_set.candidates
+        validate_action(state, candidate.action).is_valid for candidate in candidate_set.candidates
     )
-    assert {
-        candidate.action_type for candidate in candidate_set.candidates
-    } == {
+    assert {candidate.action_type for candidate in candidate_set.candidates} == {
         ActionType.BUILD_CITY,
         ActionType.BUILD_ROAD,
         ActionType.BUILD_BUILDING,

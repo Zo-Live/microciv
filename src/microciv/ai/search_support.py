@@ -110,8 +110,7 @@ def generate_search_candidates(
     scored_by_type: dict[ActionType, list[SearchCandidate]] = {}
     for action_type in ActionType:
         scored = [
-            _score_candidate(state, action, context)
-            for action in groups.get(action_type, [])
+            _score_candidate(state, action, context) for action in groups.get(action_type, [])
         ]
         scored_by_type[action_type] = sorted(scored, key=_candidate_sort_key)
 
@@ -247,13 +246,9 @@ def _candidate_sort_key(
     action = candidate.action
     coord = action.coord if action.coord is not None else (10**9, 10**9)
     building_type_order = (
-        _BUILDING_TYPE_ORDER[action.building_type]
-        if action.building_type is not None
-        else 10**9
+        _BUILDING_TYPE_ORDER[action.building_type] if action.building_type is not None else 10**9
     )
-    tech_type_order = (
-        _TECH_TYPE_ORDER[action.tech_type] if action.tech_type is not None else 10**9
-    )
+    tech_type_order = _TECH_TYPE_ORDER[action.tech_type] if action.tech_type is not None else 10**9
     return (
         -candidate.rank_score,
         _ACTION_TYPE_ORDER[action.action_type],

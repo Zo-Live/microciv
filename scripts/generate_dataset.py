@@ -58,9 +58,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-n", "--games-per-combo", type=int, default=10, help="Games per parameter combo."
     )
-    parser.add_argument(
-        "--seed-start", type=int, default=1, help="Global starting seed offset."
-    )
+    parser.add_argument("--seed-start", type=int, default=1, help="Global starting seed offset.")
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -183,9 +181,7 @@ def _build_random_index(
     records: list[RecordEntry],
 ) -> dict[tuple[int, int, int, str], RecordEntry]:
     return {
-        _record_match_key(record): record
-        for record in records
-        if record.ai_type == RANDOM_LABEL
+        _record_match_key(record): record for record in records if record.ai_type == RANDOM_LABEL
     }
 
 
@@ -201,9 +197,7 @@ def collect_greedy_anomalies(
             continue
         random_peer = random_index.get(_record_match_key(record))
         is_negative_score = record.final_score < 0
-        is_under_random = (
-            random_peer is not None and record.final_score < random_peer.final_score
-        )
+        is_under_random = random_peer is not None and record.final_score < random_peer.final_score
         if not is_negative_score and not is_under_random:
             continue
         if is_negative_score:
@@ -376,7 +370,7 @@ def main() -> int:
     total_elapsed = perf_counter() - batch_start
     print(
         f"Dataset complete: {total_games} games in {total_elapsed:.2f}s "
-        f"({total_elapsed/total_games:.3f}s per game)",
+        f"({total_elapsed / total_games:.3f}s per game)",
         file=sys.stderr,
     )
 

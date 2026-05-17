@@ -194,15 +194,11 @@ def test_batch_autoplay_parallel_path_uses_process_pool(monkeypatch, tmp_path) -
     assert [task.seed for task in tasks] == [8, 9, 10]
 
     summary = json.loads(
-        (tmp_path / "random_16_80_normal_8_10_parallel_summary.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "random_16_80_normal_8_10_parallel_summary.json").read_text(encoding="utf-8")
     )
     database = RecordDatabase.from_dict(
         json.loads(
-            (tmp_path / "random_16_80_normal_8_10_parallel.json").read_text(
-                encoding="utf-8"
-            )
+            (tmp_path / "random_16_80_normal_8_10_parallel.json").read_text(encoding="utf-8")
         )
     )
 

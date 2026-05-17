@@ -528,12 +528,8 @@ class RecordDecisionContext:
             legal_actions_count=_require_int(payload, "legal_actions_count"),
             legal_build_city_count=_int_with_default(payload, "legal_build_city_count", 0),
             legal_build_road_count=_int_with_default(payload, "legal_build_road_count", 0),
-            legal_build_building_count=_int_with_default(
-                payload, "legal_build_building_count", 0
-            ),
-            legal_research_tech_count=_int_with_default(
-                payload, "legal_research_tech_count", 0
-            ),
+            legal_build_building_count=_int_with_default(payload, "legal_build_building_count", 0),
+            legal_research_tech_count=_int_with_default(payload, "legal_research_tech_count", 0),
             legal_skip_count=_int_with_default(payload, "legal_skip_count", 0),
             chosen_action_type=_optional_str(payload, "chosen_action_type"),
             greedy_stage=_optional_str(payload, "greedy_stage"),
@@ -624,9 +620,7 @@ class RecordDecisionContext:
         if self.greedy_best_connection_steps is not None:
             result["greedy_best_connection_steps"] = self.greedy_best_connection_steps
         if self.greedy_best_future_network_starving is not None:
-            result["greedy_best_future_network_starving"] = (
-                self.greedy_best_future_network_starving
-            )
+            result["greedy_best_future_network_starving"] = self.greedy_best_future_network_starving
         if self.greedy_score_breakdown:
             result["greedy_score_breakdown"] = self.greedy_score_breakdown
         if self.greedy_best_site_budget:
@@ -749,15 +743,12 @@ class RecordEntry:
             cities=_city_snapshots(state),
             roads=_road_snapshots(state),
             networks=_network_snapshots(state),
-            action_log=[
-                RecordActionLogEntry.from_dict(item) for item in state.stats.action_log
-            ],
+            action_log=[RecordActionLogEntry.from_dict(item) for item in state.stats.action_log],
             turn_snapshots=[
                 RecordTurnSnapshot.from_dict(item) for item in state.stats.turn_snapshots
             ],
             decision_contexts=[
-                RecordDecisionContext.from_dict(item)
-                for item in state.stats.decision_contexts
+                RecordDecisionContext.from_dict(item) for item in state.stats.decision_contexts
             ],
         )
 
@@ -813,17 +804,12 @@ class RecordEntry:
             turn_elapsed_ms_max=_require_float(payload, "turn_elapsed_ms_max"),
             session_elapsed_ms=_require_float(payload, "session_elapsed_ms"),
             final_map=[
-                RecordTileSnapshot.from_dict(item)
-                for item in _list_of_dicts(payload, "final_map")
+                RecordTileSnapshot.from_dict(item) for item in _list_of_dicts(payload, "final_map")
             ],
             cities=[
-                RecordCitySnapshot.from_dict(item)
-                for item in _list_of_dicts(payload, "cities")
+                RecordCitySnapshot.from_dict(item) for item in _list_of_dicts(payload, "cities")
             ],
-            roads=[
-                RecordRoadSnapshot.from_dict(item)
-                for item in _list_of_dicts(payload, "roads")
-            ],
+            roads=[RecordRoadSnapshot.from_dict(item) for item in _list_of_dicts(payload, "roads")],
             networks=[
                 RecordNetworkSnapshot.from_dict(item)
                 for item in _list_of_dicts(payload, "networks")

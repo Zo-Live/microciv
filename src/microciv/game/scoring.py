@@ -153,9 +153,7 @@ def total_resources(state: GameState) -> ResourcePool:
 
 def connected_city_count(state: GameState) -> int:
     return sum(
-        len(network.city_ids)
-        for network in state.networks.values()
-        if len(network.city_ids) >= 2
+        len(network.city_ids) for network in state.networks.values() if len(network.city_ids) >= 2
     )
 
 
@@ -221,9 +219,7 @@ def river_access_score(state: GameState) -> int:
 
 def city_composition_bonus(state: GameState) -> int:
     connected_cities = [
-        city
-        for city in state.cities.values()
-        if len(state.networks[city.network_id].city_ids) >= 2
+        city for city in state.cities.values() if len(state.networks[city.network_id].city_ids) >= 2
     ]
     connected_count = len(connected_cities)
     if connected_count < SCORE_CITY_COMPOSITION_CONNECTED_MIN:
@@ -248,10 +244,7 @@ def _library_science_bonus(state: GameState) -> int:
     for network in state.networks.values():
         if len(network.unlocked_techs) < len(TechType):
             continue
-        library_count = sum(
-            state.cities[city_id].buildings.library
-            for city_id in network.city_ids
-        )
+        library_count = sum(state.cities[city_id].buildings.library for city_id in network.city_ids)
         if library_count <= 0:
             continue
         product = max(1, network.resources.science * library_count)
@@ -265,9 +258,7 @@ def largest_network_size(state: GameState) -> int:
 
 def isolated_city_count(state: GameState) -> int:
     return sum(
-        len(network.city_ids)
-        for network in state.networks.values()
-        if len(network.city_ids) == 1
+        len(network.city_ids) for network in state.networks.values() if len(network.city_ids) == 1
     )
 
 
@@ -374,8 +365,7 @@ def _river_component_access_score(adjacent_city_count: int) -> int:
 
 def _is_river_adjacent(state: GameState, coord: Coord) -> bool:
     return any(
-        (tile := state.board.get(neighbor)) is not None
-        and tile.base_terrain is TerrainType.RIVER
+        (tile := state.board.get(neighbor)) is not None and tile.base_terrain is TerrainType.RIVER
         for neighbor in cardinal_neighbors(coord)
     )
 
@@ -400,8 +390,7 @@ def _network_building_count(
     building_type: BuildingType,
 ) -> int:
     return sum(
-        state.cities[city_id].buildings.for_type(building_type)
-        for city_id in network.city_ids
+        state.cities[city_id].buildings.for_type(building_type) for city_id in network.city_ids
     )
 
 

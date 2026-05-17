@@ -116,9 +116,7 @@ def _build_random_index(
     records: list[RecordEntry],
 ) -> dict[tuple[int, int, int, str], RecordEntry]:
     return {
-        _record_match_key(record): record
-        for record in records
-        if record.ai_type == RANDOM_LABEL
+        _record_match_key(record): record for record in records if record.ai_type == RANDOM_LABEL
     }
 
 
@@ -206,9 +204,8 @@ def summarize_record_anomaly(
     score_drop_turns, worst_score_drop = _score_drop_metrics(record)
     connected_cities, largest_network_size = _connected_city_metrics(record)
     tail_actions = record.action_log[-TAIL_WINDOW:]
-    tail_skip_ratio = (
-        sum(1 for action in tail_actions if action.action_type == "skip")
-        / max(len(tail_actions), 1)
+    tail_skip_ratio = sum(1 for action in tail_actions if action.action_type == "skip") / max(
+        len(tail_actions), 1
     )
     greedy_contexts = [context for context in record.decision_contexts if context.greedy_stage]
     food_pressures = [
@@ -280,16 +277,12 @@ def summarize_record_anomaly(
             greedy_contexts,
             lambda context: context.greedy_stage == "rescue",
         ),
-        "avg_food_pressure": (
-            sum(food_pressures) / len(food_pressures) if food_pressures else 0.0
-        ),
+        "avg_food_pressure": (sum(food_pressures) / len(food_pressures) if food_pressures else 0.0),
         "max_starving_networks_seen": max(
             (snapshot.starving_network_count for snapshot in record.turn_snapshots),
             default=0,
         ),
-        "final_starving_network_count": sum(
-            1 for network in record.networks if network.food <= 0
-        ),
+        "final_starving_network_count": sum(1 for network in record.networks if network.food <= 0),
         "final_largest_network_size": largest_network_size,
         "final_connected_city_ratio": connected_cities / max(record.city_count, 1),
         "late_game_no_growth_streak": _late_game_no_growth_streak(record),
@@ -616,9 +609,7 @@ def build_map_df(records: list[RecordEntry]) -> pd.DataFrame:
                 turns += 1
 
         total = len(record.final_map) or 1
-        buildable = (
-            terrain_counts["plain"] + terrain_counts["forest"] + terrain_counts["mountain"]
-        )
+        buildable = terrain_counts["plain"] + terrain_counts["forest"] + terrain_counts["mountain"]
         rows.append(
             {
                 "ai_type": record.ai_type,
@@ -834,8 +825,7 @@ def render_anomaly_case(case: dict[str, object]) -> list[str]:
 def generate_report(records: list[RecordEntry]) -> str:
     if pd is None:  # pragma: no cover - depends on local optional deps
         raise RuntimeError(
-            "scripts/analyze_batch.py requires pandas and tabulate. "
-            "Install dev dependencies first."
+            "scripts/analyze_batch.py requires pandas and tabulate. Install dev dependencies first."
         ) from PANDAS_IMPORT_ERROR
     macro_df = build_macro_df(records)
     score_df = build_score_breakdown_df(records)
@@ -855,9 +845,7 @@ def generate_report(records: list[RecordEntry]) -> str:
                 "map_size_count": macro_df["map_size"].nunique(),
                 "turn_limit_count": macro_df["turn_limit"].nunique(),
                 "difficulty_count": macro_df["map_difficulty"].nunique(),
-                "config_count": macro_df[
-                    ["ai_type", "map_size", "turn_limit", "map_difficulty"]
-                ]
+                "config_count": macro_df[["ai_type", "map_size", "turn_limit", "map_difficulty"]]
                 .drop_duplicates()
                 .shape[0],
             }
@@ -1067,13 +1055,12 @@ def generate_report(records: list[RecordEntry]) -> str:
                 "avg_starvation_turns",
                 "avg_longest_starvation_streak",
             ]
-            anomaly_config_summary[fill_zero_cols] = anomaly_config_summary[
-                fill_zero_cols
-            ].fillna(0)
-            anomaly_config_summary["anomaly_rate"] = (
-                anomaly_config_summary["anomaly_count"]
-                / anomaly_config_summary["greedy_samples"].clip(lower=1)
+            anomaly_config_summary[fill_zero_cols] = anomaly_config_summary[fill_zero_cols].fillna(
+                0
             )
+            anomaly_config_summary["anomaly_rate"] = anomaly_config_summary[
+                "anomaly_count"
+            ] / anomaly_config_summary["greedy_samples"].clip(lower=1)
             anomaly_config_summary = anomaly_config_summary.sort_values(
                 ["anomaly_rate", "avg_score_gap", "map_size", "turn_limit", "map_difficulty"],
                 ascending=[False, True, True, True, True],

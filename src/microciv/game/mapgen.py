@@ -661,11 +661,7 @@ class MapGenerator:
     ) -> Coord:
         primary_index = round(max(0.0, min(1.0, primary)) * (map_size - 1))
         secondary_index = round(max(0.0, min(1.0, secondary)) * (map_size - 1))
-        return (
-            (primary_index, secondary_index)
-            if horizontal
-            else (secondary_index, primary_index)
-        )
+        return (primary_index, secondary_index) if horizontal else (secondary_index, primary_index)
 
     def _edge_coord(self, *, map_size: int, edge: str, position: float) -> Coord:
         index = round(max(0.0, min(1.0, position)) * (map_size - 1))
@@ -829,8 +825,7 @@ class MapGenerator:
         horizontal: bool,
     ) -> dict[int, float]:
         axis_points = sorted(
-            (point[0], point[1]) if horizontal else (point[1], point[0])
-            for point in control_points
+            (point[0], point[1]) if horizontal else (point[1], point[0]) for point in control_points
         )
         target_curve: dict[int, float] = {}
 
@@ -886,9 +881,7 @@ class MapGenerator:
                 ):
                     continue
                 overlap_penalty = (
-                    5
-                    if neighbor in occupied_rivers and neighbor not in {start, end}
-                    else 0
+                    5 if neighbor in occupied_rivers and neighbor not in {start, end} else 0
                 )
                 next_cost = cost_so_far[current] + 1 + overlap_penalty
                 if neighbor not in cost_so_far or next_cost < cost_so_far[neighbor]:

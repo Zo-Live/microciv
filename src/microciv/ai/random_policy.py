@@ -176,10 +176,7 @@ class RandomPolicy(Policy):
                 if action.tech_type is not None:
                     base *= (
                         1.0
-                        + (
-                            len(TECH_UNLOCK_PRIORITY)
-                            - TECH_UNLOCK_PRIORITY.index(action.tech_type)
-                        )
+                        + (len(TECH_UNLOCK_PRIORITY) - TECH_UNLOCK_PRIORITY.index(action.tech_type))
                         * 0.05
                     )
                     if action.tech_type is TechType.AGRICULTURE:

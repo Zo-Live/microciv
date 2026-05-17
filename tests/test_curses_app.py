@@ -208,10 +208,7 @@ def test_app_mouse_dispatch_uses_rendered_hitboxes_and_wheel(tmp_path: Path) -> 
 
     app.controller.current_route = ScreenRoute.RECORDS_GRID
     app.controller.records = RecordDatabase(
-        records=[
-            make_record(idx, f"2026-04-09T{idx:02d}:00:00+08:00")
-            for idx in range(1, 14)
-        ]
+        records=[make_record(idx, f"2026-04-09T{idx:02d}:00:00+08:00") for idx in range(1, 14)]
     )
     app._handle_mouse(0, 0, getattr(curses, "BUTTON5_PRESSED", 0))
     assert app.controller.records_scroll == 1

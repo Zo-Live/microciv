@@ -140,9 +140,7 @@ def resource_ring_bonus_for_context(context: HeuristicContext, coord: Coord) -> 
         forest_neighbors * min(wood_shortage, 18) * 4
         + mountain_neighbors * min(ore_shortage, 16) * 5
     )
-    river_bonus = river_neighbors * (
-        8 + min(food_pressure, 12) + science_need // 2
-    )
+    river_bonus = river_neighbors * (8 + min(food_pressure, 12) + science_need // 2)
     mix = min(forest_neighbors, mountain_neighbors)
     mixed_bonus = 0
     if resource_neighbors >= 4 and occupied_neighbors <= 4:
@@ -249,9 +247,8 @@ def city_site_score_for_context(context: HeuristicContext, coord: Coord) -> int:
         terrain_bias += max(0, 4 - terrain_counts[TerrainType.MOUNTAIN]) * 60
         terrain_bias += 36 if food >= FOOD_CONSUMPTION_PER_CITY + 1 else -30
     elif center_tile.base_terrain is TerrainType.PLAIN:
-        if (
-            resources.food >= len(state.cities) * FOOD_CONSUMPTION_PER_CITY * 4
-            and (wood_shortage >= 8 or ore_shortage >= 6)
+        if resources.food >= len(state.cities) * FOOD_CONSUMPTION_PER_CITY * 4 and (
+            wood_shortage >= 8 or ore_shortage >= 6
         ):
             terrain_bias -= min(140, max(wood_shortage * 5, ore_shortage * 6))
         if food_pressure >= 8:
@@ -345,10 +342,7 @@ def road_site_score_for_context(context: HeuristicContext, coord: Coord) -> int:
         1
         for neighbor in cardinal_neighbors(coord)
         if (tile := state.board.get(neighbor)) is not None
-        and (
-            tile.occupant.value in {"city", "road"}
-            or tile.base_terrain is TerrainType.RIVER
-        )
+        and (tile.occupant.value in {"city", "road"} or tile.base_terrain is TerrainType.RIVER)
     )
     merge_sizes = sorted(
         (len(state.networks[network_id].city_ids) for network_id in adjacent_network_ids),
@@ -373,9 +367,11 @@ def road_site_score_for_context(context: HeuristicContext, coord: Coord) -> int:
     resource_frontier = 0
     for neighbor in moore_neighbors(coord):
         tile = state.board.get(neighbor)
-        if tile is not None and tile.occupant is OccupantType.NONE and tile.base_terrain in {
-            TerrainType.FOREST, TerrainType.MOUNTAIN
-        }:
+        if (
+            tile is not None
+            and tile.occupant is OccupantType.NONE
+            and tile.base_terrain in {TerrainType.FOREST, TerrainType.MOUNTAIN}
+        ):
             resource_frontier += 1
     frontier_bonus = resource_frontier * 22
     if resource_frontier >= 4:
@@ -601,9 +597,7 @@ def resource_ring_bonus(state: GameState, coord: Coord) -> int:
         forest_neighbors * min(wood_shortage, 18) * 4
         + mountain_neighbors * min(ore_shortage, 16) * 5
     )
-    river_bonus = river_neighbors * (
-        8 + min(food_pressure, 12) + science_need // 2
-    )
+    river_bonus = river_neighbors * (8 + min(food_pressure, 12) + science_need // 2)
     mix = min(forest_neighbors, mountain_neighbors)
     mixed_bonus = 0
     if resource_neighbors >= 4 and occupied_neighbors <= 4:
@@ -704,9 +698,8 @@ def city_site_score(state: GameState, coord: Coord) -> int:
         terrain_bias += max(0, 4 - terrain_counts[TerrainType.MOUNTAIN]) * 60
         terrain_bias += 36 if food >= FOOD_CONSUMPTION_PER_CITY + 1 else -30
     elif center_tile.base_terrain is TerrainType.PLAIN:
-        if (
-            resources.food >= len(state.cities) * FOOD_CONSUMPTION_PER_CITY * 4
-            and (wood_shortage >= 8 or ore_shortage >= 6)
+        if resources.food >= len(state.cities) * FOOD_CONSUMPTION_PER_CITY * 4 and (
+            wood_shortage >= 8 or ore_shortage >= 6
         ):
             terrain_bias -= min(140, max(wood_shortage * 5, ore_shortage * 6))
         if food_pressure >= 8:
@@ -790,10 +783,7 @@ def road_site_score(state: GameState, coord: Coord) -> int:
         1
         for neighbor in cardinal_neighbors(coord)
         if (tile := state.board.get(neighbor)) is not None
-        and (
-            tile.occupant.value in {"city", "road"}
-            or tile.base_terrain is TerrainType.RIVER
-        )
+        and (tile.occupant.value in {"city", "road"} or tile.base_terrain is TerrainType.RIVER)
     )
     merge_sizes = sorted(
         (len(state.networks[network_id].city_ids) for network_id in adjacent_network_ids),
@@ -818,9 +808,11 @@ def road_site_score(state: GameState, coord: Coord) -> int:
     resource_frontier = 0
     for neighbor in moore_neighbors(coord):
         tile = state.board.get(neighbor)
-        if tile is not None and tile.occupant is OccupantType.NONE and tile.base_terrain in {
-            TerrainType.FOREST, TerrainType.MOUNTAIN
-        }:
+        if (
+            tile is not None
+            and tile.occupant is OccupantType.NONE
+            and tile.base_terrain in {TerrainType.FOREST, TerrainType.MOUNTAIN}
+        ):
             resource_frontier += 1
     frontier_bonus = resource_frontier * 22
     if resource_frontier >= 4:
@@ -857,10 +849,7 @@ def building_action_score(state: GameState, action: Action) -> int:
     available_slots = max(0, BUILDING_LIMIT_PER_CITY - city.total_buildings)
     score = 40 + shortage + (available_slots * 3) - (same_building * 5)
     if action.building_type is BuildingType.FARM:
-        needs_food = (
-            network.resources.food
-            <= len(network.city_ids) * FOOD_CONSUMPTION_PER_CITY * 2
-        )
+        needs_food = network.resources.food <= len(network.city_ids) * FOOD_CONSUMPTION_PER_CITY * 2
         score += 35 if needs_food else 10
     elif action.building_type is BuildingType.LIBRARY:
         if len(network.unlocked_techs) < len(TechType):
