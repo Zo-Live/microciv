@@ -427,10 +427,16 @@ def build_search_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataF
         "search_max_depth",
         "search_beam_width",
         "search_candidate_limit",
+        "search_root_candidate_build_city_count",
+        "search_root_candidate_build_road_count",
+        "search_root_candidate_build_building_count",
+        "search_root_candidate_research_tech_count",
+        "search_root_candidate_skip_count",
         "search_nodes_expanded",
         "search_candidates_considered",
         "search_leaf_count",
         "search_best_value",
+        "search_sequence_adjustment",
         "search_best_score_total",
         "search_best_starving_network_count",
         "search_best_food_pressure",
@@ -439,8 +445,72 @@ def build_search_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataF
         "search_best_isolated_city_count",
         "search_sequence_length",
     ]
+    value_cols.extend(
+        column for column in search_df.columns if str(column).startswith("search_value_")
+    )
     value_cols = [column for column in value_cols if column in search_df]
     return _summary_table(search_df, ["policy_variant"], value_cols)
+
+
+def build_search_mode_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataFrame:
+    if decision_df.empty or "search_mode" not in decision_df:
+        return pd.DataFrame()
+    search_df = decision_df[
+        decision_df.get("search_mode", pd.Series(dtype=object)).fillna("") != ""
+    ].copy()
+    if search_df.empty:
+        return pd.DataFrame()
+
+    numeric_cols = [
+        "search_depth",
+        "search_root_candidate_build_city_count",
+        "search_root_candidate_build_road_count",
+        "search_root_candidate_build_building_count",
+        "search_root_candidate_research_tech_count",
+        "search_root_candidate_skip_count",
+        "search_sequence_adjustment",
+        "search_best_value",
+    ]
+    for column in numeric_cols:
+        if column not in search_df:
+            search_df[column] = 0
+
+    rows: list[dict[str, object]] = []
+    for (policy_variant, search_mode), group in search_df.groupby(
+        ["policy_variant", "search_mode"],
+        dropna=False,
+    ):
+        total = len(group)
+        chosen_counts = Counter(group["chosen_action_type"])
+        rows.append(
+            {
+                "policy_variant": policy_variant,
+                "search_mode": search_mode,
+                "samples": total,
+                "chosen_city_pct": chosen_counts["build_city"] / total * 100,
+                "chosen_road_pct": chosen_counts["build_road"] / total * 100,
+                "chosen_building_pct": chosen_counts["build_building"] / total * 100,
+                "chosen_tech_pct": chosen_counts["research_tech"] / total * 100,
+                "chosen_skip_pct": chosen_counts["skip"] / total * 100,
+                "search_depth_mean": _metric_mean(group, "search_depth"),
+                "candidate_city_mean": _metric_mean(
+                    group, "search_root_candidate_build_city_count"
+                ),
+                "candidate_road_mean": _metric_mean(
+                    group, "search_root_candidate_build_road_count"
+                ),
+                "candidate_building_mean": _metric_mean(
+                    group, "search_root_candidate_build_building_count"
+                ),
+                "candidate_tech_mean": _metric_mean(
+                    group, "search_root_candidate_research_tech_count"
+                ),
+                "candidate_skip_mean": _metric_mean(group, "search_root_candidate_skip_count"),
+                "sequence_adjustment_mean": _metric_mean(group, "search_sequence_adjustment"),
+                "best_value_mean": _metric_mean(group, "search_best_value"),
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["policy_variant", "search_mode"])
 
 
 def build_search_depth_reason_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataFrame:
@@ -1164,6 +1234,7 @@ def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
 
     stage_summary = build_stage_summary_from_decision_df(decision_df)
     search_summary = build_search_summary_from_decision_df(decision_df)
+    search_mode_summary = build_search_mode_summary_from_decision_df(decision_df)
     search_depth_reason_summary = build_search_depth_reason_summary_from_decision_df(decision_df)
     search_matchup_summary = build_search_matchup_summary_from_macro_df(macro_df)
     anomaly_df = build_policy_anomaly_df_from_macro(macro_df)
@@ -1399,7 +1470,11 @@ def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
         "",
         make_table(search_depth_reason_summary),
         "",
-        "### 7.3 Search Same-Map Matchup Summary",
+        "### 7.3 Search Mode Summary",
+        "",
+        make_table(search_mode_summary),
+        "",
+        "### 7.4 Search Same-Map Matchup Summary",
         "",
         make_table(search_matchup_summary),
         "",
@@ -1473,6 +1548,7 @@ def generate_report(records: list[RecordEntry]) -> str:
     decision_df = build_decision_context_df(records)
     stage_df = build_stage_summary_from_decision_df(decision_df)
     search_summary = build_search_summary_from_decision_df(decision_df)
+    search_mode_summary = build_search_mode_summary_from_decision_df(decision_df)
     search_depth_reason_summary = build_search_depth_reason_summary_from_decision_df(decision_df)
     search_matchup_summary = build_search_matchup_summary_from_macro_df(macro_df)
     map_df = build_map_df(records)
@@ -1689,7 +1765,11 @@ def generate_report(records: list[RecordEntry]) -> str:
         "",
         make_table(search_depth_reason_summary),
         "",
-        "### 7.3 Search Same-Map Matchup Summary",
+        "### 7.3 Search Mode Summary",
+        "",
+        make_table(search_mode_summary),
+        "",
+        "### 7.4 Search Same-Map Matchup Summary",
         "",
         make_table(search_matchup_summary),
         "",

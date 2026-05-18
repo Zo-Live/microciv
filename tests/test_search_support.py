@@ -18,6 +18,7 @@ from microciv.game.models import City, GameConfig, GameState, Network, ResourceP
 
 def test_search_candidates_are_legal_stable_and_mixed() -> None:
     state = _mixed_action_state()
+    state.turn = state.config.turn_limit - 2
     config = SearchCandidateConfig(candidate_limit=5)
 
     candidate_set = generate_search_candidates(state, config)
@@ -39,6 +40,17 @@ def test_search_candidates_are_legal_stable_and_mixed() -> None:
     }
     assert candidate_set.legal_action_count >= len(candidate_set.candidates)
     assert candidate_set.legal_counts_by_type[ActionType.SKIP] == 1
+    assert candidate_set.candidate_counts_by_type[ActionType.SKIP] == 1
+
+
+def test_search_candidates_do_not_reserve_skip_early_when_actions_exist() -> None:
+    state = _mixed_action_state()
+
+    candidate_set = generate_search_candidates(state, SearchCandidateConfig(candidate_limit=5))
+
+    assert candidate_set.profile.mode == "expand"
+    assert candidate_set.legal_counts_by_type[ActionType.SKIP] == 1
+    assert ActionType.SKIP not in {candidate.action_type for candidate in candidate_set.candidates}
 
 
 def test_search_candidate_limit_one_skips_skip_when_other_actions_exist() -> None:
@@ -64,9 +76,7 @@ def test_search_candidate_limit_one_returns_skip_when_only_skip_is_legal() -> No
 def test_search_city_candidates_prefer_food_safe_site_over_risky_resource_site() -> None:
     state = GameState.empty(GameConfig.for_play())
     state.board = {
-        (row, col): Tile(base_terrain=TerrainType.FOREST)
-        for row in range(5)
-        for col in range(5)
+        (row, col): Tile(base_terrain=TerrainType.FOREST) for row in range(5) for col in range(5)
     }
     for coord in [(3, 3), (3, 4), (4, 3), (4, 4)]:
         state.board[coord] = Tile(base_terrain=TerrainType.PLAIN)
@@ -82,6 +92,18 @@ def test_search_city_candidates_prefer_food_safe_site_over_risky_resource_site()
     }
 
     assert city_candidates[(4, 4)].rank_score > city_candidates[(0, 0)].rank_score
+
+
+def test_search_expand_mode_preserves_safe_city_candidates() -> None:
+    state = _mixed_action_state()
+    candidate_set = generate_search_candidates(state, SearchCandidateConfig(candidate_limit=8))
+
+    counts = candidate_set.candidate_counts_by_type
+
+    assert candidate_set.profile.mode == "expand"
+    assert counts[ActionType.BUILD_CITY] >= 3
+    assert counts[ActionType.BUILD_CITY] > counts[ActionType.BUILD_BUILDING]
+    assert counts[ActionType.BUILD_CITY] > counts[ActionType.RESEARCH_TECH]
 
 
 def test_budget_helpers_report_site_and_future_network_budget() -> None:

@@ -286,16 +286,29 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         legal_research_tech_count=1,
         legal_skip_count=1,
         chosen_action_type="build_city",
+        search_mode="expand",
         search_depth=2,
         search_base_depth=2,
         search_max_depth=2,
         search_depth_reason="fixed",
         search_beam_width=3,
         search_candidate_limit=5,
+        search_root_legal_build_city_count=4,
+        search_root_legal_build_road_count=1,
+        search_root_legal_build_building_count=0,
+        search_root_legal_research_tech_count=1,
+        search_root_legal_skip_count=1,
+        search_root_candidate_build_city_count=3,
+        search_root_candidate_build_road_count=1,
+        search_root_candidate_build_building_count=0,
+        search_root_candidate_research_tech_count=1,
+        search_root_candidate_skip_count=0,
         search_nodes_expanded=4,
         search_candidates_considered=11,
         search_leaf_count=9,
         search_best_value=12345,
+        search_value_components={"score_total": 1000, "expansion_deficit_penalty": -200},
+        search_sequence_adjustment=2500,
         search_best_score_total=321,
         search_best_connected_city_count=2,
         search_best_isolated_city_count=0,
@@ -321,9 +334,14 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     restored = RecordDecisionContext.from_dict(context.to_dict())
 
     assert restored.search_depth == 2
+    assert restored.search_mode == "expand"
     assert restored.search_depth_reason == "fixed"
+    assert restored.search_root_candidate_build_city_count == 3
+    assert restored.search_root_candidate_skip_count == 0
     assert restored.search_nodes_expanded == 4
     assert restored.search_best_value == 12345
+    assert restored.search_value_components["score_total"] == 1000
+    assert restored.search_sequence_adjustment == 2500
     assert restored.search_best_score_total == 321
     assert restored.search_best_connected_city_count == 2
     assert restored.search_best_total_food == 42

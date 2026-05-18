@@ -557,16 +557,29 @@ class RecordDecisionContext:
     greedy_best_site_budget: dict[str, int] = field(default_factory=dict)
     greedy_best_future_network_budget: dict[str, int] = field(default_factory=dict)
     random_type_weights: dict[str, float] = field(default_factory=dict)
+    search_mode: str | None = None
     search_depth: int | None = None
     search_base_depth: int | None = None
     search_max_depth: int | None = None
     search_depth_reason: str | None = None
     search_beam_width: int | None = None
     search_candidate_limit: int | None = None
+    search_root_legal_build_city_count: int | None = None
+    search_root_legal_build_road_count: int | None = None
+    search_root_legal_build_building_count: int | None = None
+    search_root_legal_research_tech_count: int | None = None
+    search_root_legal_skip_count: int | None = None
+    search_root_candidate_build_city_count: int | None = None
+    search_root_candidate_build_road_count: int | None = None
+    search_root_candidate_build_building_count: int | None = None
+    search_root_candidate_research_tech_count: int | None = None
+    search_root_candidate_skip_count: int | None = None
     search_nodes_expanded: int | None = None
     search_candidates_considered: int | None = None
     search_leaf_count: int | None = None
     search_best_value: int | None = None
+    search_value_components: dict[str, int] = field(default_factory=dict)
+    search_sequence_adjustment: int | None = None
     search_best_score_total: int | None = None
     search_best_connected_city_count: int | None = None
     search_best_isolated_city_count: int | None = None
@@ -625,16 +638,47 @@ class RecordDecisionContext:
                 payload, "greedy_best_future_network_budget"
             ),
             random_type_weights=_mapping_of_floats(payload, "random_type_weights"),
+            search_mode=_optional_str(payload, "search_mode"),
             search_depth=_optional_int(payload, "search_depth"),
             search_base_depth=_optional_int(payload, "search_base_depth"),
             search_max_depth=_optional_int(payload, "search_max_depth"),
             search_depth_reason=_optional_str(payload, "search_depth_reason"),
             search_beam_width=_optional_int(payload, "search_beam_width"),
             search_candidate_limit=_optional_int(payload, "search_candidate_limit"),
+            search_root_legal_build_city_count=_optional_int(
+                payload, "search_root_legal_build_city_count"
+            ),
+            search_root_legal_build_road_count=_optional_int(
+                payload, "search_root_legal_build_road_count"
+            ),
+            search_root_legal_build_building_count=_optional_int(
+                payload, "search_root_legal_build_building_count"
+            ),
+            search_root_legal_research_tech_count=_optional_int(
+                payload, "search_root_legal_research_tech_count"
+            ),
+            search_root_legal_skip_count=_optional_int(payload, "search_root_legal_skip_count"),
+            search_root_candidate_build_city_count=_optional_int(
+                payload, "search_root_candidate_build_city_count"
+            ),
+            search_root_candidate_build_road_count=_optional_int(
+                payload, "search_root_candidate_build_road_count"
+            ),
+            search_root_candidate_build_building_count=_optional_int(
+                payload, "search_root_candidate_build_building_count"
+            ),
+            search_root_candidate_research_tech_count=_optional_int(
+                payload, "search_root_candidate_research_tech_count"
+            ),
+            search_root_candidate_skip_count=_optional_int(
+                payload, "search_root_candidate_skip_count"
+            ),
             search_nodes_expanded=_optional_int(payload, "search_nodes_expanded"),
             search_candidates_considered=_optional_int(payload, "search_candidates_considered"),
             search_leaf_count=_optional_int(payload, "search_leaf_count"),
             search_best_value=_optional_int(payload, "search_best_value"),
+            search_value_components=_mapping_of_ints(payload, "search_value_components"),
+            search_sequence_adjustment=_optional_int(payload, "search_sequence_adjustment"),
             search_best_score_total=_optional_int(payload, "search_best_score_total"),
             search_best_connected_city_count=_optional_int(
                 payload, "search_best_connected_city_count"
@@ -723,6 +767,8 @@ class RecordDecisionContext:
             result["greedy_best_future_network_budget"] = self.greedy_best_future_network_budget
         if self.random_type_weights:
             result["random_type_weights"] = self.random_type_weights
+        if self.search_mode is not None:
+            result["search_mode"] = self.search_mode
         if self.search_depth is not None:
             result["search_depth"] = self.search_depth
         if self.search_base_depth is not None:
@@ -735,6 +781,38 @@ class RecordDecisionContext:
             result["search_beam_width"] = self.search_beam_width
         if self.search_candidate_limit is not None:
             result["search_candidate_limit"] = self.search_candidate_limit
+        if self.search_root_legal_build_city_count is not None:
+            result["search_root_legal_build_city_count"] = self.search_root_legal_build_city_count
+        if self.search_root_legal_build_road_count is not None:
+            result["search_root_legal_build_road_count"] = self.search_root_legal_build_road_count
+        if self.search_root_legal_build_building_count is not None:
+            result["search_root_legal_build_building_count"] = (
+                self.search_root_legal_build_building_count
+            )
+        if self.search_root_legal_research_tech_count is not None:
+            result["search_root_legal_research_tech_count"] = (
+                self.search_root_legal_research_tech_count
+            )
+        if self.search_root_legal_skip_count is not None:
+            result["search_root_legal_skip_count"] = self.search_root_legal_skip_count
+        if self.search_root_candidate_build_city_count is not None:
+            result["search_root_candidate_build_city_count"] = (
+                self.search_root_candidate_build_city_count
+            )
+        if self.search_root_candidate_build_road_count is not None:
+            result["search_root_candidate_build_road_count"] = (
+                self.search_root_candidate_build_road_count
+            )
+        if self.search_root_candidate_build_building_count is not None:
+            result["search_root_candidate_build_building_count"] = (
+                self.search_root_candidate_build_building_count
+            )
+        if self.search_root_candidate_research_tech_count is not None:
+            result["search_root_candidate_research_tech_count"] = (
+                self.search_root_candidate_research_tech_count
+            )
+        if self.search_root_candidate_skip_count is not None:
+            result["search_root_candidate_skip_count"] = self.search_root_candidate_skip_count
         if self.search_nodes_expanded is not None:
             result["search_nodes_expanded"] = self.search_nodes_expanded
         if self.search_candidates_considered is not None:
@@ -743,6 +821,10 @@ class RecordDecisionContext:
             result["search_leaf_count"] = self.search_leaf_count
         if self.search_best_value is not None:
             result["search_best_value"] = self.search_best_value
+        if self.search_value_components:
+            result["search_value_components"] = self.search_value_components
+        if self.search_sequence_adjustment is not None:
+            result["search_sequence_adjustment"] = self.search_sequence_adjustment
         if self.search_best_score_total is not None:
             result["search_best_score_total"] = self.search_best_score_total
         if self.search_best_connected_city_count is not None:

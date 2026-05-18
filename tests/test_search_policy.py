@@ -18,7 +18,14 @@ from microciv.ai.search import (
 )
 from microciv.game.actions import Action, validate_action
 from microciv.game.engine import GameEngine
-from microciv.game.enums import OccupantType, PlaybackMode, PolicyType, TechType, TerrainType
+from microciv.game.enums import (
+    ActionType,
+    OccupantType,
+    PlaybackMode,
+    PolicyType,
+    TechType,
+    TerrainType,
+)
 from microciv.game.mapgen import MapGenerator
 from microciv.game.models import City, GameConfig, GameState, Network, ResourcePool, Tile
 from microciv.session import GameSession, create_game_session
@@ -42,16 +49,23 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     context = policy.explain_decision(state)
 
     assert validate_action(state, action).is_valid
+    assert action.action_type is not ActionType.SKIP
+    assert context["search_mode"] == "expand"
     assert context["search_depth"] == DEFAULT_SEARCH_DEPTH
     assert context["search_base_depth"] == DEFAULT_SEARCH_DEPTH
     assert context["search_max_depth"] == DEFAULT_SEARCH_MAX_DEPTH
     assert context["search_depth_reason"] == SEARCH_DEPTH_REASON_STEADY
     assert context["search_beam_width"] == DEFAULT_SEARCH_BEAM_WIDTH
     assert context["search_candidate_limit"] == DEFAULT_SEARCH_CANDIDATE_LIMIT
+    assert context["search_root_legal_skip_count"] == 1
+    assert context["search_root_candidate_skip_count"] == 0
+    assert context["search_root_candidate_build_city_count"] > 0
     assert context["search_nodes_expanded"] > 0
     assert context["search_candidates_considered"] >= context["search_leaf_count"]
     assert context["search_leaf_count"] > 0
     assert isinstance(context["search_best_value"], int)
+    assert isinstance(context["search_value_components"], dict)
+    assert isinstance(context["search_sequence_adjustment"], int)
     assert isinstance(context["search_best_score_total"], int)
     assert isinstance(context["search_best_food_pressure"], int)
     assert isinstance(context["search_best_starving_turns"], int)
@@ -68,6 +82,17 @@ def test_search_policy_does_not_mutate_input_state() -> None:
     SearchPolicy(search_depth=2, search_beam_width=2, search_candidate_limit=5).select_action(state)
 
     assert _state_signature(state) == before
+
+
+def test_search_policy_suppresses_early_skip_when_actions_exist() -> None:
+    state = _mixed_action_state()
+    policy = SearchPolicy(search_depth=2, search_max_depth=2, search_beam_width=2)
+
+    action = policy.select_action(state)
+    context = policy.explain_decision(state)
+
+    assert action.action_type is not ActionType.SKIP
+    assert context["search_root_candidate_skip_count"] == 0
 
 
 def test_search_policy_uses_custom_depth_strategy() -> None:

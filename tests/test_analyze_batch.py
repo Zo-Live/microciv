@@ -228,16 +228,24 @@ def test_analyze_batch_reports_search_diagnostics() -> None:
             legal_research_tech_count=1,
             legal_skip_count=1,
             chosen_action_type="build_city",
+            search_mode="expand",
             search_depth=2,
             search_base_depth=2,
             search_max_depth=2,
             search_depth_reason="fixed",
             search_beam_width=3,
             search_candidate_limit=5,
+            search_root_candidate_build_city_count=3,
+            search_root_candidate_build_road_count=1,
+            search_root_candidate_build_building_count=0,
+            search_root_candidate_research_tech_count=1,
+            search_root_candidate_skip_count=0,
             search_nodes_expanded=4,
             search_candidates_considered=16,
             search_leaf_count=12,
             search_best_value=12345,
+            search_value_components={"score_total": 12000, "expansion_deficit_penalty": -1600},
+            search_sequence_adjustment=8500,
             search_best_score_total=456,
             search_best_food_pressure=4,
             search_best_starving_turns=1,
@@ -255,7 +263,10 @@ def test_analyze_batch_reports_search_diagnostics() -> None:
     assert restored_state.config.policy_type is PolicyType.SEARCH
     assert "### 7.1 Search Diagnostic Summary" in report
     assert "### 7.2 Search Depth Reason Summary" in report
+    assert "### 7.3 Search Mode Summary" in report
     assert "search_nodes_expanded_mean" in report
+    assert "search_sequence_adjustment_mean" in report
+    assert "search_value_score_total_mean" in report
     assert "search_best_food_pressure_mean" in report
     assert int(summary.iloc[0]["search_leaf_count_mean"]) == 12
     assert int(summary.iloc[0]["search_best_food_pressure_mean"]) == 4
@@ -283,6 +294,7 @@ def test_analyze_batch_separates_search_variants_and_reports_timing() -> None:
             legal_research_tech_count=1,
             legal_skip_count=1,
             chosen_action_type="build_city",
+            search_mode="expand",
             search_depth=2,
             search_base_depth=2,
             search_max_depth=2,
@@ -306,6 +318,7 @@ def test_analyze_batch_separates_search_variants_and_reports_timing() -> None:
             legal_research_tech_count=1,
             legal_skip_count=1,
             chosen_action_type="build_city",
+            search_mode="connect",
             search_depth=5,
             search_base_depth=3,
             search_max_depth=6,
@@ -372,6 +385,7 @@ def test_policy_anomaly_summary_uses_mixed_baselines_and_starvation() -> None:
             legal_research_tech_count=1,
             legal_skip_count=1,
             chosen_action_type="build_city",
+            search_mode="expand",
             search_depth=2,
             search_base_depth=2,
             search_max_depth=2,
@@ -402,7 +416,7 @@ def test_policy_anomaly_summary_uses_mixed_baselines_and_starvation() -> None:
     assert set(summary["policy_variant"]) == {"Random", "Greedy", "Search d2 b3 c5"}
     assert int(matchup.iloc[0]["same_map_win_rate"]) == 0
     assert "search_under_greedy_count" in report
-    assert "### 7.3 Search Same-Map Matchup Summary" in report
+    assert "### 7.4 Search Same-Map Matchup Summary" in report
     assert "task7_acceptance_candidate" in report
     assert "Search d2 b3 c5" in report
 

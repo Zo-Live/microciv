@@ -52,6 +52,27 @@ _NON_SKIP_TYPES: tuple[ActionType, ...] = (
     ActionType.RESEARCH_TECH,
 )
 _SKIP_RANK_SCORE = -(10**9)
+SEARCH_MODE_RESCUE = "rescue"
+SEARCH_MODE_CONNECT = "connect"
+SEARCH_MODE_EXPAND = "expand"
+SEARCH_MODE_FILL = "fill"
+
+
+@dataclass(slots=True, frozen=True)
+class SearchPositionProfile:
+    """Public, Greedy-independent position summary for Search pruning and diagnostics."""
+
+    mode: str
+    turns_remaining: int
+    city_count: int
+    target_city_count: int
+    expansion_deficit: int
+    network_count: int
+    connected_city_count: int
+    isolated_city_count: int
+    starving_network_count: int
+    total_food: int
+    food_pressure: int
 
 
 @dataclass(slots=True, frozen=True)
@@ -73,11 +94,14 @@ class SearchCandidateSet:
     candidates: list[SearchCandidate]
     legal_action_count: int
     legal_counts_by_type: dict[ActionType, int]
+    candidate_counts_by_type: dict[ActionType, int]
+    profile: SearchPositionProfile
 
 
 @dataclass(slots=True, frozen=True)
 class SearchLeafEvaluation:
     value: int
+    value_components: dict[str, int]
     score_total: int
     connected_city_count: int
     isolated_city_count: int
@@ -100,6 +124,7 @@ def generate_search_candidates(
     if config.candidate_limit < 1:
         raise ValueError("candidate_limit must be at least 1")
 
+    profile = build_search_position_profile(state)
     legal_actions = get_legal_actions(state, include_skip=config.include_skip)
     groups = partition_actions(legal_actions)
     legal_counts_by_type = {
@@ -110,13 +135,16 @@ def generate_search_candidates(
             candidates=[],
             legal_action_count=0,
             legal_counts_by_type=legal_counts_by_type,
+            candidate_counts_by_type={action_type: 0 for action_type in ActionType},
+            profile=profile,
         )
 
     context = build_heuristic_context(state)
     scored_by_type: dict[ActionType, list[SearchCandidate]] = {}
     for action_type in ActionType:
         scored = [
-            _score_candidate(state, action, context) for action in groups.get(action_type, [])
+            _score_candidate(state, action, context, profile)
+            for action in groups.get(action_type, [])
         ]
         scored_by_type[action_type] = sorted(scored, key=_candidate_sort_key)
 
@@ -127,24 +155,48 @@ def generate_search_candidates(
             for candidate in scored_by_type.get(action_type, [])
         ]
         pool = non_skip_candidates or scored_by_type.get(ActionType.SKIP, [])
+        candidates = pool[:1]
         return SearchCandidateSet(
-            candidates=pool[:1],
+            candidates=candidates,
             legal_action_count=len(legal_actions),
             legal_counts_by_type=legal_counts_by_type,
+            candidate_counts_by_type=_candidate_counts(candidates),
+            profile=profile,
         )
 
     skip_candidates = scored_by_type.get(ActionType.SKIP, []) if config.include_skip else []
-    reserve_skip = bool(skip_candidates)
+    has_non_skip = any(scored_by_type.get(action_type) for action_type in _NON_SKIP_TYPES)
+    reserve_skip = bool(skip_candidates and (profile.turns_remaining <= 3 or not has_non_skip))
     non_skip_limit = config.candidate_limit - 1 if reserve_skip else config.candidate_limit
 
     selected: dict[Action, SearchCandidate] = {}
-    representative_pool = [
-        scored_by_type[action_type][0]
-        for action_type in _NON_SKIP_TYPES
-        if scored_by_type.get(action_type)
-    ]
-    for candidate in sorted(representative_pool, key=_candidate_sort_key)[:non_skip_limit]:
-        selected[candidate.action] = candidate
+    quotas = _candidate_type_quotas(profile, non_skip_limit, scored_by_type)
+    max_by_type = _candidate_type_maxima(profile, non_skip_limit, quotas, scored_by_type)
+
+    if profile.mode == SEARCH_MODE_EXPAND:
+        safe_city_candidates = [
+            candidate
+            for candidate in scored_by_type.get(ActionType.BUILD_CITY, [])
+            if candidate.action.coord is not None
+            and _is_safe_city_site(state, candidate.action.coord, context, profile)
+        ]
+        for candidate in safe_city_candidates[: quotas.get(ActionType.BUILD_CITY, 0)]:
+            selected[candidate.action] = candidate
+
+    for action_type in _NON_SKIP_TYPES:
+        quota = quotas.get(action_type, 0)
+        if quota <= 0:
+            continue
+        already_selected = sum(
+            1 for candidate in selected.values() if candidate.action_type is action_type
+        )
+        for candidate in scored_by_type.get(action_type, []):
+            if already_selected >= quota:
+                break
+            if candidate.action in selected:
+                continue
+            selected[candidate.action] = candidate
+            already_selected += 1
 
     remaining_slots = non_skip_limit - len(selected)
     if remaining_slots > 0:
@@ -154,17 +206,75 @@ def generate_search_candidates(
             for candidate in scored_by_type.get(action_type, [])
             if candidate.action not in selected
         ]
-        for candidate in sorted(remaining_pool, key=_candidate_sort_key)[:remaining_slots]:
+        for candidate in sorted(remaining_pool, key=_candidate_sort_key):
+            if remaining_slots <= 0:
+                break
+            action_type = candidate.action_type
+            if _selected_count(selected, action_type) >= max_by_type.get(
+                action_type, non_skip_limit
+            ):
+                continue
             selected[candidate.action] = candidate
+            remaining_slots -= 1
 
     if reserve_skip:
         selected[skip_candidates[0].action] = skip_candidates[0]
 
+    candidates = sorted(selected.values(), key=_candidate_sort_key)[: config.candidate_limit]
     return SearchCandidateSet(
-        candidates=sorted(selected.values(), key=_candidate_sort_key)[: config.candidate_limit],
+        candidates=candidates,
         legal_action_count=len(legal_actions),
         legal_counts_by_type=legal_counts_by_type,
+        candidate_counts_by_type=_candidate_counts(candidates),
+        profile=profile,
     )
+
+
+def build_search_position_profile(state: GameState) -> SearchPositionProfile:
+    """Return a compact Search-only position profile without Greedy private state."""
+    resources = total_resources(state)
+    connected = connected_city_count(state)
+    isolated = isolated_city_count(state)
+    starving = starving_network_count(state)
+    city_count_value = len(state.cities)
+    network_count = len(state.networks)
+    turns_remaining = _turns_remaining(state)
+    food_pressure = _max_food_pressure(state)
+    target_city_count = search_target_city_count(state)
+    expansion_deficit = max(0, target_city_count - city_count_value)
+
+    if starving > 0 or resources.food < 0 or food_pressure >= FOOD_CONSUMPTION_PER_CITY * 2:
+        mode = SEARCH_MODE_RESCUE
+    elif city_count_value >= 2 and (isolated > 0 or network_count > max(1, city_count_value // 4)):
+        mode = SEARCH_MODE_CONNECT
+    elif turns_remaining > 6 and expansion_deficit > 0:
+        mode = SEARCH_MODE_EXPAND
+    else:
+        mode = SEARCH_MODE_FILL
+
+    return SearchPositionProfile(
+        mode=mode,
+        turns_remaining=turns_remaining,
+        city_count=city_count_value,
+        target_city_count=target_city_count,
+        expansion_deficit=expansion_deficit,
+        network_count=network_count,
+        connected_city_count=connected,
+        isolated_city_count=isolated,
+        starving_network_count=starving,
+        total_food=resources.food,
+        food_pressure=food_pressure,
+    )
+
+
+def search_target_city_count(state: GameState) -> int:
+    """Return the long-horizon city target used only by Search shaping."""
+    board_capacity = sum(
+        1 for tile in state.board.values() if tile.base_terrain.value not in {"river", "wasteland"}
+    )
+    turn_target = max(4, state.config.turn_limit // 4)
+    size_target = max(5, state.config.map_size - 1)
+    return min(board_capacity, 24, max(turn_target, size_target))
 
 
 def evaluate_search_leaf(state: GameState) -> SearchLeafEvaluation:
@@ -179,23 +289,38 @@ def evaluate_search_leaf(state: GameState) -> SearchLeafEvaluation:
     food_pressure = _max_food_pressure(state)
     starving_turns = sum(network.consecutive_starving_turns for network in state.networks.values())
 
-    value = breakdown.total * 100
-    value += connected * 120
-    value += largest_network * 160
-    value += building_count(state) * 75
-    value += tech_count(state) * 170
-    value += _bounded_resource_value(resources.food, positive_cap=100, negative_cap=160, weight=10)
-    value += _bounded_resource_value(resources.wood, positive_cap=80, negative_cap=40, weight=3)
-    value += _bounded_resource_value(resources.ore, positive_cap=60, negative_cap=40, weight=4)
-    value += _bounded_resource_value(resources.science, positive_cap=60, negative_cap=20, weight=3)
-    value -= isolated * 650
-    value -= starving * 2200
-    value -= starving_turns * 500
-    value -= food_pressure * 150
-    value -= max(0, network_count - 1) * 260
+    components = {
+        "score_total": breakdown.total * 90,
+        "connected_city": connected * 220,
+        "largest_network": largest_network * 220,
+        "building": building_count(state) * 60,
+        "tech": tech_count(state) * 130,
+        "food_stock": _bounded_resource_value(
+            resources.food, positive_cap=100, negative_cap=160, weight=10
+        ),
+        "wood_stock": _bounded_resource_value(
+            resources.wood, positive_cap=80, negative_cap=40, weight=3
+        ),
+        "ore_stock": _bounded_resource_value(
+            resources.ore, positive_cap=60, negative_cap=40, weight=4
+        ),
+        "science_stock": _bounded_resource_value(
+            resources.science, positive_cap=60, negative_cap=20, weight=3
+        ),
+        "isolated_penalty": -(isolated * 650),
+        "starving_penalty": -(starving * 2200),
+        "starving_turn_penalty": -(starving_turns * 500),
+        "food_pressure_penalty": -(food_pressure * 150),
+        "fragmentation_penalty": -(max(0, network_count - 1) * 260),
+        "expansion_deficit_penalty": -_expansion_deficit_penalty(state),
+        "early_fill_penalty": -_early_fill_penalty(state),
+        "road_overbuild_penalty": -_road_overbuild_penalty(state),
+    }
+    value = sum(components.values())
 
     return SearchLeafEvaluation(
         value=value,
+        value_components=components,
         score_total=breakdown.total,
         connected_city_count=connected,
         isolated_city_count=isolated,
@@ -215,6 +340,7 @@ def _score_candidate(
     state: GameState,
     action: Action,
     context: HeuristicContext,
+    profile: SearchPositionProfile,
 ) -> SearchCandidate:
     if action.action_type is ActionType.BUILD_CITY and action.coord is not None:
         score = city_expansion_score_for_context(context, action.coord)
@@ -228,6 +354,10 @@ def _score_candidate(
     if action.action_type is ActionType.BUILD_ROAD and action.coord is not None:
         score = road_site_score_for_context(context, action.coord)
         score += _road_food_rescue_score(state, action.coord, context)
+        if profile.mode in {SEARCH_MODE_EXPAND, SEARCH_MODE_FILL} and not _road_merges_networks(
+            action.coord, context
+        ):
+            score -= 900
         return SearchCandidate(
             action=action,
             action_type=action.action_type,
@@ -325,6 +455,175 @@ def _city_food_safety_score(
     if pressure >= FOOD_CONSUMPTION_PER_CITY and budget.food_balance < 1:
         score -= 260 + (pressure * 28)
     return score
+
+
+def _candidate_type_quotas(
+    profile: SearchPositionProfile,
+    limit: int,
+    scored_by_type: dict[ActionType, list[SearchCandidate]],
+) -> dict[ActionType, int]:
+    if limit <= 0:
+        return {action_type: 0 for action_type in _NON_SKIP_TYPES}
+
+    if profile.mode == SEARCH_MODE_RESCUE:
+        weights = {
+            ActionType.BUILD_CITY: 1,
+            ActionType.BUILD_ROAD: 3,
+            ActionType.BUILD_BUILDING: 4,
+            ActionType.RESEARCH_TECH: 3,
+        }
+    elif profile.mode == SEARCH_MODE_CONNECT:
+        weights = {
+            ActionType.BUILD_CITY: 3,
+            ActionType.BUILD_ROAD: 6,
+            ActionType.BUILD_BUILDING: 1,
+            ActionType.RESEARCH_TECH: 1,
+        }
+    elif profile.mode == SEARCH_MODE_EXPAND:
+        weights = {
+            ActionType.BUILD_CITY: 12,
+            ActionType.BUILD_ROAD: 1,
+            ActionType.BUILD_BUILDING: 1,
+            ActionType.RESEARCH_TECH: 1,
+        }
+    else:
+        weights = {
+            ActionType.BUILD_CITY: 3,
+            ActionType.BUILD_ROAD: 2,
+            ActionType.BUILD_BUILDING: 3,
+            ActionType.RESEARCH_TECH: 3,
+        }
+
+    quotas = {action_type: 0 for action_type in _NON_SKIP_TYPES}
+    available_types = [
+        action_type for action_type in _NON_SKIP_TYPES if scored_by_type.get(action_type)
+    ]
+    if not available_types:
+        return quotas
+
+    remaining = limit
+    for action_type in available_types:
+        quotas[action_type] = 1
+        remaining -= 1
+        if remaining <= 0:
+            return quotas
+
+    total_weight = sum(weights[action_type] for action_type in available_types)
+    for action_type in sorted(
+        available_types,
+        key=lambda item: (-weights[item], _ACTION_TYPE_ORDER[item]),
+    ):
+        if remaining <= 0:
+            break
+        available_room = len(scored_by_type[action_type]) - quotas[action_type]
+        if available_room <= 0:
+            continue
+        extra = max(0, round((limit * weights[action_type] / total_weight) - quotas[action_type]))
+        extra = min(extra, available_room, remaining)
+        quotas[action_type] += extra
+        remaining -= extra
+
+    while remaining > 0:
+        progressed = False
+        for action_type in sorted(
+            available_types,
+            key=lambda item: (-weights[item], _ACTION_TYPE_ORDER[item]),
+        ):
+            if quotas[action_type] >= len(scored_by_type[action_type]):
+                continue
+            quotas[action_type] += 1
+            remaining -= 1
+            progressed = True
+            if remaining <= 0:
+                break
+        if not progressed:
+            break
+    return quotas
+
+
+def _candidate_type_maxima(
+    profile: SearchPositionProfile,
+    limit: int,
+    quotas: dict[ActionType, int],
+    scored_by_type: dict[ActionType, list[SearchCandidate]],
+) -> dict[ActionType, int]:
+    maxima = {
+        action_type: min(limit, len(scored_by_type.get(action_type, [])))
+        for action_type in _NON_SKIP_TYPES
+    }
+    if profile.mode == SEARCH_MODE_EXPAND and profile.turns_remaining > 10:
+        maxima[ActionType.BUILD_BUILDING] = quotas.get(ActionType.BUILD_BUILDING, 0)
+        maxima[ActionType.RESEARCH_TECH] = quotas.get(ActionType.RESEARCH_TECH, 0)
+    return maxima
+
+
+def _candidate_counts(candidates: list[SearchCandidate]) -> dict[ActionType, int]:
+    return {
+        action_type: sum(1 for candidate in candidates if candidate.action_type is action_type)
+        for action_type in ActionType
+    }
+
+
+def _selected_count(
+    selected: dict[Action, SearchCandidate],
+    action_type: ActionType,
+) -> int:
+    return sum(1 for candidate in selected.values() if candidate.action_type is action_type)
+
+
+def _is_safe_city_site(
+    state: GameState,
+    coord: tuple[int, int],
+    context: HeuristicContext,
+    profile: SearchPositionProfile,
+) -> bool:
+    budget = site_budget(state, coord, context)
+    if budget.food_balance >= 0:
+        return True
+    return profile.total_food >= (profile.city_count + 1) * FOOD_CONSUMPTION_PER_CITY * 4
+
+
+def _expansion_deficit_penalty(state: GameState) -> int:
+    profile = build_search_position_profile(state)
+    if profile.turns_remaining <= 6 or profile.expansion_deficit <= 0:
+        return 0
+    return min(36_000, profile.expansion_deficit * 2_400)
+
+
+def _early_fill_penalty(state: GameState) -> int:
+    profile = build_search_position_profile(state)
+    if profile.turns_remaining <= 10 or profile.expansion_deficit <= 0:
+        return 0
+    fill_count = building_count(state) + tech_count(state)
+    allowed_fill = max(1, profile.city_count // 2)
+    return max(0, fill_count - allowed_fill) * 3_800
+
+
+def _road_overbuild_penalty(state: GameState) -> int:
+    city_count_value = len(state.cities)
+    if city_count_value <= 0:
+        return len(state.roads) * 4_000
+    road_allowance = max(2, city_count_value // 2)
+    return max(0, len(state.roads) - road_allowance) * 4_000
+
+
+def _road_merges_networks(coord: tuple[int, int], context: HeuristicContext) -> bool:
+    passable_map = context_passable_network_map(context)
+    adjacent_network_ids = {
+        passable_map[neighbor]
+        for neighbor in (
+            (coord[0] - 1, coord[1]),
+            (coord[0] + 1, coord[1]),
+            (coord[0], coord[1] - 1),
+            (coord[0], coord[1] + 1),
+        )
+        if neighbor in passable_map
+    }
+    return len(adjacent_network_ids) >= 2
+
+
+def _turns_remaining(state: GameState) -> int:
+    return max(0, state.config.turn_limit - state.turn)
 
 
 def _road_food_rescue_score(

@@ -388,16 +388,40 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             "legal_build_building_count": context.legal_build_building_count,
             "legal_research_tech_count": context.legal_research_tech_count,
             "legal_skip_count": context.legal_skip_count,
+            "search_mode": context.search_mode or "",
             "search_depth": context.search_depth,
             "search_base_depth": context.search_base_depth,
             "search_max_depth": context.search_max_depth,
             "search_depth_reason": context.search_depth_reason or "",
             "search_beam_width": context.search_beam_width,
             "search_candidate_limit": context.search_candidate_limit,
+            "search_root_legal_build_city_count": context.search_root_legal_build_city_count,
+            "search_root_legal_build_road_count": context.search_root_legal_build_road_count,
+            "search_root_legal_build_building_count": (
+                context.search_root_legal_build_building_count
+            ),
+            "search_root_legal_research_tech_count": (
+                context.search_root_legal_research_tech_count
+            ),
+            "search_root_legal_skip_count": context.search_root_legal_skip_count,
+            "search_root_candidate_build_city_count": (
+                context.search_root_candidate_build_city_count
+            ),
+            "search_root_candidate_build_road_count": (
+                context.search_root_candidate_build_road_count
+            ),
+            "search_root_candidate_build_building_count": (
+                context.search_root_candidate_build_building_count
+            ),
+            "search_root_candidate_research_tech_count": (
+                context.search_root_candidate_research_tech_count
+            ),
+            "search_root_candidate_skip_count": context.search_root_candidate_skip_count,
             "search_nodes_expanded": context.search_nodes_expanded,
             "search_candidates_considered": context.search_candidates_considered,
             "search_leaf_count": context.search_leaf_count,
             "search_best_value": context.search_best_value,
+            "search_sequence_adjustment": context.search_sequence_adjustment,
             "search_best_score_total": context.search_best_score_total,
             "search_best_connected_city_count": context.search_best_connected_city_count,
             "search_best_isolated_city_count": context.search_best_isolated_city_count,
@@ -421,6 +445,8 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             row[f"site_{key}"] = value
         for key, value in context.greedy_best_future_network_budget.items():
             row[f"future_network_{key}"] = value
+        for key, value in context.search_value_components.items():
+            row[f"search_value_{key}"] = value
         rows.append(row)
     return rows
 

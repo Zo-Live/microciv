@@ -7,8 +7,13 @@ from typing import Protocol
 
 from microciv.ai.policy import Policy, simulate_action
 from microciv.ai.search_support import (
+    SEARCH_MODE_CONNECT,
+    SEARCH_MODE_EXPAND,
+    SEARCH_MODE_RESCUE,
     SearchCandidateConfig,
     SearchLeafEvaluation,
+    SearchPositionProfile,
+    build_search_position_profile,
     evaluate_search_leaf,
     generate_search_candidates,
 )
@@ -127,6 +132,7 @@ class SearchNode:
     state: GameState
     sequence: tuple[Action, ...]
     value: int
+    sequence_adjustment: int
     leaf_evaluation: SearchLeafEvaluation
 
 
@@ -135,6 +141,9 @@ class SearchTelemetry:
     nodes_expanded: int = 0
     candidates_considered: int = 0
     leaf_count: int = 0
+    root_profile: SearchPositionProfile | None = None
+    root_legal_counts_by_type: dict[ActionType, int] | None = None
+    root_candidate_counts_by_type: dict[ActionType, int] | None = None
 
 
 class SearchPolicy(Policy):
@@ -194,26 +203,60 @@ class SearchPolicy(Policy):
             action = Action.skip()
             best_evaluation = evaluate_search_leaf(state)
             best_value = best_evaluation.value
+            best_sequence_adjustment = 0
             best_sequence: list[dict[str, object]] = []
         else:
             action = best_node.sequence[0]
             best_evaluation = best_node.leaf_evaluation
             best_value = best_node.value
+            best_sequence_adjustment = best_node.sequence_adjustment
             best_sequence = [_action_to_dict(item) for item in best_node.sequence]
+        root_profile = telemetry.root_profile or build_search_position_profile(state)
+        root_legal_counts = telemetry.root_legal_counts_by_type or {
+            action_type: 0 for action_type in ActionType
+        }
+        root_candidate_counts = telemetry.root_candidate_counts_by_type or {
+            action_type: 0 for action_type in ActionType
+        }
 
         decision = PlannedSearchDecision(
             action=action,
             context={
+                "search_mode": root_profile.mode,
                 "search_depth": depth_decision.depth,
                 "search_base_depth": self.search_depth,
                 "search_max_depth": self.search_max_depth,
                 "search_depth_reason": depth_decision.reason,
                 "search_beam_width": self.search_beam_width,
                 "search_candidate_limit": self.search_candidate_limit,
+                "search_root_legal_build_city_count": root_legal_counts[ActionType.BUILD_CITY],
+                "search_root_legal_build_road_count": root_legal_counts[ActionType.BUILD_ROAD],
+                "search_root_legal_build_building_count": root_legal_counts[
+                    ActionType.BUILD_BUILDING
+                ],
+                "search_root_legal_research_tech_count": root_legal_counts[
+                    ActionType.RESEARCH_TECH
+                ],
+                "search_root_legal_skip_count": root_legal_counts[ActionType.SKIP],
+                "search_root_candidate_build_city_count": root_candidate_counts[
+                    ActionType.BUILD_CITY
+                ],
+                "search_root_candidate_build_road_count": root_candidate_counts[
+                    ActionType.BUILD_ROAD
+                ],
+                "search_root_candidate_build_building_count": root_candidate_counts[
+                    ActionType.BUILD_BUILDING
+                ],
+                "search_root_candidate_research_tech_count": root_candidate_counts[
+                    ActionType.RESEARCH_TECH
+                ],
+                "search_root_candidate_skip_count": root_candidate_counts[ActionType.SKIP],
                 "search_nodes_expanded": telemetry.nodes_expanded,
                 "search_candidates_considered": telemetry.candidates_considered,
                 "search_leaf_count": telemetry.leaf_count,
                 "search_best_value": best_value,
+                "search_value_components": best_evaluation.value_components,
+                "search_sequence_adjustment": best_sequence_adjustment,
                 "search_best_score_total": best_evaluation.score_total,
                 "search_best_connected_city_count": best_evaluation.connected_city_count,
                 "search_best_isolated_city_count": best_evaluation.isolated_city_count,
@@ -263,6 +306,7 @@ class SearchPolicy(Policy):
                 state=state,
                 sequence=(),
                 value=root_evaluation.value,
+                sequence_adjustment=0,
                 leaf_evaluation=root_evaluation,
             )
         ]
@@ -276,6 +320,10 @@ class SearchPolicy(Policy):
                     continue
 
                 candidate_set = generate_search_candidates(node.state, candidate_config)
+                if not node.sequence and telemetry.root_profile is None:
+                    telemetry.root_profile = candidate_set.profile
+                    telemetry.root_legal_counts_by_type = candidate_set.legal_counts_by_type
+                    telemetry.root_candidate_counts_by_type = candidate_set.candidate_counts_by_type
                 telemetry.nodes_expanded += 1
                 telemetry.candidates_considered += len(candidate_set.candidates)
 
@@ -287,10 +335,13 @@ class SearchPolicy(Policy):
                     simulated_state = simulate_action(node.state, candidate.action)
                     leaf_evaluation = evaluate_search_leaf(simulated_state)
                     telemetry.leaf_count += 1
+                    sequence = (*node.sequence, candidate.action)
+                    sequence_adjustment = _sequence_adjustment(state, simulated_state, sequence)
                     child = SearchNode(
                         state=simulated_state,
-                        sequence=(*node.sequence, candidate.action),
-                        value=leaf_evaluation.value,
+                        sequence=sequence,
+                        value=leaf_evaluation.value + sequence_adjustment,
+                        sequence_adjustment=sequence_adjustment,
                         leaf_evaluation=leaf_evaluation,
                     )
                     next_nodes.append(child)
@@ -340,6 +391,65 @@ def _require_positive(value: int, field_name: str) -> int:
     if value < 1:
         raise ValueError(f"{field_name} must be at least 1")
     return value
+
+
+def _sequence_adjustment(
+    root_state: GameState,
+    leaf_state: GameState,
+    sequence: tuple[Action, ...],
+) -> int:
+    root_profile = build_search_position_profile(root_state)
+    leaf_profile = build_search_position_profile(leaf_state)
+    action_counts = {
+        action_type: sum(1 for action in sequence if action.action_type is action_type)
+        for action_type in ActionType
+    }
+    city_actions = action_counts[ActionType.BUILD_CITY]
+    road_actions = action_counts[ActionType.BUILD_ROAD]
+    fill_actions = (
+        action_counts[ActionType.BUILD_BUILDING] + action_counts[ActionType.RESEARCH_TECH]
+    )
+    skip_actions = action_counts[ActionType.SKIP]
+    connected_gain = max(0, leaf_profile.connected_city_count - root_profile.connected_city_count)
+    network_reduction = max(0, root_profile.network_count - leaf_profile.network_count)
+    starvation_reduction = max(
+        0,
+        root_profile.starving_network_count - leaf_profile.starving_network_count,
+    )
+    pressure_reduction = max(0, root_profile.food_pressure - leaf_profile.food_pressure)
+
+    adjustment = 0
+    if root_profile.turns_remaining > 3 and skip_actions:
+        adjustment -= skip_actions * 5_500
+        adjustment -= max(0, skip_actions - 1) * 2_500
+
+    if root_profile.mode == SEARCH_MODE_EXPAND:
+        adjustment += min(city_actions, root_profile.expansion_deficit) * 12_000
+        adjustment += connected_gain * 2_500
+        if root_profile.turns_remaining > 10 and root_profile.expansion_deficit > 0:
+            adjustment -= fill_actions * 2_800
+            if connected_gain == 0 and network_reduction == 0:
+                adjustment -= road_actions * 1_800
+            adjustment -= skip_actions * 4_000
+    elif root_profile.mode == SEARCH_MODE_CONNECT:
+        adjustment += connected_gain * 4_200
+        adjustment += network_reduction * 3_500
+        if connected_gain > 0 or network_reduction > 0:
+            adjustment += road_actions * 800
+        else:
+            adjustment -= road_actions * 1_400
+        adjustment -= skip_actions * 2_500
+    elif root_profile.mode == SEARCH_MODE_RESCUE:
+        adjustment += starvation_reduction * 6_500
+        adjustment += pressure_reduction * 160
+        if root_profile.food_pressure >= FOOD_CONSUMPTION_PER_CITY * 2:
+            adjustment -= city_actions * 1_800
+        adjustment -= skip_actions * 3_000
+    elif root_profile.turns_remaining > 10 and root_profile.expansion_deficit > 0:
+        adjustment += min(city_actions, root_profile.expansion_deficit) * 3_500
+        adjustment -= skip_actions * 2_500
+
+    return adjustment
 
 
 def _has_food_rescue_need(state: GameState) -> bool:
