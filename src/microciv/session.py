@@ -96,7 +96,8 @@ class GameSession:
         )
         decision_started_at = perf_counter()
         action = self.policy.select_action(self.state)
-        self.state.stats.record_decision_time((perf_counter() - decision_started_at) * 1000)
+        decision_time_ms = (perf_counter() - decision_started_at) * 1000
+        self.state.stats.record_decision_time(decision_time_ms)
         policy_context = (
             self.policy.explain_decision(self.state)
             if hasattr(self.policy, "explain_decision")
@@ -119,6 +120,7 @@ class GameSession:
             ),
             legal_skip_count=sum(1 for a in legal_actions if a.action_type is ActionType.SKIP),
             chosen_action_type=action.action_type.value,
+            decision_time_ms=decision_time_ms,
             policy_context=policy_context,
         )
         self.apply_action(action)

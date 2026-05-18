@@ -262,7 +262,11 @@ def test_generate_report_from_artifacts_uses_tabular_input(tmp_path) -> None:
     assert "### 7.4 Search Pressure Driver Summary" in report
     assert "### 7.6 Search Candidate Health Summary" in report
     assert "### 7.7 Search Road Quality Summary" in report
+    assert "### 7.10 Search Turn Lag Summary" in report
+    assert "### 7.16 Search Greedy Anchor Diagnostics" in report
     assert "search_sequence_adjustment" in report
+    assert "city_count" in frames["turn_scores"].columns
+    assert "legal_actions_count" in frames["turn_scores"].columns
 
 
 def test_analyze_batch_reports_search_diagnostics() -> None:
@@ -346,12 +350,176 @@ def test_analyze_batch_reports_search_diagnostics() -> None:
     assert "search_root_chosen_rank_mean" in report
     assert "search_root_candidate_cut_ratio_mean" in report
     assert "### 7.9 Search Score Component Gap vs Greedy" in report
+    assert "### 7.18 Search Timing Value Summary" in report
     assert "search_value_score_total_mean" in report
     assert "search_best_food_pressure_mean" in report
     assert int(summary.iloc[0]["search_leaf_count_mean"]) == 12
     assert int(summary.iloc[0]["search_best_food_pressure_mean"]) == 4
     assert int(summary.iloc[0]["search_sequence_length_mean"]) == 2
     assert pressure_summary.iloc[0]["search_dominant_pressure"] == "search_sequence_adjustment"
+
+
+def test_analyze_batch_builds_search_lag_anchor_and_timing_metrics() -> None:
+    pd = analyze_batch.pd
+    macro_df = pd.DataFrame(
+        [
+            {
+                "record_id": 1,
+                "seed": 7,
+                "ai_type": "Greedy",
+                "policy_variant": "Greedy",
+                "map_size": 12,
+                "turn_limit": 30,
+                "map_difficulty": "normal",
+                "final_score": 300,
+                "decision_time_ms_total": 30.0,
+            },
+            {
+                "record_id": 2,
+                "seed": 7,
+                "ai_type": "Search",
+                "policy_variant": "Search d2 b3 c5",
+                "map_size": 12,
+                "turn_limit": 30,
+                "map_difficulty": "normal",
+                "final_score": 120,
+                "decision_time_ms_total": 90.0,
+            },
+        ]
+    )
+    turn_score_df = pd.DataFrame(
+        [
+            {
+                "record_id": 1,
+                "seed": 7,
+                "ai_type": "Greedy",
+                "policy_variant": "Greedy",
+                "map_size": 12,
+                "turn_limit": 30,
+                "map_difficulty": "normal",
+                "turn": 1,
+                "score": 100,
+                "score_resource_ring_score": 20,
+                "score_city_score": 10,
+                "city_count": 1,
+                "connected_city_count": 0,
+                "network_count": 1,
+                "largest_network_size": 1,
+                "food": 20,
+            },
+            {
+                "record_id": 1,
+                "seed": 7,
+                "ai_type": "Greedy",
+                "policy_variant": "Greedy",
+                "map_size": 12,
+                "turn_limit": 30,
+                "map_difficulty": "normal",
+                "turn": 2,
+                "score": 180,
+                "score_resource_ring_score": 40,
+                "score_city_score": 20,
+                "city_count": 2,
+                "connected_city_count": 1,
+                "network_count": 1,
+                "largest_network_size": 2,
+                "food": 24,
+            },
+            {
+                "record_id": 2,
+                "seed": 7,
+                "ai_type": "Search",
+                "policy_variant": "Search d2 b3 c5",
+                "map_size": 12,
+                "turn_limit": 30,
+                "map_difficulty": "normal",
+                "turn": 1,
+                "score": 110,
+                "score_resource_ring_score": 22,
+                "score_city_score": 10,
+                "city_count": 1,
+                "connected_city_count": 0,
+                "network_count": 1,
+                "largest_network_size": 1,
+                "food": 20,
+            },
+            {
+                "record_id": 2,
+                "seed": 7,
+                "ai_type": "Search",
+                "policy_variant": "Search d2 b3 c5",
+                "map_size": 12,
+                "turn_limit": 30,
+                "map_difficulty": "normal",
+                "turn": 2,
+                "score": 120,
+                "score_resource_ring_score": 15,
+                "score_city_score": 12,
+                "city_count": 1,
+                "connected_city_count": 0,
+                "network_count": 2,
+                "largest_network_size": 1,
+                "food": 16,
+            },
+        ]
+    )
+    decision_df = pd.DataFrame(
+        [
+            {
+                "record_id": 2,
+                "seed": 7,
+                "ai_type": "Search",
+                "policy_variant": "Search d2 b3 c5",
+                "map_size": 12,
+                "turn_limit": 30,
+                "map_difficulty": "normal",
+                "turn": 1,
+                "chosen_action_type": "build_city",
+                "decision_time_ms": 12.0,
+                "search_mode": "expand",
+                "search_depth_reason": "steady",
+                "search_leaf_count": 8,
+                "search_nodes_expanded": 2,
+                "search_root_value_margin": 4,
+                "search_greedy_action_type": "build_city",
+                "search_matches_greedy_action": 0,
+                "search_greedy_action_in_root_candidates": 1,
+                "search_greedy_action_root_rank": 2,
+                "search_greedy_action_root_value_margin": 4,
+                "search_chosen_value_delta_vs_greedy_action": -4,
+                "search_chosen_city_site_score": 80,
+                "search_greedy_city_site_score": 120,
+                "search_chosen_city_site_score_delta_vs_greedy": -40,
+                "search_chosen_city_food_balance": 1,
+                "search_chosen_city_total_yield": 7,
+                "search_chosen_city_river_access": 1,
+                "search_min_network_food_after_action": 8,
+                "search_worst_network_food_pressure_after_action": 2,
+                "search_food_surplus_network_count_after_action": 0,
+                "search_food_deficit_network_count_after_action": 1,
+                "search_profile_safe_expansion_deficit": 2,
+                "search_root_effective_city_candidate_count": 1,
+            }
+        ]
+    )
+
+    turn_gap_df = analyze_batch.build_search_turn_gap_df(macro_df, turn_score_df)
+    lag_df = analyze_batch.build_search_lag_event_df(turn_gap_df)
+    lag_summary = analyze_batch.build_search_lag_summary_from_lag_df(lag_df)
+    event_summary = analyze_batch.build_search_lag_event_component_summary(lag_df, turn_gap_df)
+    early_summary = analyze_batch.build_search_early_state_summary_from_turn_gap_df(turn_gap_df)
+    anchor_summary = analyze_batch.build_search_greedy_anchor_summary_from_decision_df(decision_df)
+    food_risk = analyze_batch.build_search_network_food_risk_summary_from_decision_df(decision_df)
+    timing = analyze_batch.build_search_timing_value_summary(decision_df, turn_gap_df)
+
+    assert lag_df.iloc[0]["first_turn_under_greedy"] == 2
+    assert lag_df.iloc[0]["final_gap"] == -180
+    assert "gap_at_10_pct_mean" in lag_summary.columns
+    assert "score_resource_ring_score_gap_vs_greedy_mean" in event_summary.columns
+    assert "city_count_gap_vs_greedy_mean" in early_summary.columns
+    assert int(anchor_summary.iloc[0]["search_greedy_action_in_root_candidates_mean"]) == 1
+    assert int(food_risk.iloc[0]["search_food_deficit_network_count_after_action_mean"]) == 1
+    assert "gap_delta_after_search_decision_mean" in timing.columns
 
 
 def test_analyze_batch_separates_search_variants_and_reports_timing() -> None:

@@ -6,6 +6,8 @@ import argparse
 import sys
 from collections import Counter
 from collections.abc import Callable
+from math import ceil
+from numbers import Real
 from pathlib import Path
 from typing import Any, Final
 
@@ -49,6 +51,14 @@ TAIL_WINDOW: Final[int] = 20
 GREEDY_LABEL: Final[str] = "Greedy"
 RANDOM_LABEL: Final[str] = "Random"
 SEARCH_LABEL: Final[str] = "Search"
+MATCH_KEY_COLS: Final[tuple[str, ...]] = ("seed", "map_size", "turn_limit", "map_difficulty")
+LAG_GAP_THRESHOLDS: Final[tuple[int, ...]] = (100, 250, 500)
+LAG_PCT_POINTS: Final[tuple[float, ...]] = (0.10, 0.25, 0.50, 0.75)
+EVENT_TURN_COLUMNS: Final[tuple[str, ...]] = (
+    "first_turn_under_greedy",
+    "first_turn_gap_le_250",
+    "first_persistent_under_greedy_turn",
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -781,14 +791,19 @@ def build_search_matchup_summary_from_macro_df(macro_df: pd.DataFrame) -> pd.Dat
         .agg(
             samples=("final_score", "size"),
             same_map_win_rate=("meets_same_map_bar", "mean"),
+            same_map_wins=("meets_same_map_bar", "sum"),
             avg_score_gap_vs_greedy=("score_gap_vs_greedy", "mean"),
             median_score_gap_vs_greedy=("score_gap_vs_greedy", "median"),
             avg_score_gap_vs_random=("score_gap_vs_random", "mean"),
             median_score_gap_vs_random=("score_gap_vs_random", "median"),
+            decision_time_ms_total=("decision_time_ms_total", "sum"),
         )
         .reset_index()
     )
     summary["same_map_win_rate"] = summary["same_map_win_rate"] * 100
+    summary["wins_per_cpu_hour"] = summary["same_map_wins"] / (
+        summary["decision_time_ms_total"].clip(lower=0.000001) / 3_600_000
+    )
     summary["task7_acceptance_candidate"] = (
         (summary["same_map_win_rate"] >= 95)
         & (summary["avg_score_gap_vs_greedy"] >= 0)
@@ -850,6 +865,553 @@ def build_search_score_component_gap_summary_from_score_df(
             ).mean()
         rows.append(row)
     return pd.DataFrame(rows).sort_values(["policy_variant"])
+
+
+def build_search_turn_gap_df(
+    macro_df: pd.DataFrame,
+    turn_score_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if turn_score_df.empty or "ai_type" not in turn_score_df or "score" not in turn_score_df:
+        return pd.DataFrame()
+    if any(column not in turn_score_df for column in (*MATCH_KEY_COLS, "turn")):
+        return pd.DataFrame()
+
+    component_cols = [
+        column for column in turn_score_df.columns if str(column).startswith("score_")
+    ]
+    snapshot_cols = [
+        "food",
+        "wood",
+        "ore",
+        "science",
+        "city_count",
+        "building_count",
+        "tech_count",
+        "road_count",
+        "network_count",
+        "connected_city_count",
+        "isolated_city_count",
+        "largest_network_size",
+        "starving_network_count",
+        "legal_actions_count",
+    ]
+    snapshot_cols = [column for column in snapshot_cols if column in turn_score_df]
+    compare_cols = ["score", *component_cols, *snapshot_cols]
+
+    greedy_cols = [*MATCH_KEY_COLS, "turn", *compare_cols]
+    greedy_df = turn_score_df[turn_score_df["ai_type"] == GREEDY_LABEL][greedy_cols].copy()
+    search_df = turn_score_df[turn_score_df["ai_type"] == SEARCH_LABEL].copy()
+    if greedy_df.empty or search_df.empty:
+        return pd.DataFrame()
+
+    greedy_df = greedy_df.rename(columns={column: f"greedy_{column}" for column in compare_cols})
+    merged = search_df.merge(greedy_df, on=[*MATCH_KEY_COLS, "turn"], how="left")
+    if "greedy_score" not in merged:
+        return pd.DataFrame()
+    merged["score_gap_vs_greedy"] = merged["score"] - merged["greedy_score"]
+    for column in component_cols + snapshot_cols:
+        greedy_column = f"greedy_{column}"
+        if greedy_column in merged:
+            merged[f"{column}_gap_vs_greedy"] = merged[column] - merged[greedy_column]
+
+    if not macro_df.empty and "final_score" in macro_df and "record_id" in macro_df:
+        final_cols = ["record_id", "final_score", "decision_time_ms_total"]
+        final_cols = [column for column in final_cols if column in macro_df]
+        search_final = macro_df[macro_df["ai_type"] == SEARCH_LABEL][final_cols].rename(
+            columns={"final_score": "search_final_score"}
+        )
+        greedy_final = macro_df[macro_df["ai_type"] == GREEDY_LABEL][
+            [*MATCH_KEY_COLS, "final_score"]
+        ].rename(columns={"final_score": "greedy_final_score"})
+        merged = merged.merge(search_final, on="record_id", how="left").merge(
+            greedy_final,
+            on=list(MATCH_KEY_COLS),
+            how="left",
+        )
+        if "search_final_score" in merged and "greedy_final_score" in merged:
+            merged["final_gap_vs_greedy"] = (
+                merged["search_final_score"] - merged["greedy_final_score"]
+            )
+    return merged
+
+
+def build_search_lag_event_df(
+    turn_gap_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if turn_gap_df.empty or "score_gap_vs_greedy" not in turn_gap_df:
+        return pd.DataFrame()
+
+    rows: list[dict[str, object]] = []
+    for (policy_variant, record_id), group in turn_gap_df.groupby(
+        ["policy_variant", "record_id"],
+        dropna=False,
+    ):
+        ordered = group.sort_values("turn")
+        turns = [int(_number(value, 0)) for value in ordered["turn"].tolist()]
+        gaps = [float(_number(value, 0)) for value in ordered["score_gap_vs_greedy"].tolist()]
+        if not turns:
+            continue
+        turn_limit = int(_number(ordered["turn_limit"].iloc[0], turns[-1]))
+        final_gap = (
+            float(_number(ordered["final_gap_vs_greedy"].iloc[0], gaps[-1]))
+            if "final_gap_vs_greedy" in ordered
+            else gaps[-1]
+        )
+        recovery_count, max_recovery_gap = _recovery_metrics(gaps)
+        row: dict[str, object] = {
+            "policy_variant": policy_variant,
+            "record_id": record_id,
+            "seed": int(_number(ordered["seed"].iloc[0], 0)),
+            "map_size": int(_number(ordered["map_size"].iloc[0], 0)),
+            "turn_limit": turn_limit,
+            "map_difficulty": ordered["map_difficulty"].iloc[0],
+            "final_gap_vs_greedy": final_gap,
+            "is_final_under_greedy": int(final_gap < 0),
+            "first_turn_under_greedy": _first_gap_turn(turns, gaps, lambda gap: gap < 0),
+            "first_persistent_under_greedy_turn": _first_persistent_gap_turn(
+                turns,
+                gaps,
+                lambda gap: gap < 0,
+            ),
+            "recovery_count": recovery_count,
+            "max_recovery_gap": max_recovery_gap,
+        }
+        for threshold in LAG_GAP_THRESHOLDS:
+            row[f"first_turn_gap_le_{threshold}"] = _first_gap_turn(
+                turns,
+                gaps,
+                lambda gap, threshold=threshold: gap <= -threshold,
+            )
+        for threshold in (250, 500):
+            row[f"first_persistent_gap_le_{threshold}_turn"] = _first_persistent_gap_turn(
+                turns,
+                gaps,
+                lambda gap, threshold=threshold: gap <= -threshold,
+            )
+        for pct in LAG_PCT_POINTS:
+            label = f"{int(pct * 100)}_pct"
+            row[f"gap_at_{label}"] = _gap_at_target_turn(
+                turns,
+                gaps,
+                max(1, ceil(turn_limit * pct)),
+            )
+        row["final_gap"] = final_gap
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def build_search_lag_summary_from_lag_df(lag_df: pd.DataFrame) -> pd.DataFrame:
+    if lag_df.empty:
+        return lag_df
+    value_cols = [
+        "is_final_under_greedy",
+        "first_turn_under_greedy",
+        "first_turn_gap_le_100",
+        "first_turn_gap_le_250",
+        "first_turn_gap_le_500",
+        "first_persistent_under_greedy_turn",
+        "first_persistent_gap_le_250_turn",
+        "first_persistent_gap_le_500_turn",
+        "gap_at_10_pct",
+        "gap_at_25_pct",
+        "gap_at_50_pct",
+        "gap_at_75_pct",
+        "final_gap",
+        "recovery_count",
+        "max_recovery_gap",
+    ]
+    return _summary_table(
+        lag_df,
+        ["policy_variant"],
+        [column for column in value_cols if column in lag_df],
+    )
+
+
+def build_search_lag_config_summary_from_lag_df(lag_df: pd.DataFrame) -> pd.DataFrame:
+    if lag_df.empty:
+        return lag_df
+    summary = (
+        lag_df.groupby(["policy_variant", "map_size", "turn_limit", "map_difficulty"], dropna=False)
+        .agg(
+            samples=("record_id", "size"),
+            under_greedy_count=("is_final_under_greedy", "sum"),
+            avg_final_gap=("final_gap", "mean"),
+            median_final_gap=("final_gap", "median"),
+            median_first_under_turn=("first_turn_under_greedy", "median"),
+            median_gap_at_25_pct=("gap_at_25_pct", "median"),
+        )
+        .reset_index()
+    )
+    summary["under_greedy_rate"] = summary["under_greedy_count"] / summary["samples"].clip(lower=1)
+    return summary.sort_values(
+        ["under_greedy_rate", "avg_final_gap"],
+        ascending=[False, True],
+    )
+
+
+def build_search_lag_event_component_summary(
+    lag_df: pd.DataFrame,
+    turn_gap_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if lag_df.empty or turn_gap_df.empty:
+        return pd.DataFrame()
+    gap_cols = [
+        "score_city_score_gap_vs_greedy",
+        "score_connected_city_score_gap_vs_greedy",
+        "score_resource_ring_score_gap_vs_greedy",
+        "score_building_score_gap_vs_greedy",
+        "score_resource_score_gap_vs_greedy",
+        "score_starving_network_penalty_gap_vs_greedy",
+        "score_fragmented_network_penalty_gap_vs_greedy",
+        "score_isolated_city_penalty_gap_vs_greedy",
+    ]
+    gap_cols = [column for column in gap_cols if column in turn_gap_df]
+    if not gap_cols:
+        return pd.DataFrame()
+
+    indexed = {
+        (int(_number(row["record_id"], 0)), int(_number(row["turn"], 0))): row
+        for row in turn_gap_df.to_dict("records")
+    }
+    rows: list[dict[str, object]] = []
+    for lag_row in lag_df.to_dict("records"):
+        record_id = int(_number(lag_row.get("record_id"), 0))
+        for event_col in EVENT_TURN_COLUMNS:
+            turn = lag_row.get(event_col)
+            if _is_missing(turn):
+                continue
+            gap_row = indexed.get((record_id, int(_number(turn, 0))))
+            if gap_row is None:
+                continue
+            row: dict[str, object] = {
+                "policy_variant": lag_row.get("policy_variant"),
+                "event": event_col,
+            }
+            for column in gap_cols:
+                row[column] = gap_row.get(column)
+            rows.append(row)
+    event_df = pd.DataFrame(rows)
+    if event_df.empty:
+        return event_df
+    return _summary_table(event_df, ["policy_variant", "event"], gap_cols)
+
+
+def build_search_early_state_summary_from_turn_gap_df(turn_gap_df: pd.DataFrame) -> pd.DataFrame:
+    if turn_gap_df.empty:
+        return pd.DataFrame()
+    value_cols = [
+        "city_count_gap_vs_greedy",
+        "connected_city_count_gap_vs_greedy",
+        "network_count_gap_vs_greedy",
+        "largest_network_size_gap_vs_greedy",
+        "food_gap_vs_greedy",
+        "score_resource_ring_score_gap_vs_greedy",
+        "score_city_score_gap_vs_greedy",
+        "score_connected_city_score_gap_vs_greedy",
+    ]
+    value_cols = [column for column in value_cols if column in turn_gap_df]
+    if not value_cols:
+        return pd.DataFrame()
+    rows: list[dict[str, object]] = []
+    for (policy_variant, record_id), group in turn_gap_df.groupby(
+        ["policy_variant", "record_id"],
+        dropna=False,
+    ):
+        ordered = group.sort_values("turn")
+        turn_limit = int(_number(ordered["turn_limit"].iloc[0], 0))
+        windows: list[tuple[str, int]] = [
+            ("turn_3", 3),
+            ("turn_6", 6),
+            ("turn_12", 12),
+            ("pct_10", max(1, ceil(turn_limit * 0.10))),
+            ("pct_25", max(1, ceil(turn_limit * 0.25))),
+        ]
+        for label, target_turn in windows:
+            row_at_window = _row_at_or_after_turn(ordered, target_turn)
+            if row_at_window is None:
+                continue
+            row: dict[str, object] = {
+                "policy_variant": policy_variant,
+                "record_id": record_id,
+                "window": label,
+            }
+            for column in value_cols:
+                row[column] = row_at_window.get(column)
+            rows.append(row)
+    early_df = pd.DataFrame(rows)
+    if early_df.empty:
+        return early_df
+    return _summary_table(early_df, ["policy_variant", "window"], value_cols)
+
+
+def build_search_city_site_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataFrame:
+    if decision_df.empty or "search_chosen_city_site_score" not in decision_df:
+        return pd.DataFrame()
+    search_df = decision_df[decision_df.get("ai_type", pd.Series(dtype=object)) == SEARCH_LABEL]
+    if search_df.empty:
+        return pd.DataFrame()
+    value_cols = [
+        "search_chosen_city_site_score",
+        "search_greedy_city_site_score",
+        "search_chosen_city_site_score_delta_vs_greedy",
+        "search_chosen_city_food_balance",
+        "search_chosen_city_total_yield",
+        "search_chosen_city_river_access",
+        "search_chosen_city_forest_neighbors",
+        "search_chosen_city_mountain_neighbors",
+        "search_chosen_city_river_neighbors",
+        "search_chosen_city_plain_neighbors",
+        "search_chosen_city_distance_to_network",
+    ]
+    value_cols = [column for column in value_cols if column in search_df]
+    rows: list[dict[str, object]] = []
+    windows = [
+        ("turn_3", lambda group: group["turn"] <= 3),
+        ("turn_6", lambda group: group["turn"] <= 6),
+        ("turn_12", lambda group: group["turn"] <= 12),
+        ("pct_10", lambda group: group["turn"] <= (group["turn_limit"] * 0.10).map(ceil)),
+        ("pct_25", lambda group: group["turn"] <= (group["turn_limit"] * 0.25).map(ceil)),
+    ]
+    for label, predicate in windows:
+        subset = search_df[predicate(search_df)].copy()
+        if subset.empty:
+            continue
+        subset = subset[subset["search_chosen_city_site_score"].notna()]
+        if subset.empty:
+            continue
+        subset["window"] = label
+        rows.extend(subset.to_dict("records"))
+    early_df = pd.DataFrame(rows)
+    if early_df.empty:
+        return early_df
+    return _summary_table(early_df, ["policy_variant", "window"], value_cols)
+
+
+def build_search_mode_transition_summary_from_decision_df(
+    decision_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if decision_df.empty or "search_mode" not in decision_df:
+        return pd.DataFrame()
+    search_df = decision_df[decision_df.get("ai_type", pd.Series(dtype=object)) == SEARCH_LABEL]
+    if search_df.empty:
+        return pd.DataFrame()
+    rows: list[dict[str, object]] = []
+    for (policy_variant, record_id), group in search_df.groupby(
+        ["policy_variant", "record_id"],
+        dropna=False,
+    ):
+        ordered = group.sort_values("turn")
+        turn_limit = int(_number(ordered["turn_limit"].iloc[0], 0))
+        early_threshold = max(1, ceil(turn_limit * 0.25))
+        modes = ordered.get("search_mode", pd.Series(dtype=object)).fillna("")
+        chosen = ordered.get("chosen_action_type", pd.Series(dtype=object)).fillna("")
+        effective_city = ordered.get(
+            "search_root_effective_city_candidate_count",
+            pd.Series(0, index=ordered.index),
+        ).fillna(0)
+        candidate_city = ordered.get(
+            "search_root_candidate_build_city_count",
+            pd.Series(0, index=ordered.index),
+        ).fillna(0)
+        effective_roads = ordered.get(
+            "search_root_effective_connection_road_candidate_count",
+            pd.Series(0, index=ordered.index),
+        ).fillna(0)
+        high_roi = ordered.get(
+            "search_root_high_roi_building_candidate_count",
+            pd.Series(0, index=ordered.index),
+        ).fillna(0)
+        safe_deficit = ordered.get(
+            "search_profile_safe_expansion_deficit",
+            pd.Series(0, index=ordered.index),
+        ).fillna(0)
+        rows.append(
+            {
+                "policy_variant": policy_variant,
+                "record_id": record_id,
+                "first_fill_turn": _first_series_turn(ordered, modes == "fill"),
+                "first_connect_turn": _first_series_turn(ordered, modes == "connect"),
+                "fill_before_25_pct": int(
+                    ((modes == "fill") & (ordered["turn"] <= early_threshold)).any()
+                ),
+                "connect_without_effective_road_turns": int(
+                    ((modes == "connect") & (effective_roads <= 0)).sum()
+                ),
+                "expand_city_candidate_available_but_building_chosen": int(
+                    (
+                        (modes == "expand") & (candidate_city > 0) & (chosen == "build_building")
+                    ).sum()
+                ),
+                "effective_city_candidate_available_but_non_city_chosen": int(
+                    ((modes == "expand") & (effective_city > 0) & (chosen != "build_city")).sum()
+                ),
+                "high_roi_building_chosen_before_city_target_met": int(
+                    ((high_roi > 0) & (chosen == "build_building") & (safe_deficit > 0)).sum()
+                ),
+            }
+        )
+    mode_df = pd.DataFrame(rows)
+    if mode_df.empty:
+        return mode_df
+    return _summary_table(
+        mode_df,
+        ["policy_variant"],
+        [
+            "first_fill_turn",
+            "first_connect_turn",
+            "fill_before_25_pct",
+            "connect_without_effective_road_turns",
+            "expand_city_candidate_available_but_building_chosen",
+            "effective_city_candidate_available_but_non_city_chosen",
+            "high_roi_building_chosen_before_city_target_met",
+        ],
+    )
+
+
+def build_search_greedy_anchor_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataFrame:
+    if decision_df.empty or "search_greedy_action_type" not in decision_df:
+        return pd.DataFrame()
+    search_df = decision_df[
+        (decision_df.get("ai_type", pd.Series(dtype=object)) == SEARCH_LABEL)
+        & (decision_df["search_greedy_action_type"].fillna("") != "")
+    ].copy()
+    if search_df.empty:
+        return pd.DataFrame()
+    value_cols = [
+        "search_matches_greedy_action",
+        "search_greedy_action_in_root_candidates",
+        "search_greedy_action_root_rank",
+        "search_greedy_action_root_value_margin",
+        "search_chosen_value_delta_vs_greedy_action",
+        "search_chosen_city_site_score_delta_vs_greedy",
+    ]
+    value_cols = [column for column in value_cols if column in search_df]
+    return _summary_table(search_df, ["policy_variant"], value_cols)
+
+
+def build_search_network_food_risk_summary_from_decision_df(
+    decision_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if decision_df.empty or "search_min_network_food_after_action" not in decision_df:
+        return pd.DataFrame()
+    search_df = decision_df[decision_df.get("ai_type", pd.Series(dtype=object)) == SEARCH_LABEL]
+    if search_df.empty:
+        return pd.DataFrame()
+    value_cols = [
+        "search_min_network_food_after_action",
+        "search_worst_network_food_pressure_after_action",
+        "search_food_surplus_network_count_after_action",
+        "search_food_deficit_network_count_after_action",
+    ]
+    value_cols = [column for column in value_cols if column in search_df]
+    return _summary_table(search_df, ["policy_variant"], value_cols)
+
+
+def build_search_timing_value_summary(
+    decision_df: pd.DataFrame,
+    turn_gap_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if decision_df.empty or "decision_time_ms" not in decision_df:
+        return pd.DataFrame()
+    search_df = decision_df[decision_df.get("ai_type", pd.Series(dtype=object)) == SEARCH_LABEL]
+    if search_df.empty:
+        return pd.DataFrame()
+
+    gap_cols = pd.DataFrame()
+    if not turn_gap_df.empty and "score_gap_vs_greedy" in turn_gap_df:
+        gap_cols = turn_gap_df[["record_id", "turn", "score_gap_vs_greedy"]].copy()
+        gap_cols = gap_cols.sort_values(["record_id", "turn"])
+        gap_cols["next_score_gap_vs_greedy"] = gap_cols.groupby("record_id")[
+            "score_gap_vs_greedy"
+        ].shift(-1)
+        gap_cols["gap_delta_after_search_decision"] = (
+            gap_cols["next_score_gap_vs_greedy"] - gap_cols["score_gap_vs_greedy"]
+        )
+        search_df = search_df.merge(gap_cols, on=["record_id", "turn"], how="left")
+
+    if "search_root_value_margin" in search_df:
+        denominator = search_df["decision_time_ms"].fillna(0).clip(lower=0.000001)
+        search_df["value_margin_per_ms"] = search_df["search_root_value_margin"].fillna(0) / (
+            denominator
+        )
+    group_cols = ["policy_variant", "search_mode", "search_depth_reason"]
+    value_cols = [
+        "decision_time_ms",
+        "search_leaf_count",
+        "search_nodes_expanded",
+        "search_root_value_margin",
+        "value_margin_per_ms",
+        "gap_delta_after_search_decision",
+    ]
+    value_cols = [column for column in value_cols if column in search_df]
+    return _summary_table(search_df, group_cols, value_cols)
+
+
+def _first_gap_turn(
+    turns: list[int],
+    gaps: list[float],
+    predicate: Callable[[float], bool],
+) -> int | None:
+    for turn, gap in zip(turns, gaps, strict=False):
+        if predicate(gap):
+            return turn
+    return None
+
+
+def _first_persistent_gap_turn(
+    turns: list[int],
+    gaps: list[float],
+    predicate: Callable[[float], bool],
+) -> int | None:
+    for index, turn in enumerate(turns):
+        if all(predicate(gap) for gap in gaps[index:]):
+            return turn
+    return None
+
+
+def _gap_at_target_turn(turns: list[int], gaps: list[float], target_turn: int) -> float | None:
+    if not turns:
+        return None
+    for turn, gap in zip(turns, gaps, strict=False):
+        if turn >= target_turn:
+            return gap
+    return gaps[-1]
+
+
+def _recovery_metrics(gaps: list[float]) -> tuple[int, float]:
+    recovery_count = 0
+    was_under = False
+    previous_under = False
+    min_under_gap = 0.0
+    max_recovery_gap = 0.0
+    for gap in gaps:
+        is_under = gap < 0
+        if is_under:
+            was_under = True
+            min_under_gap = min(min_under_gap, gap)
+        elif was_under and previous_under:
+            recovery_count += 1
+        if was_under:
+            max_recovery_gap = max(max_recovery_gap, gap - min_under_gap)
+        previous_under = is_under
+    return recovery_count, max_recovery_gap
+
+
+def _row_at_or_after_turn(group: pd.DataFrame, target_turn: int) -> dict[str, object] | None:
+    ordered = group.sort_values("turn")
+    subset = ordered[ordered["turn"] >= target_turn]
+    if subset.empty:
+        subset = ordered.tail(1)
+    if subset.empty:
+        return None
+    return subset.iloc[0].to_dict()
+
+
+def _first_series_turn(group: pd.DataFrame, mask: pd.Series) -> int | None:
+    subset = group[mask]
+    if subset.empty:
+        return None
+    return int(_number(subset.sort_values("turn").iloc[0]["turn"], 0))
 
 
 def build_map_df(records: list[RecordEntry]) -> pd.DataFrame:
@@ -1667,6 +2229,29 @@ def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
         decision_df
     )
     search_score_gap_summary = build_search_score_component_gap_summary_from_score_df(score_df)
+    search_turn_gap_df = build_search_turn_gap_df(macro_df, turn_score_df)
+    search_lag_event_df = build_search_lag_event_df(search_turn_gap_df)
+    search_lag_summary = build_search_lag_summary_from_lag_df(search_lag_event_df)
+    search_lag_config_summary = build_search_lag_config_summary_from_lag_df(search_lag_event_df)
+    search_lag_event_component_summary = build_search_lag_event_component_summary(
+        search_lag_event_df,
+        search_turn_gap_df,
+    )
+    search_early_state_summary = build_search_early_state_summary_from_turn_gap_df(
+        search_turn_gap_df
+    )
+    search_city_site_summary = build_search_city_site_summary_from_decision_df(decision_df)
+    search_mode_transition_summary = build_search_mode_transition_summary_from_decision_df(
+        decision_df
+    )
+    search_greedy_anchor_summary = build_search_greedy_anchor_summary_from_decision_df(decision_df)
+    search_network_food_risk_summary = build_search_network_food_risk_summary_from_decision_df(
+        decision_df
+    )
+    search_timing_value_summary = build_search_timing_value_summary(
+        decision_df,
+        search_turn_gap_df,
+    )
     anomaly_df = build_policy_anomaly_df_from_macro(macro_df)
     anomaly_summary = policy_anomaly_summary_from_df(anomaly_df)
     anomaly_config_summary = policy_anomaly_config_summary_from_df(anomaly_df)
@@ -1929,6 +2514,42 @@ def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
         "",
         make_table(search_score_gap_summary),
         "",
+        "### 7.10 Search Turn Lag Summary",
+        "",
+        make_table(search_lag_summary),
+        "",
+        "### 7.11 Search Lag Config Summary",
+        "",
+        make_table(search_lag_config_summary),
+        "",
+        "### 7.12 Search Lag Event Component Gap",
+        "",
+        make_table(search_lag_event_component_summary),
+        "",
+        "### 7.13 Search Early State Gap",
+        "",
+        make_table(search_early_state_summary),
+        "",
+        "### 7.14 Search Early City Site Quality",
+        "",
+        make_table(search_city_site_summary),
+        "",
+        "### 7.15 Search Mode Transition Diagnostics",
+        "",
+        make_table(search_mode_transition_summary),
+        "",
+        "### 7.16 Search Greedy Anchor Diagnostics",
+        "",
+        make_table(search_greedy_anchor_summary),
+        "",
+        "### 7.17 Search Network Food Risk",
+        "",
+        make_table(search_network_food_risk_summary),
+        "",
+        "### 7.18 Search Timing Value Summary",
+        "",
+        make_table(search_timing_value_summary),
+        "",
         "## 8. Network And Risk Summary",
         "",
         make_table(network_summary),
@@ -1980,7 +2601,7 @@ def _macro_match_key(row: dict[str, object]) -> tuple[int, int, int, str]:
 def _number(value: object, default: float) -> float:
     if _is_missing(value):
         return default
-    if isinstance(value, int | float):
+    if isinstance(value, Real):
         return float(value)
     if isinstance(value, str) and value:
         return float(value)
@@ -2024,6 +2645,29 @@ def generate_report(records: list[RecordEntry]) -> str:
         decision_df
     )
     search_score_gap_summary = build_search_score_component_gap_summary_from_score_df(score_df)
+    search_turn_gap_df = build_search_turn_gap_df(macro_df, turn_score_df)
+    search_lag_event_df = build_search_lag_event_df(search_turn_gap_df)
+    search_lag_summary = build_search_lag_summary_from_lag_df(search_lag_event_df)
+    search_lag_config_summary = build_search_lag_config_summary_from_lag_df(search_lag_event_df)
+    search_lag_event_component_summary = build_search_lag_event_component_summary(
+        search_lag_event_df,
+        search_turn_gap_df,
+    )
+    search_early_state_summary = build_search_early_state_summary_from_turn_gap_df(
+        search_turn_gap_df
+    )
+    search_city_site_summary = build_search_city_site_summary_from_decision_df(decision_df)
+    search_mode_transition_summary = build_search_mode_transition_summary_from_decision_df(
+        decision_df
+    )
+    search_greedy_anchor_summary = build_search_greedy_anchor_summary_from_decision_df(decision_df)
+    search_network_food_risk_summary = build_search_network_food_risk_summary_from_decision_df(
+        decision_df
+    )
+    search_timing_value_summary = build_search_timing_value_summary(
+        decision_df,
+        search_turn_gap_df,
+    )
     map_df = build_map_df(records)
     anomaly_cases = collect_policy_anomaly_cases(records)
     anomaly_summary = build_policy_anomaly_summary_df(records)
@@ -2267,6 +2911,42 @@ def generate_report(records: list[RecordEntry]) -> str:
         "### 7.9 Search Score Component Gap vs Greedy",
         "",
         make_table(search_score_gap_summary),
+        "",
+        "### 7.10 Search Turn Lag Summary",
+        "",
+        make_table(search_lag_summary),
+        "",
+        "### 7.11 Search Lag Config Summary",
+        "",
+        make_table(search_lag_config_summary),
+        "",
+        "### 7.12 Search Lag Event Component Gap",
+        "",
+        make_table(search_lag_event_component_summary),
+        "",
+        "### 7.13 Search Early State Gap",
+        "",
+        make_table(search_early_state_summary),
+        "",
+        "### 7.14 Search Early City Site Quality",
+        "",
+        make_table(search_city_site_summary),
+        "",
+        "### 7.15 Search Mode Transition Diagnostics",
+        "",
+        make_table(search_mode_transition_summary),
+        "",
+        "### 7.16 Search Greedy Anchor Diagnostics",
+        "",
+        make_table(search_greedy_anchor_summary),
+        "",
+        "### 7.17 Search Network Food Risk",
+        "",
+        make_table(search_network_food_risk_summary),
+        "",
+        "### 7.18 Search Timing Value Summary",
+        "",
+        make_table(search_timing_value_summary),
         "",
         "## 8. Network And Risk Summary",
         "",

@@ -30,7 +30,7 @@ from microciv.game.models import (
 from microciv.game.scoring import score_breakdown
 from microciv.records.models import RecordEntry
 
-ARTIFACT_SCHEMA_VERSION: Final[int] = 4
+ARTIFACT_SCHEMA_VERSION: Final[int] = 5
 ARTIFACT_MANIFEST_FILENAME: Final[str] = "artifact_manifest.json"
 ARTIFACT_TABLES: Final[tuple[str, ...]] = (
     "macro",
@@ -350,6 +350,20 @@ def record_turn_score_rows(record: RecordEntry) -> list[dict[str, object]]:
             **base,
             "turn": snapshot.turn,
             "score": snapshot.score,
+            "food": snapshot.food,
+            "wood": snapshot.wood,
+            "ore": snapshot.ore,
+            "science": snapshot.science,
+            "city_count": snapshot.city_count,
+            "building_count": snapshot.building_count,
+            "tech_count": snapshot.tech_count,
+            "road_count": snapshot.road_count,
+            "network_count": snapshot.network_count,
+            "connected_city_count": snapshot.connected_city_count,
+            "isolated_city_count": snapshot.isolated_city_count,
+            "largest_network_size": snapshot.largest_network_size,
+            "starving_network_count": snapshot.starving_network_count,
+            "legal_actions_count": snapshot.legal_actions_count,
         }
         for key, value in snapshot.score_breakdown.items():
             row[f"score_{key}"] = value
@@ -366,6 +380,7 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             **base,
             "turn": context.turn,
             "chosen_action_type": context.chosen_action_type or "",
+            "decision_time_ms": context.decision_time_ms,
             "greedy_stage": context.greedy_stage or "",
             "greedy_priority": context.greedy_priority or "",
             "greedy_best_action_type": context.greedy_best_action_type or "",
@@ -504,6 +519,91 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
                 if context.search_road_after_full_connectivity is not None
                 else None
             ),
+            "search_greedy_action_type": context.search_greedy_action_type or "",
+            "search_matches_greedy_action": (
+                int(context.search_matches_greedy_action)
+                if context.search_matches_greedy_action is not None
+                else None
+            ),
+            "search_greedy_action_in_root_candidates": (
+                int(context.search_greedy_action_in_root_candidates)
+                if context.search_greedy_action_in_root_candidates is not None
+                else None
+            ),
+            "search_greedy_action_root_rank": context.search_greedy_action_root_rank,
+            "search_greedy_action_root_value": context.search_greedy_action_root_value,
+            "search_greedy_action_root_value_margin": (
+                context.search_greedy_action_root_value_margin
+            ),
+            "search_chosen_value_delta_vs_greedy_action": (
+                context.search_chosen_value_delta_vs_greedy_action
+            ),
+            "search_chosen_city_site_score": context.search_chosen_city_site_score,
+            "search_greedy_city_site_score": context.search_greedy_city_site_score,
+            "search_chosen_city_site_score_delta_vs_greedy": (
+                context.search_chosen_city_site_score_delta_vs_greedy
+            ),
+            "search_chosen_city_food_balance": context.search_chosen_city_food_balance,
+            "search_chosen_city_total_yield": context.search_chosen_city_total_yield,
+            "search_chosen_city_river_access": (
+                int(context.search_chosen_city_river_access)
+                if context.search_chosen_city_river_access is not None
+                else None
+            ),
+            "search_chosen_city_forest_neighbors": (context.search_chosen_city_forest_neighbors),
+            "search_chosen_city_mountain_neighbors": (
+                context.search_chosen_city_mountain_neighbors
+            ),
+            "search_chosen_city_river_neighbors": context.search_chosen_city_river_neighbors,
+            "search_chosen_city_plain_neighbors": context.search_chosen_city_plain_neighbors,
+            "search_chosen_city_occupied_neighbors": (
+                context.search_chosen_city_occupied_neighbors
+            ),
+            "search_chosen_city_distance_to_network": (
+                context.search_chosen_city_distance_to_network
+            ),
+            "search_greedy_city_food_balance": context.search_greedy_city_food_balance,
+            "search_greedy_city_total_yield": context.search_greedy_city_total_yield,
+            "search_greedy_city_river_access": (
+                int(context.search_greedy_city_river_access)
+                if context.search_greedy_city_river_access is not None
+                else None
+            ),
+            "search_greedy_city_forest_neighbors": (context.search_greedy_city_forest_neighbors),
+            "search_greedy_city_mountain_neighbors": (
+                context.search_greedy_city_mountain_neighbors
+            ),
+            "search_greedy_city_river_neighbors": context.search_greedy_city_river_neighbors,
+            "search_greedy_city_plain_neighbors": context.search_greedy_city_plain_neighbors,
+            "search_greedy_city_occupied_neighbors": (
+                context.search_greedy_city_occupied_neighbors
+            ),
+            "search_greedy_city_distance_to_network": (
+                context.search_greedy_city_distance_to_network
+            ),
+            "search_min_network_food_after_action": context.search_min_network_food_after_action,
+            "search_worst_network_food_pressure_after_action": (
+                context.search_worst_network_food_pressure_after_action
+            ),
+            "search_food_surplus_network_count_after_action": (
+                context.search_food_surplus_network_count_after_action
+            ),
+            "search_food_deficit_network_count_after_action": (
+                context.search_food_deficit_network_count_after_action
+            ),
+            "search_profile_city_count": context.search_profile_city_count,
+            "search_profile_target_city_count": context.search_profile_target_city_count,
+            "search_profile_expansion_deficit": context.search_profile_expansion_deficit,
+            "search_profile_safe_expansion_deficit": (
+                context.search_profile_safe_expansion_deficit
+            ),
+            "search_profile_network_count": context.search_profile_network_count,
+            "search_profile_connected_city_count": context.search_profile_connected_city_count,
+            "search_profile_isolated_city_count": context.search_profile_isolated_city_count,
+            "search_profile_starving_network_count": context.search_profile_starving_network_count,
+            "search_profile_food_pressure": context.search_profile_food_pressure,
+            "search_profile_road_overbuild": context.search_profile_road_overbuild,
+            "search_profile_fill_count": context.search_profile_fill_count,
         }
         for key, value in context.greedy_score_breakdown.items():
             row[f"score_{key}"] = value

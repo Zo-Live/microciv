@@ -546,6 +546,7 @@ class RecordDecisionContext:
     legal_research_tech_count: int
     legal_skip_count: int
     chosen_action_type: str | None = None
+    decision_time_ms: float | None = None
     greedy_stage: str | None = None
     greedy_priority: str | None = None
     greedy_best_action_type: str | None = None
@@ -641,6 +642,49 @@ class RecordDecisionContext:
     search_road_connected_city_delta: int | None = None
     search_road_is_redundant: bool | None = None
     search_road_after_full_connectivity: bool | None = None
+    search_greedy_action_type: str | None = None
+    search_matches_greedy_action: bool | None = None
+    search_greedy_action_in_root_candidates: bool | None = None
+    search_greedy_action_root_rank: int | None = None
+    search_greedy_action_root_value: int | None = None
+    search_greedy_action_root_value_margin: int | None = None
+    search_chosen_value_delta_vs_greedy_action: int | None = None
+    search_chosen_city_site_score: int | None = None
+    search_greedy_city_site_score: int | None = None
+    search_chosen_city_site_score_delta_vs_greedy: int | None = None
+    search_chosen_city_food_balance: int | None = None
+    search_chosen_city_total_yield: int | None = None
+    search_chosen_city_river_access: bool | None = None
+    search_chosen_city_forest_neighbors: int | None = None
+    search_chosen_city_mountain_neighbors: int | None = None
+    search_chosen_city_river_neighbors: int | None = None
+    search_chosen_city_plain_neighbors: int | None = None
+    search_chosen_city_occupied_neighbors: int | None = None
+    search_chosen_city_distance_to_network: int | None = None
+    search_greedy_city_food_balance: int | None = None
+    search_greedy_city_total_yield: int | None = None
+    search_greedy_city_river_access: bool | None = None
+    search_greedy_city_forest_neighbors: int | None = None
+    search_greedy_city_mountain_neighbors: int | None = None
+    search_greedy_city_river_neighbors: int | None = None
+    search_greedy_city_plain_neighbors: int | None = None
+    search_greedy_city_occupied_neighbors: int | None = None
+    search_greedy_city_distance_to_network: int | None = None
+    search_min_network_food_after_action: int | None = None
+    search_worst_network_food_pressure_after_action: int | None = None
+    search_food_surplus_network_count_after_action: int | None = None
+    search_food_deficit_network_count_after_action: int | None = None
+    search_profile_city_count: int | None = None
+    search_profile_target_city_count: int | None = None
+    search_profile_expansion_deficit: int | None = None
+    search_profile_safe_expansion_deficit: int | None = None
+    search_profile_network_count: int | None = None
+    search_profile_connected_city_count: int | None = None
+    search_profile_isolated_city_count: int | None = None
+    search_profile_starving_network_count: int | None = None
+    search_profile_food_pressure: int | None = None
+    search_profile_road_overbuild: int | None = None
+    search_profile_fill_count: int | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordDecisionContext:
@@ -653,6 +697,7 @@ class RecordDecisionContext:
             legal_research_tech_count=_int_with_default(payload, "legal_research_tech_count", 0),
             legal_skip_count=_int_with_default(payload, "legal_skip_count", 0),
             chosen_action_type=_optional_str(payload, "chosen_action_type"),
+            decision_time_ms=_optional_float(payload, "decision_time_ms"),
             greedy_stage=_optional_str(payload, "greedy_stage"),
             greedy_priority=_optional_str(payload, "greedy_priority"),
             greedy_best_action_type=_optional_str(payload, "greedy_best_action_type"),
@@ -819,6 +864,111 @@ class RecordDecisionContext:
             search_road_after_full_connectivity=_optional_bool(
                 payload, "search_road_after_full_connectivity"
             ),
+            search_greedy_action_type=_optional_str(payload, "search_greedy_action_type"),
+            search_matches_greedy_action=_optional_bool(payload, "search_matches_greedy_action"),
+            search_greedy_action_in_root_candidates=_optional_bool(
+                payload, "search_greedy_action_in_root_candidates"
+            ),
+            search_greedy_action_root_rank=_optional_int(payload, "search_greedy_action_root_rank"),
+            search_greedy_action_root_value=_optional_int(
+                payload, "search_greedy_action_root_value"
+            ),
+            search_greedy_action_root_value_margin=_optional_int(
+                payload, "search_greedy_action_root_value_margin"
+            ),
+            search_chosen_value_delta_vs_greedy_action=_optional_int(
+                payload, "search_chosen_value_delta_vs_greedy_action"
+            ),
+            search_chosen_city_site_score=_optional_int(payload, "search_chosen_city_site_score"),
+            search_greedy_city_site_score=_optional_int(payload, "search_greedy_city_site_score"),
+            search_chosen_city_site_score_delta_vs_greedy=_optional_int(
+                payload, "search_chosen_city_site_score_delta_vs_greedy"
+            ),
+            search_chosen_city_food_balance=_optional_int(
+                payload, "search_chosen_city_food_balance"
+            ),
+            search_chosen_city_total_yield=_optional_int(payload, "search_chosen_city_total_yield"),
+            search_chosen_city_river_access=_optional_bool(
+                payload, "search_chosen_city_river_access"
+            ),
+            search_chosen_city_forest_neighbors=_optional_int(
+                payload, "search_chosen_city_forest_neighbors"
+            ),
+            search_chosen_city_mountain_neighbors=_optional_int(
+                payload, "search_chosen_city_mountain_neighbors"
+            ),
+            search_chosen_city_river_neighbors=_optional_int(
+                payload, "search_chosen_city_river_neighbors"
+            ),
+            search_chosen_city_plain_neighbors=_optional_int(
+                payload, "search_chosen_city_plain_neighbors"
+            ),
+            search_chosen_city_occupied_neighbors=_optional_int(
+                payload, "search_chosen_city_occupied_neighbors"
+            ),
+            search_chosen_city_distance_to_network=_optional_int(
+                payload, "search_chosen_city_distance_to_network"
+            ),
+            search_greedy_city_food_balance=_optional_int(
+                payload, "search_greedy_city_food_balance"
+            ),
+            search_greedy_city_total_yield=_optional_int(payload, "search_greedy_city_total_yield"),
+            search_greedy_city_river_access=_optional_bool(
+                payload, "search_greedy_city_river_access"
+            ),
+            search_greedy_city_forest_neighbors=_optional_int(
+                payload, "search_greedy_city_forest_neighbors"
+            ),
+            search_greedy_city_mountain_neighbors=_optional_int(
+                payload, "search_greedy_city_mountain_neighbors"
+            ),
+            search_greedy_city_river_neighbors=_optional_int(
+                payload, "search_greedy_city_river_neighbors"
+            ),
+            search_greedy_city_plain_neighbors=_optional_int(
+                payload, "search_greedy_city_plain_neighbors"
+            ),
+            search_greedy_city_occupied_neighbors=_optional_int(
+                payload, "search_greedy_city_occupied_neighbors"
+            ),
+            search_greedy_city_distance_to_network=_optional_int(
+                payload, "search_greedy_city_distance_to_network"
+            ),
+            search_min_network_food_after_action=_optional_int(
+                payload, "search_min_network_food_after_action"
+            ),
+            search_worst_network_food_pressure_after_action=_optional_int(
+                payload, "search_worst_network_food_pressure_after_action"
+            ),
+            search_food_surplus_network_count_after_action=_optional_int(
+                payload, "search_food_surplus_network_count_after_action"
+            ),
+            search_food_deficit_network_count_after_action=_optional_int(
+                payload, "search_food_deficit_network_count_after_action"
+            ),
+            search_profile_city_count=_optional_int(payload, "search_profile_city_count"),
+            search_profile_target_city_count=_optional_int(
+                payload, "search_profile_target_city_count"
+            ),
+            search_profile_expansion_deficit=_optional_int(
+                payload, "search_profile_expansion_deficit"
+            ),
+            search_profile_safe_expansion_deficit=_optional_int(
+                payload, "search_profile_safe_expansion_deficit"
+            ),
+            search_profile_network_count=_optional_int(payload, "search_profile_network_count"),
+            search_profile_connected_city_count=_optional_int(
+                payload, "search_profile_connected_city_count"
+            ),
+            search_profile_isolated_city_count=_optional_int(
+                payload, "search_profile_isolated_city_count"
+            ),
+            search_profile_starving_network_count=_optional_int(
+                payload, "search_profile_starving_network_count"
+            ),
+            search_profile_food_pressure=_optional_int(payload, "search_profile_food_pressure"),
+            search_profile_road_overbuild=_optional_int(payload, "search_profile_road_overbuild"),
+            search_profile_fill_count=_optional_int(payload, "search_profile_fill_count"),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -833,6 +983,8 @@ class RecordDecisionContext:
         }
         if self.chosen_action_type is not None:
             result["chosen_action_type"] = self.chosen_action_type
+        if self.decision_time_ms is not None:
+            result["decision_time_ms"] = self.decision_time_ms
         if self.greedy_stage is not None:
             result["greedy_stage"] = self.greedy_stage
         if self.greedy_priority is not None:
@@ -1051,6 +1203,124 @@ class RecordDecisionContext:
             result["search_road_is_redundant"] = self.search_road_is_redundant
         if self.search_road_after_full_connectivity is not None:
             result["search_road_after_full_connectivity"] = self.search_road_after_full_connectivity
+        if self.search_greedy_action_type is not None:
+            result["search_greedy_action_type"] = self.search_greedy_action_type
+        if self.search_matches_greedy_action is not None:
+            result["search_matches_greedy_action"] = self.search_matches_greedy_action
+        if self.search_greedy_action_in_root_candidates is not None:
+            result["search_greedy_action_in_root_candidates"] = (
+                self.search_greedy_action_in_root_candidates
+            )
+        if self.search_greedy_action_root_rank is not None:
+            result["search_greedy_action_root_rank"] = self.search_greedy_action_root_rank
+        if self.search_greedy_action_root_value is not None:
+            result["search_greedy_action_root_value"] = self.search_greedy_action_root_value
+        if self.search_greedy_action_root_value_margin is not None:
+            result["search_greedy_action_root_value_margin"] = (
+                self.search_greedy_action_root_value_margin
+            )
+        if self.search_chosen_value_delta_vs_greedy_action is not None:
+            result["search_chosen_value_delta_vs_greedy_action"] = (
+                self.search_chosen_value_delta_vs_greedy_action
+            )
+        if self.search_chosen_city_site_score is not None:
+            result["search_chosen_city_site_score"] = self.search_chosen_city_site_score
+        if self.search_greedy_city_site_score is not None:
+            result["search_greedy_city_site_score"] = self.search_greedy_city_site_score
+        if self.search_chosen_city_site_score_delta_vs_greedy is not None:
+            result["search_chosen_city_site_score_delta_vs_greedy"] = (
+                self.search_chosen_city_site_score_delta_vs_greedy
+            )
+        if self.search_chosen_city_food_balance is not None:
+            result["search_chosen_city_food_balance"] = self.search_chosen_city_food_balance
+        if self.search_chosen_city_total_yield is not None:
+            result["search_chosen_city_total_yield"] = self.search_chosen_city_total_yield
+        if self.search_chosen_city_river_access is not None:
+            result["search_chosen_city_river_access"] = self.search_chosen_city_river_access
+        if self.search_chosen_city_forest_neighbors is not None:
+            result["search_chosen_city_forest_neighbors"] = self.search_chosen_city_forest_neighbors
+        if self.search_chosen_city_mountain_neighbors is not None:
+            result["search_chosen_city_mountain_neighbors"] = (
+                self.search_chosen_city_mountain_neighbors
+            )
+        if self.search_chosen_city_river_neighbors is not None:
+            result["search_chosen_city_river_neighbors"] = self.search_chosen_city_river_neighbors
+        if self.search_chosen_city_plain_neighbors is not None:
+            result["search_chosen_city_plain_neighbors"] = self.search_chosen_city_plain_neighbors
+        if self.search_chosen_city_occupied_neighbors is not None:
+            result["search_chosen_city_occupied_neighbors"] = (
+                self.search_chosen_city_occupied_neighbors
+            )
+        if self.search_chosen_city_distance_to_network is not None:
+            result["search_chosen_city_distance_to_network"] = (
+                self.search_chosen_city_distance_to_network
+            )
+        if self.search_greedy_city_food_balance is not None:
+            result["search_greedy_city_food_balance"] = self.search_greedy_city_food_balance
+        if self.search_greedy_city_total_yield is not None:
+            result["search_greedy_city_total_yield"] = self.search_greedy_city_total_yield
+        if self.search_greedy_city_river_access is not None:
+            result["search_greedy_city_river_access"] = self.search_greedy_city_river_access
+        if self.search_greedy_city_forest_neighbors is not None:
+            result["search_greedy_city_forest_neighbors"] = self.search_greedy_city_forest_neighbors
+        if self.search_greedy_city_mountain_neighbors is not None:
+            result["search_greedy_city_mountain_neighbors"] = (
+                self.search_greedy_city_mountain_neighbors
+            )
+        if self.search_greedy_city_river_neighbors is not None:
+            result["search_greedy_city_river_neighbors"] = self.search_greedy_city_river_neighbors
+        if self.search_greedy_city_plain_neighbors is not None:
+            result["search_greedy_city_plain_neighbors"] = self.search_greedy_city_plain_neighbors
+        if self.search_greedy_city_occupied_neighbors is not None:
+            result["search_greedy_city_occupied_neighbors"] = (
+                self.search_greedy_city_occupied_neighbors
+            )
+        if self.search_greedy_city_distance_to_network is not None:
+            result["search_greedy_city_distance_to_network"] = (
+                self.search_greedy_city_distance_to_network
+            )
+        if self.search_min_network_food_after_action is not None:
+            result["search_min_network_food_after_action"] = (
+                self.search_min_network_food_after_action
+            )
+        if self.search_worst_network_food_pressure_after_action is not None:
+            result["search_worst_network_food_pressure_after_action"] = (
+                self.search_worst_network_food_pressure_after_action
+            )
+        if self.search_food_surplus_network_count_after_action is not None:
+            result["search_food_surplus_network_count_after_action"] = (
+                self.search_food_surplus_network_count_after_action
+            )
+        if self.search_food_deficit_network_count_after_action is not None:
+            result["search_food_deficit_network_count_after_action"] = (
+                self.search_food_deficit_network_count_after_action
+            )
+        if self.search_profile_city_count is not None:
+            result["search_profile_city_count"] = self.search_profile_city_count
+        if self.search_profile_target_city_count is not None:
+            result["search_profile_target_city_count"] = self.search_profile_target_city_count
+        if self.search_profile_expansion_deficit is not None:
+            result["search_profile_expansion_deficit"] = self.search_profile_expansion_deficit
+        if self.search_profile_safe_expansion_deficit is not None:
+            result["search_profile_safe_expansion_deficit"] = (
+                self.search_profile_safe_expansion_deficit
+            )
+        if self.search_profile_network_count is not None:
+            result["search_profile_network_count"] = self.search_profile_network_count
+        if self.search_profile_connected_city_count is not None:
+            result["search_profile_connected_city_count"] = self.search_profile_connected_city_count
+        if self.search_profile_isolated_city_count is not None:
+            result["search_profile_isolated_city_count"] = self.search_profile_isolated_city_count
+        if self.search_profile_starving_network_count is not None:
+            result["search_profile_starving_network_count"] = (
+                self.search_profile_starving_network_count
+            )
+        if self.search_profile_food_pressure is not None:
+            result["search_profile_food_pressure"] = self.search_profile_food_pressure
+        if self.search_profile_road_overbuild is not None:
+            result["search_profile_road_overbuild"] = self.search_profile_road_overbuild
+        if self.search_profile_fill_count is not None:
+            result["search_profile_fill_count"] = self.search_profile_fill_count
         return result
 
 

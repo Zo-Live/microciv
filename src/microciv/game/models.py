@@ -328,6 +328,7 @@ class Stats:
         legal_research_tech_count: int,
         legal_skip_count: int,
         chosen_action_type: str | None = None,
+        decision_time_ms: float | None = None,
         policy_context: dict[str, object] | None = None,
     ) -> None:
         ctx: dict[str, object] = {
@@ -341,6 +342,8 @@ class Stats:
         }
         if chosen_action_type is not None:
             ctx["chosen_action_type"] = chosen_action_type
+        if decision_time_ms is not None:
+            ctx["decision_time_ms"] = decision_time_ms
         if policy_context:
             ctx.update(
                 key_value for key_value in policy_context.items() if key_value[1] is not None

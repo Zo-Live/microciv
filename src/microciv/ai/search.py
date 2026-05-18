@@ -5,6 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from microciv.ai.heuristics import (
+    HeuristicContext,
+    build_heuristic_context,
+    city_network_pressure,
+    city_site_score_for_context,
+    context_is_river_adjacent_site,
+    resource_ring_counts_for_context,
+    site_budget,
+)
 from microciv.ai.policy import Policy, simulate_action
 from microciv.ai.search_support import (
     SEARCH_MODE_CONNECT,
@@ -27,6 +36,7 @@ from microciv.constants import (
 from microciv.game.actions import Action
 from microciv.game.enums import ActionType, BuildingType, TechType
 from microciv.game.models import GameState
+from microciv.utils.grid import Coord
 
 SEARCH_DEPTH_REASON_FIXED = "fixed"
 SEARCH_DEPTH_REASON_FOOD_RESCUE = "food_rescue"
@@ -149,6 +159,7 @@ class DynamicSearchDepthStrategy:
 class PlannedSearchDecision:
     action: Action
     context: dict[str, object]
+    root_candidate_diagnostics: tuple[RootCandidateDiagnostic, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -221,7 +232,10 @@ class SearchPolicy(Policy):
         return self._plan_action(state).action
 
     def explain_decision(self, state: GameState) -> dict[str, object]:
-        return dict(self._plan_action(state).context)
+        decision = self._plan_action(state)
+        context = dict(decision.context)
+        context.update(_post_decision_diagnostics(state, decision))
+        return context
 
     def _plan_action(self, state: GameState) -> PlannedSearchDecision:
         cache_key = self._build_cache_key(state)
@@ -328,6 +342,17 @@ class SearchPolicy(Policy):
                     telemetry.root_high_roi_building_candidate_count
                 ),
                 "search_root_gated_candidate_count": telemetry.root_gated_candidate_count,
+                "search_profile_city_count": root_profile.city_count,
+                "search_profile_target_city_count": root_profile.target_city_count,
+                "search_profile_expansion_deficit": root_profile.expansion_deficit,
+                "search_profile_safe_expansion_deficit": root_profile.safe_expansion_deficit,
+                "search_profile_network_count": root_profile.network_count,
+                "search_profile_connected_city_count": root_profile.connected_city_count,
+                "search_profile_isolated_city_count": root_profile.isolated_city_count,
+                "search_profile_starving_network_count": root_profile.starving_network_count,
+                "search_profile_food_pressure": root_profile.food_pressure,
+                "search_profile_road_overbuild": root_profile.road_overbuild,
+                "search_profile_fill_count": root_profile.fill_count,
                 "search_nodes_expanded": telemetry.nodes_expanded,
                 "search_candidates_considered": telemetry.candidates_considered,
                 "search_leaf_count": telemetry.leaf_count,
@@ -355,6 +380,7 @@ class SearchPolicy(Policy):
                 **root_candidate_diagnostics,
                 **action_delta_diagnostics,
             },
+            root_candidate_diagnostics=tuple(telemetry.root_candidate_diagnostics),
         )
         self._cache_key = cache_key
         self._cached_decision = decision
@@ -584,6 +610,157 @@ def _action_delta_diagnostics(state: GameState, action: Action) -> dict[str, obj
         ),
         "search_road_is_redundant": road_is_redundant,
         "search_road_after_full_connectivity": road_after_full_connectivity,
+        **_network_food_risk_diagnostics(after_state),
+    }
+
+
+def _post_decision_diagnostics(
+    state: GameState,
+    decision: PlannedSearchDecision,
+) -> dict[str, object]:
+    from microciv.ai.greedy import GreedyPolicy
+
+    greedy_action = GreedyPolicy().select_action(state)
+    diagnostics = _greedy_anchor_diagnostics(
+        root_candidates=decision.root_candidate_diagnostics,
+        chosen_action=decision.action,
+        greedy_action=greedy_action,
+    )
+    diagnostics.update(
+        _city_anchor_diagnostics(
+            state=state,
+            chosen_action=decision.action,
+            greedy_action=greedy_action,
+        )
+    )
+    return diagnostics
+
+
+def _greedy_anchor_diagnostics(
+    *,
+    root_candidates: tuple[RootCandidateDiagnostic, ...],
+    chosen_action: Action,
+    greedy_action: Action,
+) -> dict[str, object]:
+    result: dict[str, object] = {
+        "search_greedy_action_type": greedy_action.action_type.value,
+        "search_matches_greedy_action": chosen_action == greedy_action,
+        "search_greedy_action_in_root_candidates": False,
+    }
+    if not root_candidates:
+        return result
+
+    ranked = sorted(
+        root_candidates,
+        key=lambda candidate: (-candidate.value, _action_sort_key(candidate.action)),
+    )
+    best_value = ranked[0].value
+    chosen_value: int | None = None
+    greedy_value: int | None = None
+    greedy_rank: int | None = None
+    for rank, candidate in enumerate(ranked, start=1):
+        if candidate.action == chosen_action:
+            chosen_value = candidate.value
+        if candidate.action == greedy_action:
+            greedy_value = candidate.value
+            greedy_rank = rank
+
+    result.update(
+        {
+            "search_greedy_action_in_root_candidates": greedy_value is not None,
+            "search_greedy_action_root_rank": greedy_rank,
+            "search_greedy_action_root_value": greedy_value,
+            "search_greedy_action_root_value_margin": (
+                best_value - greedy_value if greedy_value is not None else None
+            ),
+            "search_chosen_value_delta_vs_greedy_action": (
+                chosen_value - greedy_value
+                if chosen_value is not None and greedy_value is not None
+                else None
+            ),
+        }
+    )
+    return result
+
+
+def _city_anchor_diagnostics(
+    *,
+    state: GameState,
+    chosen_action: Action,
+    greedy_action: Action,
+) -> dict[str, object]:
+    context = build_heuristic_context(state)
+    result: dict[str, object] = {}
+    result.update(
+        _city_action_diagnostics(
+            state=state,
+            context=context,
+            action=chosen_action,
+            prefix="search_chosen_city",
+        )
+    )
+    result.update(
+        _city_action_diagnostics(
+            state=state,
+            context=context,
+            action=greedy_action,
+            prefix="search_greedy_city",
+        )
+    )
+    chosen_score = result.get("search_chosen_city_site_score")
+    greedy_score = result.get("search_greedy_city_site_score")
+    if isinstance(chosen_score, int) and isinstance(greedy_score, int):
+        result["search_chosen_city_site_score_delta_vs_greedy"] = chosen_score - greedy_score
+    return result
+
+
+def _city_action_diagnostics(
+    *,
+    state: GameState,
+    context: HeuristicContext,
+    action: Action,
+    prefix: str,
+) -> dict[str, object]:
+    if action.action_type is not ActionType.BUILD_CITY or action.coord is None:
+        return {}
+    coord = action.coord
+    budget = site_budget(state, coord, context)
+    forest, mountain, river, plain, occupied = resource_ring_counts_for_context(context, coord)
+    return {
+        f"{prefix}_site_score": city_site_score_for_context(context, coord),
+        f"{prefix}_food_balance": budget.food_balance,
+        f"{prefix}_total_yield": budget.total_yield,
+        f"{prefix}_river_access": context_is_river_adjacent_site(context, coord),
+        f"{prefix}_forest_neighbors": forest,
+        f"{prefix}_mountain_neighbors": mountain,
+        f"{prefix}_river_neighbors": river,
+        f"{prefix}_plain_neighbors": plain,
+        f"{prefix}_occupied_neighbors": occupied,
+        f"{prefix}_distance_to_network": _distance_to_existing_network(state, coord),
+    }
+
+
+def _distance_to_existing_network(state: GameState, coord: Coord) -> int | None:
+    occupied_coords = [city.coord for city in state.cities.values()] + [
+        road.coord for road in state.roads.values()
+    ]
+    if not occupied_coords:
+        return None
+    return min(abs(coord[0] - other[0]) + abs(coord[1] - other[1]) for other in occupied_coords)
+
+
+def _network_food_risk_diagnostics(state: GameState) -> dict[str, object]:
+    foods = [network.resources.food for network in state.networks.values()]
+    pressures = [city_network_pressure(network) for network in state.networks.values()]
+    return {
+        "search_min_network_food_after_action": min(foods, default=0),
+        "search_worst_network_food_pressure_after_action": max(pressures, default=0),
+        "search_food_surplus_network_count_after_action": sum(
+            1 for pressure in pressures if pressure <= 0
+        ),
+        "search_food_deficit_network_count_after_action": sum(
+            1 for pressure in pressures if pressure > 0
+        ),
     }
 
 

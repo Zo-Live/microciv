@@ -189,6 +189,10 @@ def test_batch_autoplay_fast_mode_exports_artifacts(monkeypatch, tmp_path) -> No
     assert summary["artifact_file_format"] == "jsonl"
     assert summary["batch_count"] == 1
     assert summary["effective_chunksize"] == 8
+    artifact_manifest = json.loads(
+        (artifact_dir / "artifact_manifest.json").read_text(encoding="utf-8")
+    )
+    assert artifact_manifest["artifact_schema_version"] == 5
 
 
 def test_build_batch_tasks_preserves_seed_order() -> None:

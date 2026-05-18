@@ -91,6 +91,16 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     assert isinstance(context["search_delta_road_overbuild"], int)
     assert isinstance(context["search_road_merges_networks"], bool)
     assert isinstance(context["search_road_is_redundant"], bool)
+    assert isinstance(context["search_greedy_action_type"], str)
+    assert isinstance(context["search_matches_greedy_action"], bool)
+    assert isinstance(context["search_greedy_action_in_root_candidates"], bool)
+    assert isinstance(context["search_min_network_food_after_action"], int)
+    assert isinstance(context["search_worst_network_food_pressure_after_action"], int)
+    assert isinstance(context["search_profile_city_count"], int)
+    assert isinstance(context["search_profile_safe_expansion_deficit"], int)
+    if action.action_type is ActionType.BUILD_CITY:
+        assert isinstance(context["search_chosen_city_site_score"], int)
+        assert isinstance(context["search_chosen_city_food_balance"], int)
     best_sequence = context["search_best_sequence"]
     assert isinstance(best_sequence, list)
     assert best_sequence
@@ -320,6 +330,7 @@ def test_step_autoplay_counts_select_action_time_before_recording_context(
     assert state.stats.decision_count == 1
     assert state.stats.decision_time_ms_total == pytest.approx(125.0)
     assert state.stats.decision_contexts[0]["chosen_action_type"] == "skip"
+    assert state.stats.decision_contexts[0]["decision_time_ms"] == pytest.approx(125.0)
     assert state.stats.decision_contexts[0]["search_nodes_expanded"] == 99
 
 

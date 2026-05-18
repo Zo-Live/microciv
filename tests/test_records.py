@@ -252,12 +252,14 @@ def test_stats_record_decision_context_omits_none_policy_context_values() -> Non
         legal_build_building_count=0,
         legal_research_tech_count=0,
         legal_skip_count=1,
+        decision_time_ms=7.25,
         policy_context={
             "search_depth": 3,
             "search_dominant_pressure": None,
         },
     )
 
+    assert stats.decision_contexts[0]["decision_time_ms"] == 7.25
     assert stats.decision_contexts[0]["search_depth"] == 3
     assert "search_dominant_pressure" not in stats.decision_contexts[0]
 
@@ -339,6 +341,7 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         legal_research_tech_count=1,
         legal_skip_count=1,
         chosen_action_type="build_city",
+        decision_time_ms=12.5,
         search_mode="expand",
         search_depth=2,
         search_base_depth=2,
@@ -405,6 +408,49 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         search_road_connected_city_delta=2,
         search_road_is_redundant=False,
         search_road_after_full_connectivity=False,
+        search_greedy_action_type="build_city",
+        search_matches_greedy_action=True,
+        search_greedy_action_in_root_candidates=True,
+        search_greedy_action_root_rank=1,
+        search_greedy_action_root_value=12000,
+        search_greedy_action_root_value_margin=1000,
+        search_chosen_value_delta_vs_greedy_action=0,
+        search_chosen_city_site_score=240,
+        search_greedy_city_site_score=240,
+        search_chosen_city_site_score_delta_vs_greedy=0,
+        search_chosen_city_food_balance=2,
+        search_chosen_city_total_yield=8,
+        search_chosen_city_river_access=True,
+        search_chosen_city_forest_neighbors=2,
+        search_chosen_city_mountain_neighbors=1,
+        search_chosen_city_river_neighbors=1,
+        search_chosen_city_plain_neighbors=3,
+        search_chosen_city_occupied_neighbors=0,
+        search_chosen_city_distance_to_network=2,
+        search_greedy_city_food_balance=2,
+        search_greedy_city_total_yield=8,
+        search_greedy_city_river_access=True,
+        search_greedy_city_forest_neighbors=2,
+        search_greedy_city_mountain_neighbors=1,
+        search_greedy_city_river_neighbors=1,
+        search_greedy_city_plain_neighbors=3,
+        search_greedy_city_occupied_neighbors=0,
+        search_greedy_city_distance_to_network=2,
+        search_min_network_food_after_action=20,
+        search_worst_network_food_pressure_after_action=0,
+        search_food_surplus_network_count_after_action=1,
+        search_food_deficit_network_count_after_action=0,
+        search_profile_city_count=1,
+        search_profile_target_city_count=5,
+        search_profile_expansion_deficit=4,
+        search_profile_safe_expansion_deficit=3,
+        search_profile_network_count=1,
+        search_profile_connected_city_count=0,
+        search_profile_isolated_city_count=1,
+        search_profile_starving_network_count=0,
+        search_profile_food_pressure=0,
+        search_profile_road_overbuild=0,
+        search_profile_fill_count=0,
         search_best_sequence=[
             RecordSearchActionSnapshot(action_type="build_city", x=1, y=2),
             RecordSearchActionSnapshot(
@@ -418,6 +464,7 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     restored = RecordDecisionContext.from_dict(context.to_dict())
 
     assert restored.search_depth == 2
+    assert restored.decision_time_ms == 12.5
     assert restored.search_mode == "expand"
     assert restored.search_depth_reason == "fixed"
     assert restored.search_root_candidate_build_city_count == 3
@@ -449,6 +496,17 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     assert restored.search_delta_connected_city_count == 2
     assert restored.search_road_merges_networks is True
     assert restored.search_road_is_redundant is False
+    assert restored.search_greedy_action_type == "build_city"
+    assert restored.search_matches_greedy_action is True
+    assert restored.search_greedy_action_in_root_candidates is True
+    assert restored.search_greedy_action_root_rank == 1
+    assert restored.search_chosen_city_site_score == 240
+    assert restored.search_chosen_city_food_balance == 2
+    assert restored.search_chosen_city_river_access is True
+    assert restored.search_greedy_city_site_score == 240
+    assert restored.search_min_network_food_after_action == 20
+    assert restored.search_food_surplus_network_count_after_action == 1
+    assert restored.search_profile_safe_expansion_deficit == 3
     assert [action.action_type for action in restored.search_best_sequence] == [
         "build_city",
         "research_tech",
