@@ -4,6 +4,7 @@ import csv
 import importlib.util
 import json
 import sys
+from concurrent.futures import Future
 from pathlib import Path
 
 from microciv.game.enums import PolicyType
@@ -20,7 +21,7 @@ SPEC.loader.exec_module(generate_dataset)
 class _FakeProcessPoolExecutor:
     def __init__(self, *, max_workers: int) -> None:
         self.max_workers = max_workers
-        self.map_calls: list[tuple[object, list[object], int]] = []
+        self.submit_calls: list[tuple[object, tuple[object, ...]]] = []
 
     def __enter__(self) -> _FakeProcessPoolExecutor:
         return self
@@ -28,17 +29,16 @@ class _FakeProcessPoolExecutor:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         del exc_type, exc, tb
 
-    def map(
+    def submit(
         self,
         fn: object,
-        iterable: object,
-        *,
-        chunksize: int,
-    ) -> list[object]:
-        items = list(iterable)
-        self.map_calls.append((fn, items, chunksize))
+        *args: object,
+    ) -> Future[object]:
+        self.submit_calls.append((fn, args))
         assert callable(fn)
-        return [fn(item) for item in items]
+        future: Future[object] = Future()
+        future.set_result(fn(*args))
+        return future
 
 
 def _make_record(
@@ -191,7 +191,9 @@ def test_generate_dataset_exports_anomaly_json_and_csv(monkeypatch, tmp_path) ->
     assert manifest["seed_end"] == 2
     assert manifest["execution_mode"] == "serial"
     assert manifest["workers"] == 1
-    assert manifest["chunksize"] == 8
+    assert manifest["chunksize"] == "auto"
+    assert manifest["effective_chunksize"] == 1
+    assert manifest["batch_count"] == 4
     assert manifest["anomaly_json_path"].endswith("dataset_unit_anomalies.json")
     assert manifest["anomaly_csv_path"].endswith("dataset_unit_anomalies.csv")
 
@@ -244,7 +246,7 @@ def test_generate_dataset_fast_mode_exports_artifacts_without_full_json(
     assert exit_code == 0
     artifact_dir = tmp_path / "dataset_fast_artifacts"
     assert artifact_dir.exists()
-    assert (artifact_dir / "macro.jsonl").exists()
+    assert (artifact_dir / "macro_part_000000.jsonl").exists()
     assert (artifact_dir / "artifact_manifest.json").exists()
     assert not (tmp_path / "dataset_fast.json").exists()
     assert not (tmp_path / "dataset_fast.csv").exists()
@@ -254,6 +256,14 @@ def test_generate_dataset_fast_mode_exports_artifacts_without_full_json(
     assert manifest["artifact_file_format"] == "jsonl"
     assert manifest["dataset_json_path"] == ""
     assert manifest["artifact_dir"].endswith("dataset_fast_artifacts")
+    assert manifest["effective_chunksize"] == 1
+
+    artifact_manifest = json.loads(
+        (artifact_dir / "artifact_manifest.json").read_text(encoding="utf-8")
+    )
+    assert artifact_manifest["mode"] == "partitioned"
+    assert artifact_manifest["part_count"] == 2
+    assert len(artifact_manifest["tables"]["macro"]["paths"]) == 2
 
 
 def test_generate_dataset_defaults_to_three_policies(monkeypatch, tmp_path) -> None:
@@ -415,9 +425,11 @@ def test_generate_dataset_parallel_path_uses_process_pool_and_keeps_order(
     exit_code = generate_dataset.main()
 
     assert exit_code == 0
-    assert len(fake_executor.map_calls) == 1
-    _, tasks, chunksize = fake_executor.map_calls[0]
-    assert chunksize == 3
+    assert len(fake_executor.submit_calls) == 2
+    batches = [args[0] for _, args in fake_executor.submit_calls]
+    assert all(isinstance(batch, generate_dataset.GameTaskBatch) for batch in batches)
+    assert [len(batch.tasks) for batch in batches] == [3, 1]
+    tasks = [task for batch in batches for task in batch.tasks]
     assert [task.record_id for task in tasks] == [1, 2, 3, 4]
     assert [(task.seed, task.policy_type) for task in tasks] == [
         (7, PolicyType.GREEDY),
@@ -435,6 +447,8 @@ def test_generate_dataset_parallel_path_uses_process_pool_and_keeps_order(
     assert manifest["execution_mode"] == "parallel"
     assert manifest["workers"] == 2
     assert manifest["chunksize"] == 3
+    assert manifest["effective_chunksize"] == 3
+    assert manifest["batch_count"] == 2
     assert manifest["seed_start"] == 7
     assert manifest["seed_end"] == 8
 
@@ -497,8 +511,10 @@ def test_generate_dataset_parallel_path_includes_search_grid_tasks(
     exit_code = generate_dataset.main()
 
     assert exit_code == 0
-    assert len(fake_executor.map_calls) == 1
-    _, tasks, _chunksize = fake_executor.map_calls[0]
+    assert len(fake_executor.submit_calls) == 6
+    batches = [args[0] for _, args in fake_executor.submit_calls]
+    assert all(isinstance(batch, generate_dataset.GameTaskBatch) for batch in batches)
+    tasks = [task for batch in batches for task in batch.tasks]
     assert len(tasks) == 6
     assert [
         (
@@ -522,6 +538,9 @@ def test_generate_dataset_parallel_path_includes_search_grid_tasks(
         (tmp_path / "dataset_searchgrid_manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["execution_mode"] == "parallel"
+    assert manifest["chunksize"] == "auto"
+    assert manifest["effective_chunksize"] == 1
+    assert manifest["batch_count"] == 6
     assert manifest["policy_variant_count"] == 6
     assert manifest["search_variant_count"] == 4
     assert manifest["search_param_grid"] == {

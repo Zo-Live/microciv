@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import shutil
 import sys
-from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from itertools import product
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, process_time
 from typing import Final
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,8 +28,21 @@ from microciv.constants import (  # noqa: E402
 )
 from microciv.game.enums import MapDifficulty, PlaybackMode, PolicyType  # noqa: E402
 from microciv.game.models import GameConfig  # noqa: E402
-from microciv.records.artifacts import dumps_json_bytes, write_record_artifacts  # noqa: E402
-from microciv.records.models import CSV_FIELD_ORDER, RecordDatabase, RecordEntry  # noqa: E402
+from microciv.records.artifacts import (  # noqa: E402
+    ARTIFACT_MANIFEST_FILENAME,
+    ARTIFACT_TABLES,
+    ArtifactWriteResult,
+    dumps_json_bytes,
+    loads_json_bytes,
+    write_artifact_manifest,
+    write_record_artifacts,
+)
+from microciv.records.models import (  # noqa: E402
+    CSV_FIELD_ORDER,
+    RECORDS_SCHEMA_VERSION,
+    RecordDatabase,
+    RecordEntry,
+)
 from microciv.session import create_game_session  # noqa: E402
 
 GREEDY_LABEL: Final[str] = "Greedy"
@@ -36,6 +50,9 @@ RANDOM_LABEL: Final[str] = "Random"
 SEARCH_LABEL: Final[str] = "Search"
 PROGRESS_STEPS: Final[int] = 20
 DEFAULT_FULL_JSON_THRESHOLD: Final[int] = 1000
+AUTO_CHUNKSIZE: Final[str] = "auto"
+AUTO_CHUNKSIZE_TARGET_BATCHES_PER_WORKER: Final[int] = 8
+AUTO_CHUNKSIZE_MAX: Final[int] = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,11 +70,62 @@ class GameTask:
     search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT
 
 
+@dataclass(frozen=True, slots=True)
+class GameTaskBatch:
+    batch_index: int
+    tasks: tuple[GameTask, ...]
+    output_dir: Path
+    part_dir: Path
+    artifact_dir: Path | None
+    artifact_format: str
+    effective_artifact_mode: str
+
+
+@dataclass(frozen=True, slots=True)
+class RecordSummary:
+    task_index: int
+    record_id: int
+    seed: int
+    map_size: int
+    turn_limit: int
+    map_difficulty: str
+    ai_type: str
+    final_score: int
+    has_starvation: bool
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerBatchResult:
+    batch_index: int
+    completed: int
+    summaries: list[RecordSummary]
+    record_part_path: str = ""
+    csv_part_path: str = ""
+    artifact_file_format: str = ""
+    artifact_table_paths: dict[str, list[str]] = field(default_factory=dict)
+    artifact_row_counts: dict[str, int] = field(default_factory=dict)
+    worker_elapsed_seconds: float = 0.0
+    worker_cpu_seconds: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetRunResult:
+    batch_results: list[WorkerBatchResult]
+    summaries: list[RecordSummary]
+    run_elapsed_seconds: float
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
         raise argparse.ArgumentTypeError("value must be at least 1")
     return parsed
+
+
+def _chunksize_arg(value: str) -> int | str:
+    if value == AUTO_CHUNKSIZE:
+        return AUTO_CHUNKSIZE
+    return _positive_int(value)
 
 
 def _default_worker_count() -> int:
@@ -141,9 +209,9 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--chunksize",
-        type=_positive_int,
-        default=8,
-        help="Process pool chunksize for task dispatch (default: 8).",
+        type=_chunksize_arg,
+        default=AUTO_CHUNKSIZE,
+        help="Task batch size for worker dispatch, or 'auto' (default: auto).",
     )
     parser.add_argument(
         "--artifact-mode",
@@ -282,6 +350,183 @@ def _build_greedy_index(
 def _has_starvation(record: RecordEntry) -> bool:
     return any(snapshot.starving_network_count > 0 for snapshot in record.turn_snapshots) or any(
         network.food <= 0 for network in record.networks
+    )
+
+
+def _record_summary(*, task: GameTask, record: RecordEntry) -> RecordSummary:
+    return RecordSummary(
+        task_index=task.task_index,
+        record_id=record.record_id,
+        seed=record.seed,
+        map_size=record.map_size,
+        turn_limit=record.turn_limit,
+        map_difficulty=record.map_difficulty,
+        ai_type=record.ai_type,
+        final_score=record.final_score,
+        has_starvation=_has_starvation(record),
+    )
+
+
+def _summary_match_key(summary: RecordSummary) -> tuple[int, int, int, str]:
+    return (summary.seed, summary.map_size, summary.turn_limit, summary.map_difficulty)
+
+
+def collect_policy_anomaly_ids(
+    summaries: list[RecordSummary],
+) -> tuple[set[int], dict[str, int]]:
+    random_index = {
+        _summary_match_key(summary): summary
+        for summary in summaries
+        if summary.ai_type == RANDOM_LABEL
+    }
+    greedy_index = {
+        _summary_match_key(summary): summary
+        for summary in summaries
+        if summary.ai_type == GREEDY_LABEL
+    }
+    anomaly_ids: set[int] = set()
+    negative_score_count = 0
+    starvation_count = 0
+    common_anomaly_count = 0
+    greedy_under_random_count = 0
+    search_under_random_count = 0
+    search_under_greedy_count = 0
+
+    for summary in summaries:
+        match_key = _summary_match_key(summary)
+        random_peer = random_index.get(match_key)
+        greedy_peer = greedy_index.get(match_key)
+        is_negative_score = summary.final_score < 0
+        is_common_anomaly = is_negative_score or summary.has_starvation
+        is_greedy_under_random = (
+            summary.ai_type == GREEDY_LABEL
+            and random_peer is not None
+            and summary.final_score < random_peer.final_score
+        )
+        is_search_under_random = (
+            summary.ai_type == SEARCH_LABEL
+            and random_peer is not None
+            and summary.final_score < random_peer.final_score
+        )
+        is_search_under_greedy = (
+            summary.ai_type == SEARCH_LABEL
+            and greedy_peer is not None
+            and summary.final_score < greedy_peer.final_score
+        )
+        if not (
+            is_common_anomaly
+            or is_greedy_under_random
+            or is_search_under_random
+            or is_search_under_greedy
+        ):
+            continue
+        if is_negative_score:
+            negative_score_count += 1
+        if summary.has_starvation:
+            starvation_count += 1
+        if is_common_anomaly:
+            common_anomaly_count += 1
+        if is_greedy_under_random:
+            greedy_under_random_count += 1
+        if is_search_under_random:
+            search_under_random_count += 1
+        if is_search_under_greedy:
+            search_under_greedy_count += 1
+        anomaly_ids.add(summary.record_id)
+
+    return anomaly_ids, {
+        "common_anomaly_count": common_anomaly_count,
+        "negative_score_anomaly_count": negative_score_count,
+        "starvation_anomaly_count": starvation_count,
+        "greedy_under_random_anomaly_count": greedy_under_random_count,
+        "search_under_random_anomaly_count": search_under_random_count,
+        "search_under_greedy_anomaly_count": search_under_greedy_count,
+        "under_random_anomaly_count": greedy_under_random_count + search_under_random_count,
+    }
+
+
+def _write_records_jsonl_part(path: Path, records: list[RecordEntry]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as f:
+        for record in records:
+            f.write(dumps_json_bytes(record.to_dict()))
+            f.write(b"\n")
+
+
+def _write_records_csv_part(path: Path, records: list[RecordEntry]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(CSV_FIELD_ORDER))
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record.to_csv_row())
+
+
+def _should_write_compat_parts(effective_artifact_mode: str) -> bool:
+    return effective_artifact_mode in {"compat", "dual"}
+
+
+def _should_write_artifact_parts(effective_artifact_mode: str) -> bool:
+    return effective_artifact_mode in {"fast", "dual"}
+
+
+def _prepare_artifact_output_dir(artifact_dir: Path) -> None:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    for table in ARTIFACT_TABLES:
+        for suffix in ("parquet", "jsonl"):
+            for path in artifact_dir.glob(f"{table}*.{suffix}"):
+                path.unlink()
+    (artifact_dir / ARTIFACT_MANIFEST_FILENAME).unlink(missing_ok=True)
+
+
+def run_game_batch(batch: GameTaskBatch) -> WorkerBatchResult:
+    started_at = perf_counter()
+    cpu_started_at = process_time()
+    records: list[RecordEntry] = []
+    summaries: list[RecordSummary] = []
+    for task in batch.tasks:
+        record = run_game_task(task)
+        records.append(record)
+        summaries.append(_record_summary(task=task, record=record))
+
+    record_part_path = ""
+    csv_part_path = ""
+    if _should_write_compat_parts(batch.effective_artifact_mode):
+        record_part = batch.part_dir / f"records_part_{batch.batch_index:06d}.jsonl"
+        csv_part = batch.part_dir / f"records_part_{batch.batch_index:06d}.csv"
+        _write_records_jsonl_part(record_part, records)
+        _write_records_csv_part(csv_part, records)
+        record_part_path = str(record_part)
+        csv_part_path = str(csv_part)
+
+    artifact_file_format = ""
+    artifact_table_paths: dict[str, list[str]] = {}
+    artifact_row_counts: dict[str, int] = {}
+    if _should_write_artifact_parts(batch.effective_artifact_mode):
+        if batch.artifact_dir is None:
+            raise ValueError("artifact_dir is required for artifact output.")
+        artifact_result = write_record_artifacts(
+            records,
+            batch.artifact_dir,
+            preferred_format=batch.artifact_format,
+            part_name=f"part_{batch.batch_index:06d}",
+            write_manifest=False,
+        )
+        artifact_file_format = artifact_result.file_format
+        artifact_table_paths = artifact_result.table_paths
+        artifact_row_counts = artifact_result.row_counts
+
+    return WorkerBatchResult(
+        batch_index=batch.batch_index,
+        completed=len(batch.tasks),
+        summaries=summaries,
+        record_part_path=record_part_path,
+        csv_part_path=csv_part_path,
+        artifact_file_format=artifact_file_format,
+        artifact_table_paths=artifact_table_paths,
+        artifact_row_counts=artifact_row_counts,
+        worker_elapsed_seconds=perf_counter() - started_at,
+        worker_cpu_seconds=process_time() - cpu_started_at,
     )
 
 
@@ -463,6 +708,43 @@ def build_game_tasks(
     return tasks, seed - 1
 
 
+def _effective_chunksize(
+    requested_chunksize: int | str,
+    *,
+    total_tasks: int,
+    workers: int,
+) -> int:
+    if isinstance(requested_chunksize, int):
+        return requested_chunksize
+    target_batches = max(1, workers * AUTO_CHUNKSIZE_TARGET_BATCHES_PER_WORKER)
+    auto_size = max(1, (total_tasks + target_batches - 1) // target_batches)
+    return min(AUTO_CHUNKSIZE_MAX, auto_size)
+
+
+def build_task_batches(
+    tasks: list[GameTask],
+    *,
+    effective_chunksize: int,
+    output_dir: Path,
+    part_dir: Path,
+    artifact_dir: Path | None,
+    artifact_format: str,
+    effective_artifact_mode: str,
+) -> list[GameTaskBatch]:
+    return [
+        GameTaskBatch(
+            batch_index=batch_index,
+            tasks=tuple(tasks[start : start + effective_chunksize]),
+            output_dir=output_dir,
+            part_dir=part_dir,
+            artifact_dir=artifact_dir,
+            artifact_format=artifact_format,
+            effective_artifact_mode=effective_artifact_mode,
+        )
+        for batch_index, start in enumerate(range(0, len(tasks), effective_chunksize))
+    ]
+
+
 def _progress_interval(total_tasks: int) -> int:
     return max(1, total_tasks // PROGRESS_STEPS)
 
@@ -482,6 +764,192 @@ def _print_progress(
         f"({average:.3f}s per game, eta {remaining:.2f}s)",
         file=sys.stderr,
     )
+
+
+def _should_print_progress(completed: int, previous_completed: int, total: int) -> bool:
+    if completed == total:
+        return True
+    progress_interval = _progress_interval(total)
+    return completed // progress_interval > previous_completed // progress_interval
+
+
+def _collect_batch_results(
+    batch_results: list[WorkerBatchResult],
+    *,
+    run_elapsed_seconds: float,
+) -> DatasetRunResult:
+    ordered_batch_results = sorted(batch_results, key=lambda result: result.batch_index)
+    summaries = [
+        summary
+        for result in ordered_batch_results
+        for summary in sorted(result.summaries, key=lambda item: item.task_index)
+    ]
+    summaries.sort(key=lambda summary: summary.task_index)
+    return DatasetRunResult(
+        batch_results=ordered_batch_results,
+        summaries=summaries,
+        run_elapsed_seconds=run_elapsed_seconds,
+    )
+
+
+def run_task_batches_serial(batches: list[GameTaskBatch], *, total_tasks: int) -> DatasetRunResult:
+    batch_results: list[WorkerBatchResult] = []
+    started_at = perf_counter()
+    completed = 0
+    for batch in batches:
+        previous_completed = completed
+        result = run_game_batch(batch)
+        batch_results.append(result)
+        completed += result.completed
+        if _should_print_progress(completed, previous_completed, total_tasks):
+            _print_progress(
+                completed=completed,
+                total=total_tasks,
+                started_at=started_at,
+                mode="serial",
+            )
+    return _collect_batch_results(
+        batch_results,
+        run_elapsed_seconds=perf_counter() - started_at,
+    )
+
+
+def run_task_batches_parallel(
+    batches: list[GameTaskBatch],
+    *,
+    total_tasks: int,
+    workers: int,
+) -> DatasetRunResult:
+    batch_results: list[WorkerBatchResult] = []
+    started_at = perf_counter()
+    completed = 0
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        future_to_batch_index = {
+            executor.submit(run_game_batch, batch): batch.batch_index for batch in batches
+        }
+        for future in as_completed(future_to_batch_index):
+            previous_completed = completed
+            result = future.result()
+            batch_results.append(result)
+            completed += result.completed
+            if _should_print_progress(completed, previous_completed, total_tasks):
+                _print_progress(
+                    completed=completed,
+                    total=total_tasks,
+                    started_at=started_at,
+                    mode="parallel",
+                )
+    return _collect_batch_results(
+        batch_results,
+        run_elapsed_seconds=perf_counter() - started_at,
+    )
+
+
+def _record_jsonl_part_paths(batch_results: list[WorkerBatchResult]) -> list[Path]:
+    return [
+        Path(result.record_part_path)
+        for result in sorted(batch_results, key=lambda item: item.batch_index)
+        if result.record_part_path
+    ]
+
+
+def _record_csv_part_paths(batch_results: list[WorkerBatchResult]) -> list[Path]:
+    return [
+        Path(result.csv_part_path)
+        for result in sorted(batch_results, key=lambda item: item.batch_index)
+        if result.csv_part_path
+    ]
+
+
+def _write_database_json_from_jsonl_parts(
+    path: Path,
+    part_paths: list[Path],
+    *,
+    record_ids: set[int] | None = None,
+) -> int:
+    written = 0
+    first = True
+    with path.open("wb") as output:
+        output.write(
+            f'{{"schema_version":{RECORDS_SCHEMA_VERSION},'
+            f'"next_record_id":1,"records":['.encode("ascii")
+        )
+        for part_path in part_paths:
+            with part_path.open("rb") as part_file:
+                for line in part_file:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if record_ids is not None:
+                        payload = loads_json_bytes(line)
+                        if not isinstance(payload, dict):
+                            raise ValueError("Record JSONL rows must be JSON objects.")
+                        if int(payload["record_id"]) not in record_ids:
+                            continue
+                    if not first:
+                        output.write(b",")
+                    output.write(line)
+                    first = False
+                    written += 1
+        output.write(b"]}\n")
+    return written
+
+
+def _write_database_csv_from_csv_parts(
+    path: Path,
+    part_paths: list[Path],
+    *,
+    record_ids: set[int] | None = None,
+) -> int:
+    written = 0
+    with path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(output, fieldnames=list(CSV_FIELD_ORDER))
+        writer.writeheader()
+        for part_path in part_paths:
+            with part_path.open(newline="", encoding="utf-8") as part_file:
+                reader = csv.DictReader(part_file)
+                for row in reader:
+                    if record_ids is not None and int(row["record_id"]) not in record_ids:
+                        continue
+                    writer.writerow(row)
+                    written += 1
+    return written
+
+
+def _write_partitioned_artifact_manifest(
+    *,
+    artifact_dir: Path,
+    batch_results: list[WorkerBatchResult],
+    record_count: int,
+    total_games: int,
+    part_count: int,
+) -> str:
+    table_paths: dict[str, list[str]] = {table: [] for table in ARTIFACT_TABLES}
+    row_counts: dict[str, int] = {table: 0 for table in ARTIFACT_TABLES}
+    artifact_file_format = ""
+    for result in sorted(batch_results, key=lambda item: item.batch_index):
+        if result.artifact_file_format:
+            artifact_file_format = artifact_file_format or result.artifact_file_format
+        for table in ARTIFACT_TABLES:
+            table_paths[table].extend(result.artifact_table_paths.get(table, []))
+            row_counts[table] += result.artifact_row_counts.get(table, 0)
+    artifact_result = ArtifactWriteResult(
+        output_dir=artifact_dir,
+        file_format=artifact_file_format,
+        table_paths=table_paths,
+        row_counts=row_counts,
+    )
+    write_artifact_manifest(
+        artifact_dir,
+        result=artifact_result,
+        record_count=record_count,
+        mode="partitioned",
+        extra={
+            "total_games": total_games,
+            "part_count": part_count,
+        },
+    )
+    return artifact_file_format
 
 
 def run_tasks_serial(tasks: list[GameTask]) -> list[RecordEntry]:
@@ -598,6 +1066,28 @@ def main() -> int:
         total_games=total_games,
         threshold=args.full_json_threshold,
     )
+    effective_chunksize = _effective_chunksize(
+        args.chunksize,
+        total_tasks=total_games,
+        workers=args.workers,
+    )
+    artifact_dir: Path | None = (
+        output_dir / f"{base_name}_artifacts"
+        if effective_artifact_mode in {"fast", "dual"}
+        else None
+    )
+    if artifact_dir is not None:
+        _prepare_artifact_output_dir(artifact_dir)
+    part_dir = output_dir / f".{base_name}_parts_{os.getpid()}_{int(perf_counter() * 1000000)}"
+    batches = build_task_batches(
+        tasks,
+        effective_chunksize=effective_chunksize,
+        output_dir=output_dir,
+        part_dir=part_dir,
+        artifact_dir=artifact_dir,
+        artifact_format=args.artifact_format,
+        effective_artifact_mode=effective_artifact_mode,
+    )
 
     print(
         f"Dataset plan: {len(base_combos)} base combos x {policy_variant_count} policy variants x "
@@ -606,109 +1096,161 @@ def main() -> int:
         file=sys.stderr,
     )
     print(
-        f"Execution mode: {execution_mode} (workers={args.workers}, chunksize={args.chunksize})",
+        f"Execution mode: {execution_mode} (workers={args.workers}, "
+        f"chunksize={args.chunksize}, effective_chunksize={effective_chunksize}, "
+        f"batches={len(batches)})",
         file=sys.stderr,
     )
     print(
         f"Output mode: requested={args.artifact_mode}, effective={effective_artifact_mode}",
         file=sys.stderr,
     )
-    batch_start = perf_counter()
+    total_started_at = perf_counter()
 
-    records = (
-        run_tasks_serial(tasks)
-        if args.workers == 1
-        else run_tasks_parallel(tasks, workers=args.workers, chunksize=args.chunksize)
-    )
-
-    total_elapsed = perf_counter() - batch_start
-    print(
-        f"Dataset complete: {total_games} games in {total_elapsed:.2f}s "
-        f"({total_elapsed / total_games:.3f}s per game)",
-        file=sys.stderr,
-    )
-
-    database = RecordDatabase(records=records)
-    anomaly_records, anomaly_counts = collect_policy_anomalies(records)
-    anomaly_database = RecordDatabase(records=anomaly_records)
-
-    json_path: Path | None = None
-    csv_path: Path | None = None
-    anomaly_json_path: Path | None = None
-    anomaly_csv_path: Path | None = None
-    artifact_dir: Path | None = None
-    artifact_file_format = ""
-    if effective_artifact_mode in {"compat", "dual"}:
-        json_path = output_dir / f"{base_name}.json"
-        _write_database_json(json_path, database)
-        print(f"Dataset JSON exported: {json_path}", file=sys.stderr)
-
-        csv_path = output_dir / f"{base_name}.csv"
-        _write_database_csv(csv_path, records)
-        print(f"Dataset CSV exported: {csv_path}", file=sys.stderr)
-
-        anomaly_json_path = output_dir / f"{base_name}_anomalies.json"
-        _write_database_json(anomaly_json_path, anomaly_database)
-        print(f"Anomaly dataset JSON exported: {anomaly_json_path}", file=sys.stderr)
-
-        anomaly_csv_path = output_dir / f"{base_name}_anomalies.csv"
-        _write_database_csv(anomaly_csv_path, anomaly_records)
-        print(f"Anomaly dataset CSV exported: {anomaly_csv_path}", file=sys.stderr)
-
-    if effective_artifact_mode in {"fast", "dual"}:
-        artifact_dir = output_dir / f"{base_name}_artifacts"
-        artifact_result = write_record_artifacts(
-            records,
-            artifact_dir,
-            preferred_format=args.artifact_format,
-            write_manifest=True,
+    try:
+        run_result = (
+            run_task_batches_serial(batches, total_tasks=total_games)
+            if args.workers == 1
+            else run_task_batches_parallel(
+                batches,
+                total_tasks=total_games,
+                workers=args.workers,
+            )
         )
-        artifact_file_format = artifact_result.file_format
+
         print(
-            f"Dataset artifacts exported: {artifact_dir} ({artifact_file_format})",
+            f"Dataset compute complete: {total_games} games in "
+            f"{run_result.run_elapsed_seconds:.2f}s "
+            f"({run_result.run_elapsed_seconds / total_games:.3f}s per game)",
             file=sys.stderr,
         )
 
-    manifest_path = output_dir / f"{base_name}_manifest.json"
-    manifest = {
-        "games_per_combo": args.games_per_combo,
-        "seed_start": args.seed_start,
-        "seed_end": seed_end,
-        "param_grid": param_grid,
-        "search_param_grid": search_param_grid,
-        "combo_count": len(base_combos) * policy_variant_count,
-        "base_combo_count": len(base_combos),
-        "policy_count": len(policies),
-        "policy_variant_count": policy_variant_count,
-        "search_variant_count": search_variant_count,
-        "workers": args.workers,
-        "chunksize": args.chunksize,
-        "execution_mode": execution_mode,
-        "artifact_mode": args.artifact_mode,
-        "effective_artifact_mode": effective_artifact_mode,
-        "artifact_format": args.artifact_format,
-        "artifact_file_format": artifact_file_format,
-        "artifact_dir": str(artifact_dir) if artifact_dir is not None else "",
-        "full_json_threshold": args.full_json_threshold,
-        "dataset_json_path": str(json_path) if json_path is not None else "",
-        "dataset_csv_path": str(csv_path) if csv_path is not None else "",
-        "total_games": total_games,
-        "total_elapsed_seconds": round(total_elapsed, 3),
-        "avg_elapsed_seconds": round(total_elapsed / total_games, 3),
-        "anomaly_count": len(anomaly_records),
-        "anomaly_rate": round(len(anomaly_records) / max(len(records), 1), 4),
-        "common_anomaly_count": anomaly_counts["common_anomaly_count"],
-        "negative_score_anomaly_count": anomaly_counts["negative_score_anomaly_count"],
-        "starvation_anomaly_count": anomaly_counts["starvation_anomaly_count"],
-        "greedy_under_random_anomaly_count": anomaly_counts["greedy_under_random_anomaly_count"],
-        "search_under_random_anomaly_count": anomaly_counts["search_under_random_anomaly_count"],
-        "search_under_greedy_anomaly_count": anomaly_counts["search_under_greedy_anomaly_count"],
-        "under_random_anomaly_count": anomaly_counts["under_random_anomaly_count"],
-        "anomaly_json_path": str(anomaly_json_path) if anomaly_json_path is not None else "",
-        "anomaly_csv_path": str(anomaly_csv_path) if anomaly_csv_path is not None else "",
-    }
-    manifest_path.write_bytes(dumps_json_bytes(manifest, indent=True) + b"\n")
-    print(f"Dataset manifest exported: {manifest_path}", file=sys.stderr)
+        merge_started_at = perf_counter()
+        summaries = run_result.summaries
+        anomaly_ids, anomaly_counts = collect_policy_anomaly_ids(summaries)
+
+        json_path: Path | None = None
+        csv_path: Path | None = None
+        anomaly_json_path: Path | None = None
+        anomaly_csv_path: Path | None = None
+        artifact_file_format = ""
+        if effective_artifact_mode in {"compat", "dual"}:
+            record_part_paths = _record_jsonl_part_paths(run_result.batch_results)
+            csv_part_paths = _record_csv_part_paths(run_result.batch_results)
+
+            json_path = output_dir / f"{base_name}.json"
+            _write_database_json_from_jsonl_parts(json_path, record_part_paths)
+            print(f"Dataset JSON exported: {json_path}", file=sys.stderr)
+
+            csv_path = output_dir / f"{base_name}.csv"
+            _write_database_csv_from_csv_parts(csv_path, csv_part_paths)
+            print(f"Dataset CSV exported: {csv_path}", file=sys.stderr)
+
+            anomaly_json_path = output_dir / f"{base_name}_anomalies.json"
+            _write_database_json_from_jsonl_parts(
+                anomaly_json_path,
+                record_part_paths,
+                record_ids=anomaly_ids,
+            )
+            print(f"Anomaly dataset JSON exported: {anomaly_json_path}", file=sys.stderr)
+
+            anomaly_csv_path = output_dir / f"{base_name}_anomalies.csv"
+            _write_database_csv_from_csv_parts(
+                anomaly_csv_path,
+                csv_part_paths,
+                record_ids=anomaly_ids,
+            )
+            print(f"Anomaly dataset CSV exported: {anomaly_csv_path}", file=sys.stderr)
+
+        if effective_artifact_mode in {"fast", "dual"}:
+            if artifact_dir is None:
+                raise ValueError("artifact_dir is required for artifact output.")
+            artifact_file_format = _write_partitioned_artifact_manifest(
+                artifact_dir=artifact_dir,
+                batch_results=run_result.batch_results,
+                record_count=len(summaries),
+                total_games=total_games,
+                part_count=len(batches),
+            )
+            print(
+                f"Dataset artifacts exported: {artifact_dir} ({artifact_file_format})",
+                file=sys.stderr,
+            )
+
+        merge_elapsed = perf_counter() - merge_started_at
+        total_elapsed = perf_counter() - total_started_at
+        worker_cpu_seconds_total = sum(
+            result.worker_cpu_seconds for result in run_result.batch_results
+        )
+        worker_elapsed_seconds_total = sum(
+            result.worker_elapsed_seconds for result in run_result.batch_results
+        )
+        parallel_efficiency_pct = (
+            worker_cpu_seconds_total
+            / max(run_result.run_elapsed_seconds * args.workers, 0.000001)
+            * 100
+        )
+
+        manifest_path = output_dir / f"{base_name}_manifest.json"
+        manifest = {
+            "games_per_combo": args.games_per_combo,
+            "seed_start": args.seed_start,
+            "seed_end": seed_end,
+            "param_grid": param_grid,
+            "search_param_grid": search_param_grid,
+            "combo_count": len(base_combos) * policy_variant_count,
+            "base_combo_count": len(base_combos),
+            "policy_count": len(policies),
+            "policy_variant_count": policy_variant_count,
+            "search_variant_count": search_variant_count,
+            "workers": args.workers,
+            "chunksize": args.chunksize,
+            "effective_chunksize": effective_chunksize,
+            "batch_count": len(batches),
+            "execution_mode": execution_mode,
+            "artifact_mode": args.artifact_mode,
+            "effective_artifact_mode": effective_artifact_mode,
+            "artifact_format": args.artifact_format,
+            "artifact_file_format": artifact_file_format,
+            "artifact_dir": str(artifact_dir) if artifact_dir is not None else "",
+            "full_json_threshold": args.full_json_threshold,
+            "dataset_json_path": str(json_path) if json_path is not None else "",
+            "dataset_csv_path": str(csv_path) if csv_path is not None else "",
+            "total_games": total_games,
+            "run_elapsed_seconds": round(run_result.run_elapsed_seconds, 3),
+            "merge_elapsed_seconds": round(merge_elapsed, 3),
+            "total_elapsed_seconds": round(total_elapsed, 3),
+            "avg_elapsed_seconds": round(total_elapsed / total_games, 3),
+            "worker_cpu_seconds_total": round(worker_cpu_seconds_total, 3),
+            "worker_elapsed_seconds_total": round(worker_elapsed_seconds_total, 3),
+            "parallel_efficiency_pct": round(parallel_efficiency_pct, 2),
+            "anomaly_count": len(anomaly_ids),
+            "anomaly_rate": round(len(anomaly_ids) / max(len(summaries), 1), 4),
+            "common_anomaly_count": anomaly_counts["common_anomaly_count"],
+            "negative_score_anomaly_count": anomaly_counts["negative_score_anomaly_count"],
+            "starvation_anomaly_count": anomaly_counts["starvation_anomaly_count"],
+            "greedy_under_random_anomaly_count": anomaly_counts[
+                "greedy_under_random_anomaly_count"
+            ],
+            "search_under_random_anomaly_count": anomaly_counts[
+                "search_under_random_anomaly_count"
+            ],
+            "search_under_greedy_anomaly_count": anomaly_counts[
+                "search_under_greedy_anomaly_count"
+            ],
+            "under_random_anomaly_count": anomaly_counts["under_random_anomaly_count"],
+            "anomaly_json_path": str(anomaly_json_path) if anomaly_json_path is not None else "",
+            "anomaly_csv_path": str(anomaly_csv_path) if anomaly_csv_path is not None else "",
+        }
+        manifest_path.write_bytes(dumps_json_bytes(manifest, indent=True) + b"\n")
+        print(f"Dataset manifest exported: {manifest_path}", file=sys.stderr)
+        print(
+            f"Dataset complete: {total_games} games in {total_elapsed:.2f}s "
+            f"({total_elapsed / total_games:.3f}s per game)",
+            file=sys.stderr,
+        )
+    finally:
+        shutil.rmtree(part_dir, ignore_errors=True)
     return 0
 
 

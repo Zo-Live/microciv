@@ -100,6 +100,7 @@ pip install -r scripts/requirements.txt
 - `--search-depths` / `--search-max-depths` / `--search-beam-widths` / `--search-candidate-limits`：覆盖 Search 参数网格
 - `--artifact-mode`：输出模式，支持 `auto`、`compat`、`fast`、`dual`
 - `--artifact-format`：artifact 表格式，优先 `parquet`，也可指定 `jsonl`
+- `--chunksize`：数据集生成的 worker 批大小，默认 `auto`，显式正整数可固定批大小
 - `--full-json-threshold`：`auto` 模式下保留完整 JSON/CSV 的任务数阈值
 - `--no-export-json` / `--no-export-csv` / `--no-write-summary`：控制单配置批跑输出
 
