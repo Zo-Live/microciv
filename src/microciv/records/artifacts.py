@@ -30,7 +30,7 @@ from microciv.game.models import (
 from microciv.game.scoring import score_breakdown
 from microciv.records.models import RecordEntry
 
-ARTIFACT_SCHEMA_VERSION: Final[int] = 5
+ARTIFACT_SCHEMA_VERSION: Final[int] = 6
 ARTIFACT_MANIFEST_FILENAME: Final[str] = "artifact_manifest.json"
 ARTIFACT_TABLES: Final[tuple[str, ...]] = (
     "macro",
@@ -405,9 +405,17 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             "legal_skip_count": context.legal_skip_count,
             "search_mode": context.search_mode or "",
             "search_depth": context.search_depth,
+            "search_actual_depth": context.search_actual_depth,
             "search_base_depth": context.search_base_depth,
             "search_max_depth": context.search_max_depth,
             "search_depth_reason": context.search_depth_reason or "",
+            "search_deep_search_enabled": (
+                int(context.search_deep_search_enabled)
+                if context.search_deep_search_enabled is not None
+                else None
+            ),
+            "search_planning_mode": context.search_planning_mode or "",
+            "search_planning_reason": context.search_planning_reason or "",
             "search_beam_width": context.search_beam_width,
             "search_candidate_limit": context.search_candidate_limit,
             "search_root_legal_build_city_count": context.search_root_legal_build_city_count,
@@ -503,6 +511,10 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             "search_delta_network_count": context.search_delta_network_count,
             "search_delta_connected_city_count": context.search_delta_connected_city_count,
             "search_delta_road_overbuild": context.search_delta_road_overbuild,
+            "search_delta_worst_network_food_pressure": (
+                context.search_delta_worst_network_food_pressure
+            ),
+            "search_delta_min_network_food": context.search_delta_min_network_food,
             "search_road_merges_networks": (
                 int(context.search_road_merges_networks)
                 if context.search_road_merges_networks is not None
@@ -543,6 +555,9 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             "search_chosen_city_site_score_delta_vs_greedy": (
                 context.search_chosen_city_site_score_delta_vs_greedy
             ),
+            "search_chosen_city_resource_ring_bonus": (
+                context.search_chosen_city_resource_ring_bonus
+            ),
             "search_chosen_city_food_balance": context.search_chosen_city_food_balance,
             "search_chosen_city_total_yield": context.search_chosen_city_total_yield,
             "search_chosen_city_river_access": (
@@ -580,6 +595,9 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             ),
             "search_greedy_city_distance_to_network": (
                 context.search_greedy_city_distance_to_network
+            ),
+            "search_greedy_city_resource_ring_bonus": (
+                context.search_greedy_city_resource_ring_bonus
             ),
             "search_min_network_food_after_action": context.search_min_network_food_after_action,
             "search_worst_network_food_pressure_after_action": (

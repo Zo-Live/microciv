@@ -27,7 +27,16 @@ from microciv.game.enums import (
     TerrainType,
 )
 from microciv.game.mapgen import MapGenerator
-from microciv.game.models import City, GameConfig, GameState, Network, ResourcePool, Tile
+from microciv.game.models import (
+    BuildingCounts,
+    City,
+    GameConfig,
+    GameState,
+    Network,
+    ResourcePool,
+    Road,
+    Tile,
+)
 from microciv.session import GameSession, create_game_session
 
 
@@ -52,9 +61,13 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     assert action.action_type is not ActionType.SKIP
     assert context["search_mode"] == "expand"
     assert context["search_depth"] == DEFAULT_SEARCH_DEPTH
+    assert isinstance(context["search_actual_depth"], int)
     assert context["search_base_depth"] == DEFAULT_SEARCH_DEPTH
     assert context["search_max_depth"] == DEFAULT_SEARCH_MAX_DEPTH
     assert context["search_depth_reason"] == SEARCH_DEPTH_REASON_STEADY
+    assert isinstance(context["search_deep_search_enabled"], bool)
+    assert isinstance(context["search_planning_mode"], str)
+    assert isinstance(context["search_planning_reason"], str)
     assert context["search_beam_width"] == DEFAULT_SEARCH_BEAM_WIDTH
     assert context["search_candidate_limit"] == DEFAULT_SEARCH_CANDIDATE_LIMIT
     assert context["search_root_legal_skip_count"] == 1
@@ -87,6 +100,8 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     assert isinstance(context["search_root_best_action_type"], str)
     assert isinstance(context["search_root_chosen_action_type"], str)
     assert isinstance(context["search_delta_food_pressure"], int)
+    assert isinstance(context["search_delta_worst_network_food_pressure"], int)
+    assert isinstance(context["search_delta_min_network_food"], int)
     assert isinstance(context["search_delta_connected_city_count"], int)
     assert isinstance(context["search_delta_road_overbuild"], int)
     assert isinstance(context["search_road_merges_networks"], bool)
@@ -100,6 +115,7 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     assert isinstance(context["search_profile_safe_expansion_deficit"], int)
     if action.action_type is ActionType.BUILD_CITY:
         assert isinstance(context["search_chosen_city_site_score"], int)
+        assert isinstance(context["search_chosen_city_resource_ring_bonus"], int)
         assert isinstance(context["search_chosen_city_food_balance"], int)
     best_sequence = context["search_best_sequence"]
     assert isinstance(best_sequence, list)
@@ -140,7 +156,30 @@ def test_search_policy_keeps_healthy_expand_state_at_steady_depth() -> None:
 
     assert context["search_mode"] == "expand"
     assert context["search_depth"] == 2
+    assert context["search_planning_mode"] == "greedy_anchor"
+    assert context["search_actual_depth"] == 1
+    assert context["search_deep_search_enabled"] is False
     assert context["search_depth_reason"] == SEARCH_DEPTH_REASON_STEADY
+
+
+def test_search_policy_healthy_expand_uses_greedy_city_anchor() -> None:
+    state = _healthy_mild_pressure_expand_state()
+    policy = SearchPolicy(
+        search_depth=2,
+        search_max_depth=6,
+        search_beam_width=1,
+        search_candidate_limit=5,
+    )
+
+    action = policy.select_action(state)
+    context = policy.explain_decision(state)
+
+    assert action.action_type is ActionType.BUILD_CITY
+    assert context["search_planning_mode"] == "greedy_anchor"
+    assert context["search_planning_reason"] == "healthy_greedy_city"
+    assert context["search_matches_greedy_action"] is True
+    assert context["search_greedy_action_in_root_candidates"] is True
+    assert context["search_chosen_city_site_score_delta_vs_greedy"] == 0
 
 
 def test_search_policy_uses_custom_depth_strategy() -> None:
@@ -386,31 +425,45 @@ def _two_isolated_city_state() -> GameState:
 
 def _healthy_mild_pressure_expand_state() -> GameState:
     state = GameState.empty(GameConfig.for_play(turn_limit=30))
-    state.turn = 18
+    state.turn = 5
     state.board = {
         (0, 0): Tile(base_terrain=TerrainType.PLAIN),
         (0, 1): Tile(base_terrain=TerrainType.FOREST),
         (0, 2): Tile(base_terrain=TerrainType.PLAIN),
         (1, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
-        (1, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 1): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.ROAD),
         (1, 2): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
         (2, 0): Tile(base_terrain=TerrainType.FOREST),
         (2, 1): Tile(base_terrain=TerrainType.MOUNTAIN),
         (2, 2): Tile(base_terrain=TerrainType.PLAIN),
     }
     state.cities = {
-        1: City(city_id=1, coord=(1, 0), founded_turn=1, network_id=1),
-        2: City(city_id=2, coord=(1, 2), founded_turn=2, network_id=1),
+        1: City(
+            city_id=1,
+            coord=(1, 0),
+            founded_turn=1,
+            network_id=1,
+            buildings=BuildingCounts(farm=2, lumber_mill=2, mine=2, library=2),
+        ),
+        2: City(
+            city_id=2,
+            coord=(1, 2),
+            founded_turn=2,
+            network_id=1,
+            buildings=BuildingCounts(farm=2, lumber_mill=2, mine=2, library=2),
+        ),
     }
+    state.roads = {1: Road(road_id=1, coord=(1, 1), built_turn=3)}
     state.networks = {
         1: Network(
             network_id=1,
             city_ids={1, 2},
-            resources=ResourcePool(food=12, wood=60, ore=60, science=60),
-            unlocked_techs={TechType.AGRICULTURE},
+            resources=ResourcePool(food=30, wood=120, ore=120, science=0),
+            unlocked_techs=set(TechType),
         )
     }
     state.next_city_id = 3
+    state.next_road_id = 2
     state.next_network_id = 2
     return state
 

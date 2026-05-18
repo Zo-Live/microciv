@@ -11,6 +11,7 @@ from microciv.ai.heuristics import (
     building_action_score,
     city_expansion_score_for_context,
     city_network_pressure,
+    city_site_score_for_context,
     context_passable_network_map,
     partition_actions,
     research_action_score,
@@ -19,7 +20,7 @@ from microciv.ai.heuristics import (
     road_site_score_for_context,
     site_budget,
 )
-from microciv.ai.policy import get_legal_actions
+from microciv.ai.policy import get_legal_actions, simulate_action
 from microciv.constants import COVER_REWARDS, FOOD_CONSUMPTION_PER_CITY
 from microciv.game.actions import Action
 from microciv.game.enums import (
@@ -97,6 +98,7 @@ class SearchPositionProfile:
 class SearchCandidateConfig:
     candidate_limit: int
     include_skip: bool = True
+    forced_actions: tuple[Action, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -245,6 +247,7 @@ def generate_search_candidates(
     selected: dict[Action, SearchCandidate] = {}
     quotas = _candidate_type_quotas(profile, non_skip_limit, scored_by_type)
     max_by_type = _candidate_type_maxima(profile, non_skip_limit, quotas, scored_by_type)
+    forced_candidates = _forced_candidates(config.forced_actions, raw_scored_by_type)
 
     if profile.mode == SEARCH_MODE_EXPAND:
         safe_city_candidates = [
@@ -255,6 +258,12 @@ def generate_search_candidates(
         ]
         for candidate in safe_city_candidates[: quotas.get(ActionType.BUILD_CITY, 0)]:
             selected[candidate.action] = candidate
+
+    for candidate in forced_candidates:
+        if len(selected) >= non_skip_limit:
+            worst_action = max(selected.values(), key=_candidate_sort_key).action
+            del selected[worst_action]
+        selected[candidate.action] = candidate
 
     for action_type in _NON_SKIP_TYPES:
         quota = quotas.get(action_type, 0)
@@ -474,6 +483,7 @@ def evaluate_search_leaf(
     profile = build_search_position_profile(state)
     root_profile = build_search_position_profile(root_state) if root_state is not None else profile
     root_breakdown = score_breakdown(root_state) if root_state is not None else breakdown
+    root_context = build_heuristic_context(root_state) if root_state is not None else None
     root_connected = connected_city_count(root_state) if root_state is not None else connected
     root_isolated = isolated_city_count(root_state) if root_state is not None else isolated
     root_starving = starving_network_count(root_state) if root_state is not None else starving
@@ -492,19 +502,21 @@ def evaluate_search_leaf(
     tech_delta = tech_count(state) - root_techs
     food_pressure_delta = food_pressure - root_food_pressure
     road_delta = len(state.roads) - root_roads
+    city_quality_delta = _city_quality_delta(state, root_state, root_context)
 
     isolated_weight = 450 if profile.is_healthy_steady else 650
-    food_pressure_weight = 100 if profile.is_healthy_steady else 150
+    food_pressure_weight = 135 if profile.is_healthy_steady else 190
     fragmentation_weight = 180 if profile.is_healthy_steady else 260
     fill_weight = 320 if root_profile.mode == SEARCH_MODE_FILL else 80
     tech_weight = 260 if root_profile.mode == SEARCH_MODE_FILL else 70
 
     components = {
-        "score_total": breakdown.total * 35,
+        "score_total": breakdown.total * 26,
         "score_delta": score_delta * 90,
         "resource_ring_delta": (
-            (breakdown.resource_ring_score - root_breakdown.resource_ring_score) * 80
+            (breakdown.resource_ring_score - root_breakdown.resource_ring_score) * 135
         ),
+        "city_quality_delta": city_quality_delta * 110,
         "connected_city_delta": max(0, connected_delta) * 900,
         "network_reduction": network_reduction * 850,
         "building_delta": max(0, building_delta) * fill_weight,
@@ -565,12 +577,27 @@ def _score_candidate(
 ) -> SearchCandidate:
     if action.action_type is ActionType.BUILD_CITY and action.coord is not None:
         safe = _is_safe_city_site(state, action.coord, context, profile)
+        food_delta = _city_food_pressure_delta(state, action.coord, context)
+        budget = site_budget(state, action.coord, context)
+        ring_bonus = resource_ring_bonus_for_context(context, action.coord)
         effective = _city_food_pressure_delta(state, action.coord, context) < 0 or safe
         score = city_expansion_score_for_context(context, action.coord)
         score += _city_food_safety_score(state, action.coord, context)
-        score += resource_ring_bonus_for_context(context, action.coord)
-        if _city_food_pressure_delta(state, action.coord, context) < 0:
+        score += ring_bonus * (4 if profile.is_healthy_steady else 3)
+        score += city_site_score_for_context(context, action.coord)
+        if safe:
+            score += 1_400
+        if ring_bonus >= 420 and budget.food_balance >= 0:
+            score += 1_600
+        elif ring_bonus >= 260 and budget.food_balance >= 1:
+            score += 900
+        if food_delta < 0:
             score += 700
+        if profile.mode == SEARCH_MODE_EXPAND and profile.turns_remaining > 10:
+            if budget.food_balance <= 0 and ring_bonus < 300:
+                score -= 2_000
+            if budget.food_balance < 0:
+                score -= 2_800
         if profile.city_count >= profile.safe_target_city_count and not safe:
             score -= 3_600
         if profile.mode == SEARCH_MODE_RESCUE and not _city_can_rescue_food_pressure(
@@ -615,6 +642,7 @@ def _score_candidate(
     if action.action_type is ActionType.BUILD_BUILDING:
         score = building_action_score(state, action)
         score += _building_roi_score(state, action, context)
+        rescue_delta = _rescue_action_pressure_delta(state, action)
         if action.city_id is not None and action.building_type is BuildingType.FARM:
             city = state.cities[action.city_id]
             network = state.networks[city.network_id]
@@ -625,10 +653,18 @@ def _score_candidate(
                 score += 620 + (pressure * 12)
         if profile.mode == SEARCH_MODE_EXPAND and profile.turns_remaining > 10:
             score -= 420
+            if profile.safe_expansion_deficit > 0 and not _is_high_roi_building(
+                state,
+                action,
+                context,
+            ):
+                score -= 1_200
         if profile.mode == SEARCH_MODE_RESCUE and not _is_rescue_action(
             state, action, context, profile
         ):
             score -= 4_000
+        elif profile.mode == SEARCH_MODE_RESCUE and rescue_delta < 0:
+            score += abs(rescue_delta) * 260
         return SearchCandidate(
             action=action,
             action_type=action.action_type,
@@ -642,6 +678,7 @@ def _score_candidate(
         )
     if action.action_type is ActionType.RESEARCH_TECH:
         score = research_action_score(state, action)
+        rescue_delta = _rescue_action_pressure_delta(state, action)
         if action.city_id is not None and action.tech_type is TechType.AGRICULTURE:
             city = state.cities[action.city_id]
             network = state.networks[city.network_id]
@@ -650,10 +687,14 @@ def _score_candidate(
                 score += 900 + max(0, pressure) * 10
         if profile.mode == SEARCH_MODE_EXPAND and profile.turns_remaining > 10:
             score -= 420
+            if profile.safe_expansion_deficit > 0:
+                score -= 900
         if profile.mode == SEARCH_MODE_RESCUE and not _is_rescue_action(
             state, action, context, profile
         ):
             score -= 4_000
+        elif profile.mode == SEARCH_MODE_RESCUE and rescue_delta < 0:
+            score += abs(rescue_delta) * 220
         return SearchCandidate(
             action=action,
             action_type=action.action_type,
@@ -872,9 +913,9 @@ def _candidate_type_quotas(
 
     if profile.mode == SEARCH_MODE_RESCUE:
         weights = {
-            ActionType.BUILD_CITY: 1,
-            ActionType.BUILD_ROAD: 5,
-            ActionType.BUILD_BUILDING: 4,
+            ActionType.BUILD_CITY: 2,
+            ActionType.BUILD_ROAD: 6,
+            ActionType.BUILD_BUILDING: 3,
             ActionType.RESEARCH_TECH: 3,
         }
     elif profile.mode == SEARCH_MODE_CONNECT:
@@ -980,6 +1021,24 @@ def _candidate_type_quotas(
         quotas[ActionType.BUILD_BUILDING] = min(quotas[ActionType.BUILD_BUILDING], 1)
         quotas[ActionType.RESEARCH_TECH] = min(quotas[ActionType.RESEARCH_TECH], 1)
     return quotas
+
+
+def _forced_candidates(
+    forced_actions: tuple[Action, ...],
+    scored_by_type: dict[ActionType, list[SearchCandidate]],
+) -> list[SearchCandidate]:
+    if not forced_actions:
+        return []
+    by_action = {
+        candidate.action: candidate
+        for candidates in scored_by_type.values()
+        for candidate in candidates
+    }
+    return [
+        by_action[action]
+        for action in forced_actions
+        if action in by_action and action.action_type in _NON_SKIP_TYPES
+    ]
 
 
 def _candidate_type_maxima(
@@ -1211,7 +1270,10 @@ def _is_rescue_action(
     profile: SearchPositionProfile,
 ) -> bool:
     if action.action_type is ActionType.BUILD_CITY and action.coord is not None:
-        return _city_can_rescue_food_pressure(state, action.coord, context)
+        return (
+            _city_can_rescue_food_pressure(state, action.coord, context)
+            and _rescue_action_pressure_delta(state, action) < 0
+        )
     if action.action_type is ActionType.BUILD_ROAD and action.coord is not None:
         road_profile = _road_candidate_profile(state, action.coord, context, profile)
         return road_profile.starvation_bridge or (
@@ -1220,20 +1282,44 @@ def _is_rescue_action(
     if action.action_type is ActionType.BUILD_BUILDING:
         if action.city_id is None or action.building_type is not BuildingType.FARM:
             return False
-        city = state.cities[action.city_id]
-        network = state.networks[city.network_id]
-        pressure = city_network_pressure(network)
-        return network.resources.food <= 0 or pressure >= 0
+        return _rescue_action_pressure_delta(state, action) < 0
     if action.action_type is ActionType.RESEARCH_TECH:
         if action.city_id is None or action.tech_type is not TechType.AGRICULTURE:
             return False
-        city = state.cities[action.city_id]
-        network = state.networks[city.network_id]
-        pressure = city_network_pressure(network)
-        return network.resources.food <= len(network.city_ids) * FOOD_CONSUMPTION_PER_CITY or (
-            profile.starving_network_count > 0 and pressure >= 0
-        )
+        return _rescue_action_pressure_delta(state, action) < 0
     return False
+
+
+def _rescue_action_pressure_delta(state: GameState, action: Action) -> int:
+    before_pressure = _max_food_pressure(state)
+    try:
+        simulated = simulate_action(state, action)
+    except ValueError:
+        return 0
+    return _max_food_pressure(simulated) - before_pressure
+
+
+def _city_quality_delta(
+    state: GameState,
+    root_state: GameState | None,
+    root_context: HeuristicContext | None,
+) -> int:
+    if root_state is None or root_context is None:
+        return 0
+    added_city_coords = {
+        city.coord for city_id, city in state.cities.items() if city_id not in root_state.cities
+    }
+    quality = 0
+    for coord in added_city_coords:
+        if coord not in root_state.board:
+            continue
+        budget = site_budget(root_state, coord, root_context)
+        ring_bonus = resource_ring_bonus_for_context(root_context, coord)
+        site_score = city_site_score_for_context(root_context, coord)
+        quality += (ring_bonus * 2) + site_score + (budget.food_balance * 220)
+        if budget.food_balance < 0:
+            quality -= abs(budget.food_balance) * 650
+    return quality
 
 
 def _road_candidate_profile(

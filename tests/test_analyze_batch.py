@@ -259,11 +259,12 @@ def test_generate_report_from_artifacts_uses_tabular_input(tmp_path) -> None:
     assert "## 2. Policy Summary" in report
     assert "Greedy" in report
     assert "Random" in report
-    assert "### 7.4 Search Pressure Driver Summary" in report
-    assert "### 7.6 Search Candidate Health Summary" in report
-    assert "### 7.7 Search Road Quality Summary" in report
-    assert "### 7.10 Search Turn Lag Summary" in report
-    assert "### 7.16 Search Greedy Anchor Diagnostics" in report
+    assert "### 7.3 Search Planning Summary" in report
+    assert "### 7.5 Search Pressure Driver Summary" in report
+    assert "### 7.7 Search Candidate Health Summary" in report
+    assert "### 7.8 Search Road Quality Summary" in report
+    assert "### 7.11 Search Turn Lag Summary" in report
+    assert "### 7.17 Search Greedy Anchor Diagnostics" in report
     assert "search_sequence_adjustment" in report
     assert "city_count" in frames["turn_scores"].columns
     assert "legal_actions_count" in frames["turn_scores"].columns
@@ -341,16 +342,17 @@ def test_analyze_batch_reports_search_diagnostics() -> None:
     assert restored_state.config.policy_type is PolicyType.SEARCH
     assert "### 7.1 Search Diagnostic Summary" in report
     assert "### 7.2 Search Depth Reason Summary" in report
-    assert "### 7.3 Search Mode Summary" in report
-    assert "### 7.4 Search Pressure Driver Summary" in report
+    assert "### 7.3 Search Planning Summary" in report
+    assert "### 7.4 Search Mode Summary" in report
+    assert "### 7.5 Search Pressure Driver Summary" in report
     assert "search_nodes_expanded_mean" in report
     assert "search_sequence_adjustment_mean" in report
     assert "search_risk_pressure_total_mean" in report
     assert "risk_pressure_total_mean" in report
     assert "search_root_chosen_rank_mean" in report
     assert "search_root_candidate_cut_ratio_mean" in report
-    assert "### 7.9 Search Score Component Gap vs Greedy" in report
-    assert "### 7.18 Search Timing Value Summary" in report
+    assert "### 7.10 Search Score Component Gap vs Greedy" in report
+    assert "### 7.19 Search Timing Value Summary" in report
     assert "search_value_score_total_mean" in report
     assert "search_best_food_pressure_mean" in report
     assert int(summary.iloc[0]["search_leaf_count_mean"]) == 12
@@ -665,7 +667,7 @@ def test_policy_anomaly_summary_uses_mixed_baselines_and_starvation() -> None:
     assert set(summary["policy_variant"]) == {"Random", "Greedy", "Search d2 b3 c5"}
     assert int(matchup.iloc[0]["same_map_win_rate"]) == 0
     assert "search_under_greedy_count" in report
-    assert "### 7.5 Search Same-Map Matchup Summary" in report
+    assert "### 7.6 Search Same-Map Matchup Summary" in report
     assert "task7_acceptance_candidate" in report
     assert "Search d2 b3 c5" in report
 

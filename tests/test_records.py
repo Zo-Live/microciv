@@ -15,6 +15,7 @@ from microciv.game.models import (
     Stats,
     Tile,
 )
+from microciv.records.artifacts import record_decision_rows
 from microciv.records.export import export_records_json
 from microciv.records.models import (
     RECORDS_SCHEMA_VERSION,
@@ -344,9 +345,13 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         decision_time_ms=12.5,
         search_mode="expand",
         search_depth=2,
+        search_actual_depth=1,
         search_base_depth=2,
         search_max_depth=2,
         search_depth_reason="fixed",
+        search_deep_search_enabled=False,
+        search_planning_mode="greedy_anchor",
+        search_planning_reason="healthy_greedy_city",
         search_beam_width=3,
         search_candidate_limit=5,
         search_root_legal_build_city_count=4,
@@ -404,6 +409,8 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         search_delta_network_count=-1,
         search_delta_connected_city_count=2,
         search_delta_road_overbuild=0,
+        search_delta_worst_network_food_pressure=-3,
+        search_delta_min_network_food=4,
         search_road_merges_networks=True,
         search_road_connected_city_delta=2,
         search_road_is_redundant=False,
@@ -418,6 +425,7 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         search_chosen_city_site_score=240,
         search_greedy_city_site_score=240,
         search_chosen_city_site_score_delta_vs_greedy=0,
+        search_chosen_city_resource_ring_bonus=180,
         search_chosen_city_food_balance=2,
         search_chosen_city_total_yield=8,
         search_chosen_city_river_access=True,
@@ -436,6 +444,7 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         search_greedy_city_plain_neighbors=3,
         search_greedy_city_occupied_neighbors=0,
         search_greedy_city_distance_to_network=2,
+        search_greedy_city_resource_ring_bonus=180,
         search_min_network_food_after_action=20,
         search_worst_network_food_pressure_after_action=0,
         search_food_surplus_network_count_after_action=1,
@@ -464,8 +473,12 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     restored = RecordDecisionContext.from_dict(context.to_dict())
 
     assert restored.search_depth == 2
+    assert restored.search_actual_depth == 1
     assert restored.decision_time_ms == 12.5
     assert restored.search_mode == "expand"
+    assert restored.search_deep_search_enabled is False
+    assert restored.search_planning_mode == "greedy_anchor"
+    assert restored.search_planning_reason == "healthy_greedy_city"
     assert restored.search_depth_reason == "fixed"
     assert restored.search_root_candidate_build_city_count == 3
     assert restored.search_root_candidate_skip_count == 0
@@ -493,6 +506,8 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     assert restored.search_root_high_roi_building_candidate_count == 1
     assert restored.search_root_gated_candidate_count == 4
     assert restored.search_delta_food_pressure == -4
+    assert restored.search_delta_worst_network_food_pressure == -3
+    assert restored.search_delta_min_network_food == 4
     assert restored.search_delta_connected_city_count == 2
     assert restored.search_road_merges_networks is True
     assert restored.search_road_is_redundant is False
@@ -501,9 +516,11 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     assert restored.search_greedy_action_in_root_candidates is True
     assert restored.search_greedy_action_root_rank == 1
     assert restored.search_chosen_city_site_score == 240
+    assert restored.search_chosen_city_resource_ring_bonus == 180
     assert restored.search_chosen_city_food_balance == 2
     assert restored.search_chosen_city_river_access is True
     assert restored.search_greedy_city_site_score == 240
+    assert restored.search_greedy_city_resource_ring_bonus == 180
     assert restored.search_min_network_food_after_action == 20
     assert restored.search_food_surplus_network_count_after_action == 1
     assert restored.search_profile_safe_expansion_deficit == 3
@@ -513,6 +530,50 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     ]
     assert restored.search_best_sequence[0].x == 1
     assert restored.search_best_sequence[1].tech_type == "agriculture"
+
+
+def test_record_decision_artifact_rows_preserve_search_planning_fields() -> None:
+    record = RecordEntry.from_game_state(
+        record_id=9,
+        timestamp="2026-04-09T12:38:56+08:00",
+        state=build_completed_autoplay_state(policy_type=PolicyType.SEARCH),
+    )
+    record.decision_contexts = [
+        RecordDecisionContext(
+            turn=3,
+            legal_actions_count=5,
+            legal_build_city_count=2,
+            legal_build_road_count=1,
+            legal_build_building_count=0,
+            legal_research_tech_count=1,
+            legal_skip_count=1,
+            chosen_action_type="build_city",
+            search_mode="expand",
+            search_depth=2,
+            search_actual_depth=1,
+            search_base_depth=2,
+            search_max_depth=6,
+            search_depth_reason="steady",
+            search_deep_search_enabled=False,
+            search_planning_mode="greedy_anchor",
+            search_planning_reason="healthy_greedy_city",
+            search_delta_worst_network_food_pressure=-3,
+            search_delta_min_network_food=4,
+            search_chosen_city_resource_ring_bonus=180,
+            search_greedy_city_resource_ring_bonus=180,
+        )
+    ]
+
+    row = record_decision_rows(record)[0]
+
+    assert row["search_actual_depth"] == 1
+    assert row["search_deep_search_enabled"] == 0
+    assert row["search_planning_mode"] == "greedy_anchor"
+    assert row["search_planning_reason"] == "healthy_greedy_city"
+    assert row["search_delta_worst_network_food_pressure"] == -3
+    assert row["search_delta_min_network_food"] == 4
+    assert row["search_chosen_city_resource_ring_bonus"] == 180
+    assert row["search_greedy_city_resource_ring_bonus"] == 180
 
 
 def build_completed_state(*, seed: int = 7) -> GameState:

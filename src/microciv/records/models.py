@@ -574,9 +574,13 @@ class RecordDecisionContext:
     random_type_weights: dict[str, float] = field(default_factory=dict)
     search_mode: str | None = None
     search_depth: int | None = None
+    search_actual_depth: int | None = None
     search_base_depth: int | None = None
     search_max_depth: int | None = None
     search_depth_reason: str | None = None
+    search_deep_search_enabled: bool | None = None
+    search_planning_mode: str | None = None
+    search_planning_reason: str | None = None
     search_beam_width: int | None = None
     search_candidate_limit: int | None = None
     search_root_legal_build_city_count: int | None = None
@@ -638,6 +642,8 @@ class RecordDecisionContext:
     search_delta_network_count: int | None = None
     search_delta_connected_city_count: int | None = None
     search_delta_road_overbuild: int | None = None
+    search_delta_worst_network_food_pressure: int | None = None
+    search_delta_min_network_food: int | None = None
     search_road_merges_networks: bool | None = None
     search_road_connected_city_delta: int | None = None
     search_road_is_redundant: bool | None = None
@@ -652,6 +658,7 @@ class RecordDecisionContext:
     search_chosen_city_site_score: int | None = None
     search_greedy_city_site_score: int | None = None
     search_chosen_city_site_score_delta_vs_greedy: int | None = None
+    search_chosen_city_resource_ring_bonus: int | None = None
     search_chosen_city_food_balance: int | None = None
     search_chosen_city_total_yield: int | None = None
     search_chosen_city_river_access: bool | None = None
@@ -670,6 +677,7 @@ class RecordDecisionContext:
     search_greedy_city_plain_neighbors: int | None = None
     search_greedy_city_occupied_neighbors: int | None = None
     search_greedy_city_distance_to_network: int | None = None
+    search_greedy_city_resource_ring_bonus: int | None = None
     search_min_network_food_after_action: int | None = None
     search_worst_network_food_pressure_after_action: int | None = None
     search_food_surplus_network_count_after_action: int | None = None
@@ -733,9 +741,13 @@ class RecordDecisionContext:
             random_type_weights=_mapping_of_floats(payload, "random_type_weights"),
             search_mode=_optional_str(payload, "search_mode"),
             search_depth=_optional_int(payload, "search_depth"),
+            search_actual_depth=_optional_int(payload, "search_actual_depth"),
             search_base_depth=_optional_int(payload, "search_base_depth"),
             search_max_depth=_optional_int(payload, "search_max_depth"),
             search_depth_reason=_optional_str(payload, "search_depth_reason"),
+            search_deep_search_enabled=_optional_bool(payload, "search_deep_search_enabled"),
+            search_planning_mode=_optional_str(payload, "search_planning_mode"),
+            search_planning_reason=_optional_str(payload, "search_planning_reason"),
             search_beam_width=_optional_int(payload, "search_beam_width"),
             search_candidate_limit=_optional_int(payload, "search_candidate_limit"),
             search_root_legal_build_city_count=_optional_int(
@@ -856,6 +868,10 @@ class RecordDecisionContext:
                 payload, "search_delta_connected_city_count"
             ),
             search_delta_road_overbuild=_optional_int(payload, "search_delta_road_overbuild"),
+            search_delta_worst_network_food_pressure=_optional_int(
+                payload, "search_delta_worst_network_food_pressure"
+            ),
+            search_delta_min_network_food=_optional_int(payload, "search_delta_min_network_food"),
             search_road_merges_networks=_optional_bool(payload, "search_road_merges_networks"),
             search_road_connected_city_delta=_optional_int(
                 payload, "search_road_connected_city_delta"
@@ -883,6 +899,9 @@ class RecordDecisionContext:
             search_greedy_city_site_score=_optional_int(payload, "search_greedy_city_site_score"),
             search_chosen_city_site_score_delta_vs_greedy=_optional_int(
                 payload, "search_chosen_city_site_score_delta_vs_greedy"
+            ),
+            search_chosen_city_resource_ring_bonus=_optional_int(
+                payload, "search_chosen_city_resource_ring_bonus"
             ),
             search_chosen_city_food_balance=_optional_int(
                 payload, "search_chosen_city_food_balance"
@@ -933,6 +952,9 @@ class RecordDecisionContext:
             ),
             search_greedy_city_distance_to_network=_optional_int(
                 payload, "search_greedy_city_distance_to_network"
+            ),
+            search_greedy_city_resource_ring_bonus=_optional_int(
+                payload, "search_greedy_city_resource_ring_bonus"
             ),
             search_min_network_food_after_action=_optional_int(
                 payload, "search_min_network_food_after_action"
@@ -1039,12 +1061,20 @@ class RecordDecisionContext:
             result["search_mode"] = self.search_mode
         if self.search_depth is not None:
             result["search_depth"] = self.search_depth
+        if self.search_actual_depth is not None:
+            result["search_actual_depth"] = self.search_actual_depth
         if self.search_base_depth is not None:
             result["search_base_depth"] = self.search_base_depth
         if self.search_max_depth is not None:
             result["search_max_depth"] = self.search_max_depth
         if self.search_depth_reason is not None:
             result["search_depth_reason"] = self.search_depth_reason
+        if self.search_deep_search_enabled is not None:
+            result["search_deep_search_enabled"] = self.search_deep_search_enabled
+        if self.search_planning_mode is not None:
+            result["search_planning_mode"] = self.search_planning_mode
+        if self.search_planning_reason is not None:
+            result["search_planning_reason"] = self.search_planning_reason
         if self.search_beam_width is not None:
             result["search_beam_width"] = self.search_beam_width
         if self.search_candidate_limit is not None:
@@ -1195,6 +1225,12 @@ class RecordDecisionContext:
             result["search_delta_connected_city_count"] = self.search_delta_connected_city_count
         if self.search_delta_road_overbuild is not None:
             result["search_delta_road_overbuild"] = self.search_delta_road_overbuild
+        if self.search_delta_worst_network_food_pressure is not None:
+            result["search_delta_worst_network_food_pressure"] = (
+                self.search_delta_worst_network_food_pressure
+            )
+        if self.search_delta_min_network_food is not None:
+            result["search_delta_min_network_food"] = self.search_delta_min_network_food
         if self.search_road_merges_networks is not None:
             result["search_road_merges_networks"] = self.search_road_merges_networks
         if self.search_road_connected_city_delta is not None:
@@ -1230,6 +1266,10 @@ class RecordDecisionContext:
         if self.search_chosen_city_site_score_delta_vs_greedy is not None:
             result["search_chosen_city_site_score_delta_vs_greedy"] = (
                 self.search_chosen_city_site_score_delta_vs_greedy
+            )
+        if self.search_chosen_city_resource_ring_bonus is not None:
+            result["search_chosen_city_resource_ring_bonus"] = (
+                self.search_chosen_city_resource_ring_bonus
             )
         if self.search_chosen_city_food_balance is not None:
             result["search_chosen_city_food_balance"] = self.search_chosen_city_food_balance
@@ -1278,6 +1318,10 @@ class RecordDecisionContext:
         if self.search_greedy_city_distance_to_network is not None:
             result["search_greedy_city_distance_to_network"] = (
                 self.search_greedy_city_distance_to_network
+            )
+        if self.search_greedy_city_resource_ring_bonus is not None:
+            result["search_greedy_city_resource_ring_bonus"] = (
+                self.search_greedy_city_resource_ring_bonus
             )
         if self.search_min_network_food_after_action is not None:
             result["search_min_network_food_after_action"] = (

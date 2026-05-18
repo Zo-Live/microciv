@@ -11,6 +11,7 @@ from microciv.ai.heuristics import (
     city_network_pressure,
     city_site_score_for_context,
     context_is_river_adjacent_site,
+    resource_ring_bonus_for_context,
     resource_ring_counts_for_context,
     site_budget,
 )
@@ -20,6 +21,7 @@ from microciv.ai.search_support import (
     SEARCH_MODE_EXPAND,
     SEARCH_MODE_RESCUE,
     SearchCandidateConfig,
+    SearchCandidateSet,
     SearchLeafEvaluation,
     SearchPositionProfile,
     build_search_position_profile,
@@ -45,6 +47,11 @@ SEARCH_DEPTH_REASON_GROWTH_STALL = "growth_stall"
 SEARCH_DEPTH_REASON_FOOD_WATCH = "food_watch"
 SEARCH_DEPTH_REASON_ENDGAME_PUSH = "endgame_push"
 SEARCH_DEPTH_REASON_STEADY = "steady"
+SEARCH_PLANNING_MODE_BEAM = "beam_search"
+SEARCH_PLANNING_MODE_GREEDY_ANCHOR = "greedy_anchor"
+SEARCH_PLANNING_REASON_RISK_SEARCH = "risk_search"
+SEARCH_PLANNING_REASON_HEALTHY_GREEDY_CITY = "healthy_greedy_city"
+SEARCH_PLANNING_REASON_HEALTHY_SHALLOW = "healthy_shallow"
 
 _SEARCH_PRESSURE_COMPONENT_KEYS: tuple[str, ...] = (
     "isolated_penalty",
@@ -177,6 +184,14 @@ class RootCandidateDiagnostic:
     value: int
 
 
+@dataclass(slots=True, frozen=True)
+class GreedyAnchorPlan:
+    action: Action
+    direct: bool
+    force_candidate: bool
+    reason: str
+
+
 @dataclass(slots=True)
 class SearchTelemetry:
     nodes_expanded: int = 0
@@ -243,14 +258,48 @@ class SearchPolicy(Policy):
             return self._cached_decision
 
         depth_decision = self._choose_depth(state)
-        candidate_config = SearchCandidateConfig(candidate_limit=self.search_candidate_limit)
-        telemetry = SearchTelemetry()
-        best_node = self._run_beam_search(
-            state=state,
-            depth=depth_decision.depth,
-            candidate_config=candidate_config,
-            telemetry=telemetry,
+        root_profile = build_search_position_profile(state)
+        greedy_anchor = _greedy_anchor_plan(
+            state,
+            root_profile,
+            allow_direct=depth_decision.reason
+            in {SEARCH_DEPTH_REASON_STEADY, SEARCH_DEPTH_REASON_FIXED},
         )
+        forced_actions = (greedy_anchor.action,) if greedy_anchor.force_candidate else ()
+        candidate_config = SearchCandidateConfig(
+            candidate_limit=self.search_candidate_limit,
+            forced_actions=forced_actions,
+        )
+        telemetry = SearchTelemetry()
+        planning_mode = SEARCH_PLANNING_MODE_BEAM
+        planning_reason = SEARCH_PLANNING_REASON_RISK_SEARCH
+        effective_depth = depth_decision.depth
+        actual_depth = depth_decision.depth
+        best_node: SearchNode | None = None
+        if greedy_anchor.direct:
+            best_node = self._run_anchor_plan(
+                state=state,
+                action=greedy_anchor.action,
+                candidate_config=candidate_config,
+                telemetry=telemetry,
+            )
+            if best_node is not None:
+                planning_mode = SEARCH_PLANNING_MODE_GREEDY_ANCHOR
+                planning_reason = greedy_anchor.reason
+                actual_depth = 1
+
+        if best_node is None:
+            beam_depth = depth_decision.depth
+            if _should_use_healthy_shallow_search(root_profile, depth_decision):
+                beam_depth = 1
+                planning_reason = SEARCH_PLANNING_REASON_HEALTHY_SHALLOW
+            actual_depth = beam_depth
+            best_node = self._run_beam_search(
+                state=state,
+                depth=beam_depth,
+                candidate_config=candidate_config,
+                telemetry=telemetry,
+            )
 
         if best_node is None or not best_node.sequence:
             action = Action.skip()
@@ -298,10 +347,15 @@ class SearchPolicy(Policy):
             action=action,
             context={
                 "search_mode": root_profile.mode,
-                "search_depth": depth_decision.depth,
+                "search_depth": effective_depth,
+                "search_actual_depth": actual_depth,
                 "search_base_depth": self.search_depth,
                 "search_max_depth": self.search_max_depth,
                 "search_depth_reason": depth_decision.reason,
+                "search_deep_search_enabled": planning_mode == SEARCH_PLANNING_MODE_BEAM
+                and actual_depth > 1,
+                "search_planning_mode": planning_mode,
+                "search_planning_reason": planning_reason,
                 "search_beam_width": self.search_beam_width,
                 "search_candidate_limit": self.search_candidate_limit,
                 "search_root_legal_build_city_count": root_legal_counts[ActionType.BUILD_CITY],
@@ -386,6 +440,51 @@ class SearchPolicy(Policy):
         self._cached_decision = decision
         return decision
 
+    def _run_anchor_plan(
+        self,
+        *,
+        state: GameState,
+        action: Action,
+        candidate_config: SearchCandidateConfig,
+        telemetry: SearchTelemetry,
+    ) -> SearchNode | None:
+        root_evaluation = evaluate_search_leaf(state, root_state=state)
+        candidate_set = generate_search_candidates(state, candidate_config)
+        self._record_root_candidate_set(candidate_set, telemetry)
+        telemetry.nodes_expanded += 1
+        telemetry.candidates_considered += len(candidate_set.candidates)
+        selected_node: SearchNode | None = None
+        for candidate in candidate_set.candidates:
+            simulated_state = simulate_action(state, candidate.action)
+            leaf_evaluation = evaluate_search_leaf(simulated_state, root_state=state)
+            telemetry.leaf_count += 1
+            sequence = (candidate.action,)
+            sequence_adjustment = _sequence_adjustment(state, simulated_state, sequence)
+            child = SearchNode(
+                state=simulated_state,
+                sequence=sequence,
+                value=leaf_evaluation.value + sequence_adjustment,
+                sequence_adjustment=sequence_adjustment,
+                leaf_evaluation=leaf_evaluation,
+            )
+            telemetry.root_candidate_diagnostics.append(
+                RootCandidateDiagnostic(
+                    action=candidate.action,
+                    value=child.value,
+                )
+            )
+            if candidate.action == action:
+                selected_node = child
+        if selected_node is not None:
+            return selected_node
+        return SearchNode(
+            state=state,
+            sequence=(),
+            value=root_evaluation.value,
+            sequence_adjustment=0,
+            leaf_evaluation=root_evaluation,
+        )
+
     def _choose_depth(self, state: GameState) -> SearchDepthDecision:
         context = SearchDepthContext(
             state=state,
@@ -431,27 +530,7 @@ class SearchPolicy(Policy):
 
                 candidate_set = generate_search_candidates(node.state, candidate_config)
                 if not node.sequence and telemetry.root_profile is None:
-                    telemetry.root_profile = candidate_set.profile
-                    telemetry.root_legal_action_count = candidate_set.legal_action_count
-                    telemetry.root_legal_counts_by_type = candidate_set.legal_counts_by_type
-                    telemetry.root_candidate_counts_by_type = candidate_set.candidate_counts_by_type
-                    telemetry.root_safe_city_candidate_count = (
-                        candidate_set.safe_city_candidate_count
-                    )
-                    telemetry.root_effective_connection_road_candidate_count = (
-                        candidate_set.effective_connection_road_candidate_count
-                    )
-                    telemetry.root_rescue_candidate_count = candidate_set.rescue_candidate_count
-                    telemetry.root_effective_city_candidate_count = (
-                        candidate_set.effective_city_candidate_count
-                    )
-                    telemetry.root_redundant_road_candidate_count = (
-                        candidate_set.redundant_road_candidate_count
-                    )
-                    telemetry.root_high_roi_building_candidate_count = (
-                        candidate_set.high_roi_building_candidate_count
-                    )
-                    telemetry.root_gated_candidate_count = candidate_set.gated_candidate_count
+                    self._record_root_candidate_set(candidate_set, telemetry)
                 telemetry.nodes_expanded += 1
                 telemetry.candidates_considered += len(candidate_set.candidates)
 
@@ -487,6 +566,27 @@ class SearchPolicy(Policy):
             beam = sorted(next_nodes, key=_node_sort_key)[: self.search_beam_width]
 
         return best_node
+
+    def _record_root_candidate_set(
+        self,
+        candidate_set: SearchCandidateSet,
+        telemetry: SearchTelemetry,
+    ) -> None:
+        telemetry.root_profile = candidate_set.profile
+        telemetry.root_legal_action_count = candidate_set.legal_action_count
+        telemetry.root_legal_counts_by_type = candidate_set.legal_counts_by_type
+        telemetry.root_candidate_counts_by_type = candidate_set.candidate_counts_by_type
+        telemetry.root_safe_city_candidate_count = candidate_set.safe_city_candidate_count
+        telemetry.root_effective_connection_road_candidate_count = (
+            candidate_set.effective_connection_road_candidate_count
+        )
+        telemetry.root_rescue_candidate_count = candidate_set.rescue_candidate_count
+        telemetry.root_effective_city_candidate_count = candidate_set.effective_city_candidate_count
+        telemetry.root_redundant_road_candidate_count = candidate_set.redundant_road_candidate_count
+        telemetry.root_high_roi_building_candidate_count = (
+            candidate_set.high_roi_building_candidate_count
+        )
+        telemetry.root_gated_candidate_count = candidate_set.gated_candidate_count
 
     def _build_cache_key(self, state: GameState) -> tuple[object, ...]:
         network_signature = tuple(
@@ -526,6 +626,89 @@ def _require_positive(value: int, field_name: str) -> int:
     if value < 1:
         raise ValueError(f"{field_name} must be at least 1")
     return value
+
+
+def _greedy_anchor_plan(
+    state: GameState,
+    profile: SearchPositionProfile,
+    *,
+    allow_direct: bool,
+) -> GreedyAnchorPlan:
+    from microciv.ai.greedy import GreedyPolicy
+
+    greedy_action = GreedyPolicy().select_action(state)
+    if greedy_action.action_type is not ActionType.BUILD_CITY or greedy_action.coord is None:
+        return GreedyAnchorPlan(
+            action=greedy_action,
+            direct=False,
+            force_candidate=False,
+            reason="greedy_non_city",
+        )
+    if not allow_direct or not _is_healthy_expansion_anchor_state(profile):
+        return GreedyAnchorPlan(
+            action=greedy_action,
+            direct=False,
+            force_candidate=True,
+            reason="risk_search_with_greedy_city",
+        )
+
+    context = build_heuristic_context(state)
+    quality = _city_anchor_quality(state, greedy_action.coord, context)
+    if quality["food_balance"] < 0:
+        return GreedyAnchorPlan(
+            action=greedy_action,
+            direct=False,
+            force_candidate=True,
+            reason="greedy_city_food_risk",
+        )
+    if quality["ring_bonus"] >= 180 or quality["site_score"] >= 260 or profile.city_count < 3:
+        return GreedyAnchorPlan(
+            action=greedy_action,
+            direct=True,
+            force_candidate=True,
+            reason=SEARCH_PLANNING_REASON_HEALTHY_GREEDY_CITY,
+        )
+    return GreedyAnchorPlan(
+        action=greedy_action,
+        direct=False,
+        force_candidate=True,
+        reason="greedy_city_low_quality",
+    )
+
+
+def _is_healthy_expansion_anchor_state(profile: SearchPositionProfile) -> bool:
+    return (
+        profile.mode == SEARCH_MODE_EXPAND
+        and profile.is_healthy_steady
+        and profile.safe_expansion_deficit > 0
+        and profile.turns_remaining > 10
+        and profile.starving_network_count == 0
+        and profile.food_pressure <= FOOD_CONSUMPTION_PER_CITY
+    )
+
+
+def _should_use_healthy_shallow_search(
+    profile: SearchPositionProfile,
+    depth_decision: SearchDepthDecision,
+) -> bool:
+    return (
+        depth_decision.reason == SEARCH_DEPTH_REASON_STEADY
+        and _is_healthy_expansion_anchor_state(profile)
+        and depth_decision.depth > 1
+    )
+
+
+def _city_anchor_quality(
+    state: GameState,
+    coord: Coord,
+    context: HeuristicContext,
+) -> dict[str, int]:
+    budget = site_budget(state, coord, context)
+    return {
+        "site_score": city_site_score_for_context(context, coord),
+        "ring_bonus": resource_ring_bonus_for_context(context, coord),
+        "food_balance": budget.food_balance,
+    }
 
 
 def _root_candidate_diagnostics(
@@ -576,8 +759,10 @@ def _root_candidate_diagnostics(
 
 def _action_delta_diagnostics(state: GameState, action: Action) -> dict[str, object]:
     before = build_search_position_profile(state)
+    before_risk = _network_food_risk_profile(state)
     after_state = simulate_action(state, action)
     after = build_search_position_profile(after_state)
+    after_risk = _network_food_risk_profile(after_state)
     road_connected_city_delta = after.connected_city_count - before.connected_city_count
     road_merges_networks = (
         action.action_type is ActionType.BUILD_ROAD and after.network_count < before.network_count
@@ -604,6 +789,10 @@ def _action_delta_diagnostics(state: GameState, action: Action) -> dict[str, obj
         ),
         "search_delta_road_overbuild": _road_overbuild_metric(after_state)
         - _road_overbuild_metric(state),
+        "search_delta_worst_network_food_pressure": (
+            after_risk["worst_pressure"] - before_risk["worst_pressure"]
+        ),
+        "search_delta_min_network_food": after_risk["min_food"] - before_risk["min_food"],
         "search_road_merges_networks": road_merges_networks,
         "search_road_connected_city_delta": (
             road_connected_city_delta if action.action_type is ActionType.BUILD_ROAD else 0
@@ -728,6 +917,7 @@ def _city_action_diagnostics(
     forest, mountain, river, plain, occupied = resource_ring_counts_for_context(context, coord)
     return {
         f"{prefix}_site_score": city_site_score_for_context(context, coord),
+        f"{prefix}_resource_ring_bonus": resource_ring_bonus_for_context(context, coord),
         f"{prefix}_food_balance": budget.food_balance,
         f"{prefix}_total_yield": budget.total_yield,
         f"{prefix}_river_access": context_is_river_adjacent_site(context, coord),
@@ -750,17 +940,23 @@ def _distance_to_existing_network(state: GameState, coord: Coord) -> int | None:
 
 
 def _network_food_risk_diagnostics(state: GameState) -> dict[str, object]:
+    profile = _network_food_risk_profile(state)
+    return {
+        "search_min_network_food_after_action": profile["min_food"],
+        "search_worst_network_food_pressure_after_action": profile["worst_pressure"],
+        "search_food_surplus_network_count_after_action": profile["surplus_count"],
+        "search_food_deficit_network_count_after_action": profile["deficit_count"],
+    }
+
+
+def _network_food_risk_profile(state: GameState) -> dict[str, int]:
     foods = [network.resources.food for network in state.networks.values()]
     pressures = [city_network_pressure(network) for network in state.networks.values()]
     return {
-        "search_min_network_food_after_action": min(foods, default=0),
-        "search_worst_network_food_pressure_after_action": max(pressures, default=0),
-        "search_food_surplus_network_count_after_action": sum(
-            1 for pressure in pressures if pressure <= 0
-        ),
-        "search_food_deficit_network_count_after_action": sum(
-            1 for pressure in pressures if pressure > 0
-        ),
+        "min_food": min(foods, default=0),
+        "worst_pressure": max(pressures, default=0),
+        "surplus_count": sum(1 for pressure in pressures if pressure <= 0),
+        "deficit_count": sum(1 for pressure in pressures if pressure > 0),
     }
 
 

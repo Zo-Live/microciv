@@ -442,6 +442,7 @@ def build_search_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataF
 
     value_cols = [
         "search_depth",
+        "search_actual_depth",
         "search_max_depth",
         "search_beam_width",
         "search_candidate_limit",
@@ -626,6 +627,8 @@ def build_search_candidate_health_summary_from_decision_df(
         "search_delta_network_count",
         "search_delta_connected_city_count",
         "search_delta_road_overbuild",
+        "search_delta_worst_network_food_pressure",
+        "search_delta_min_network_food",
     ]
     return _summary_table(
         search_df,
@@ -752,6 +755,47 @@ def build_search_depth_reason_summary_from_decision_df(decision_df: pd.DataFrame
         .reset_index()
     )
     return grouped.sort_values(["policy_variant", "search_depth_reason"])
+
+
+def build_search_planning_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataFrame:
+    if decision_df.empty or "search_planning_mode" not in decision_df:
+        return pd.DataFrame()
+    search_df = decision_df[
+        decision_df.get("search_planning_mode", pd.Series(dtype=object)).fillna("") != ""
+    ].copy()
+    if search_df.empty:
+        return pd.DataFrame()
+    for column in [
+        "search_depth",
+        "search_actual_depth",
+        "search_deep_search_enabled",
+        "search_nodes_expanded",
+        "search_leaf_count",
+        "search_best_value",
+    ]:
+        if column not in search_df:
+            search_df[column] = 0
+    grouped = (
+        search_df.groupby(
+            ["policy_variant", "search_planning_mode", "search_planning_reason"],
+            dropna=False,
+        )
+        .agg(
+            samples=("search_planning_mode", "size"),
+            configured_depth_mean=("search_depth", "mean"),
+            actual_depth_mean=("search_actual_depth", "mean"),
+            deep_search_rate=("search_deep_search_enabled", "mean"),
+            nodes_expanded_mean=("search_nodes_expanded", "mean"),
+            leaf_count_mean=("search_leaf_count", "mean"),
+            best_value_mean=("search_best_value", "mean"),
+        )
+        .reset_index()
+    )
+    grouped["deep_search_rate"] = grouped["deep_search_rate"] * 100
+    return grouped.sort_values(
+        ["policy_variant", "samples", "search_planning_mode", "search_planning_reason"],
+        ascending=[True, False, True, True],
+    )
 
 
 def build_search_matchup_summary_from_macro_df(macro_df: pd.DataFrame) -> pd.DataFrame:
@@ -1154,6 +1198,8 @@ def build_search_city_site_summary_from_decision_df(decision_df: pd.DataFrame) -
         "search_chosen_city_site_score",
         "search_greedy_city_site_score",
         "search_chosen_city_site_score_delta_vs_greedy",
+        "search_chosen_city_resource_ring_bonus",
+        "search_greedy_city_resource_ring_bonus",
         "search_chosen_city_food_balance",
         "search_chosen_city_total_yield",
         "search_chosen_city_river_access",
@@ -1284,6 +1330,8 @@ def build_search_greedy_anchor_summary_from_decision_df(decision_df: pd.DataFram
         "search_greedy_action_root_value_margin",
         "search_chosen_value_delta_vs_greedy_action",
         "search_chosen_city_site_score_delta_vs_greedy",
+        "search_chosen_city_resource_ring_bonus",
+        "search_greedy_city_resource_ring_bonus",
     ]
     value_cols = [column for column in value_cols if column in search_df]
     return _summary_table(search_df, ["policy_variant"], value_cols)
@@ -1302,6 +1350,8 @@ def build_search_network_food_risk_summary_from_decision_df(
         "search_worst_network_food_pressure_after_action",
         "search_food_surplus_network_count_after_action",
         "search_food_deficit_network_count_after_action",
+        "search_delta_worst_network_food_pressure",
+        "search_delta_min_network_food",
     ]
     value_cols = [column for column in value_cols if column in search_df]
     return _summary_table(search_df, ["policy_variant"], value_cols)
@@ -2190,12 +2240,17 @@ def render_search_decision_window_from_df(
         lines.append(
             f"  T{turn:>3} | {str(action.get('action_type', '')):18} | coord={coord:8} | "
             f"mode={decision.get('search_mode', '-') or '-':8} | "
-            f"depth={_fmt_optional(decision.get('search_depth')):>3} | "
-            f"reason={decision.get('search_depth_reason', '-') or '-':15} | "
+            f"depth={_fmt_optional(decision.get('search_depth')):>3}/"
+            f"{_fmt_optional(decision.get('search_actual_depth')):<3} | "
+            f"plan={decision.get('search_planning_mode', '-') or '-':13} | "
+            f"reason={decision.get('search_planning_reason', '-') or '-':20} | "
             f"pressure={decision.get('search_dominant_pressure', '-') or '-':24} | "
             f"rank={_fmt_optional(decision.get('search_root_chosen_rank')):>3} | "
             f"margin={_fmt_optional(decision.get('search_root_value_margin')):>6} | "
             f"d_food={_fmt_optional(decision.get('search_delta_food_pressure')):>4} | "
+            f"d_net_food={_fmt_optional(decision.get('search_delta_min_network_food')):>4} | "
+            f"d_net_pressure="
+            f"{_fmt_optional(decision.get('search_delta_worst_network_food_pressure')):>4} | "
             f"d_conn={_fmt_optional(decision.get('search_delta_connected_city_count')):>4} | "
             f"road_redundant={_fmt_optional(decision.get('search_road_is_redundant'))}"
         )
@@ -2219,6 +2274,7 @@ def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
     search_summary = build_search_summary_from_decision_df(decision_df)
     search_mode_summary = build_search_mode_summary_from_decision_df(decision_df)
     search_depth_reason_summary = build_search_depth_reason_summary_from_decision_df(decision_df)
+    search_planning_summary = build_search_planning_summary_from_decision_df(decision_df)
     search_pressure_summary = build_search_pressure_summary_from_decision_df(decision_df)
     search_matchup_summary = build_search_matchup_summary_from_macro_df(macro_df)
     search_candidate_health_summary = build_search_candidate_health_summary_from_decision_df(
@@ -2486,67 +2542,71 @@ def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
         "",
         make_table(search_depth_reason_summary),
         "",
-        "### 7.3 Search Mode Summary",
+        "### 7.3 Search Planning Summary",
+        "",
+        make_table(search_planning_summary),
+        "",
+        "### 7.4 Search Mode Summary",
         "",
         make_table(search_mode_summary),
         "",
-        "### 7.4 Search Pressure Driver Summary",
+        "### 7.5 Search Pressure Driver Summary",
         "",
         make_table(search_pressure_summary),
         "",
-        "### 7.5 Search Same-Map Matchup Summary",
+        "### 7.6 Search Same-Map Matchup Summary",
         "",
         make_table(search_matchup_summary),
         "",
-        "### 7.6 Search Candidate Health Summary",
+        "### 7.7 Search Candidate Health Summary",
         "",
         make_table(search_candidate_health_summary),
         "",
-        "### 7.7 Search Road Quality Summary",
+        "### 7.8 Search Road Quality Summary",
         "",
         make_table(search_road_quality_summary),
         "",
-        "### 7.8 Search Record Profile Summary",
+        "### 7.9 Search Record Profile Summary",
         "",
         make_table(search_record_profile_summary),
         "",
-        "### 7.9 Search Score Component Gap vs Greedy",
+        "### 7.10 Search Score Component Gap vs Greedy",
         "",
         make_table(search_score_gap_summary),
         "",
-        "### 7.10 Search Turn Lag Summary",
+        "### 7.11 Search Turn Lag Summary",
         "",
         make_table(search_lag_summary),
         "",
-        "### 7.11 Search Lag Config Summary",
+        "### 7.12 Search Lag Config Summary",
         "",
         make_table(search_lag_config_summary),
         "",
-        "### 7.12 Search Lag Event Component Gap",
+        "### 7.13 Search Lag Event Component Gap",
         "",
         make_table(search_lag_event_component_summary),
         "",
-        "### 7.13 Search Early State Gap",
+        "### 7.14 Search Early State Gap",
         "",
         make_table(search_early_state_summary),
         "",
-        "### 7.14 Search Early City Site Quality",
+        "### 7.15 Search Early City Site Quality",
         "",
         make_table(search_city_site_summary),
         "",
-        "### 7.15 Search Mode Transition Diagnostics",
+        "### 7.16 Search Mode Transition Diagnostics",
         "",
         make_table(search_mode_transition_summary),
         "",
-        "### 7.16 Search Greedy Anchor Diagnostics",
+        "### 7.17 Search Greedy Anchor Diagnostics",
         "",
         make_table(search_greedy_anchor_summary),
         "",
-        "### 7.17 Search Network Food Risk",
+        "### 7.18 Search Network Food Risk",
         "",
         make_table(search_network_food_risk_summary),
         "",
-        "### 7.18 Search Timing Value Summary",
+        "### 7.19 Search Timing Value Summary",
         "",
         make_table(search_timing_value_summary),
         "",
@@ -2635,6 +2695,7 @@ def generate_report(records: list[RecordEntry]) -> str:
     search_summary = build_search_summary_from_decision_df(decision_df)
     search_mode_summary = build_search_mode_summary_from_decision_df(decision_df)
     search_depth_reason_summary = build_search_depth_reason_summary_from_decision_df(decision_df)
+    search_planning_summary = build_search_planning_summary_from_decision_df(decision_df)
     search_pressure_summary = build_search_pressure_summary_from_decision_df(decision_df)
     search_matchup_summary = build_search_matchup_summary_from_macro_df(macro_df)
     search_candidate_health_summary = build_search_candidate_health_summary_from_decision_df(
@@ -2884,67 +2945,71 @@ def generate_report(records: list[RecordEntry]) -> str:
         "",
         make_table(search_depth_reason_summary),
         "",
-        "### 7.3 Search Mode Summary",
+        "### 7.3 Search Planning Summary",
+        "",
+        make_table(search_planning_summary),
+        "",
+        "### 7.4 Search Mode Summary",
         "",
         make_table(search_mode_summary),
         "",
-        "### 7.4 Search Pressure Driver Summary",
+        "### 7.5 Search Pressure Driver Summary",
         "",
         make_table(search_pressure_summary),
         "",
-        "### 7.5 Search Same-Map Matchup Summary",
+        "### 7.6 Search Same-Map Matchup Summary",
         "",
         make_table(search_matchup_summary),
         "",
-        "### 7.6 Search Candidate Health Summary",
+        "### 7.7 Search Candidate Health Summary",
         "",
         make_table(search_candidate_health_summary),
         "",
-        "### 7.7 Search Road Quality Summary",
+        "### 7.8 Search Road Quality Summary",
         "",
         make_table(search_road_quality_summary),
         "",
-        "### 7.8 Search Record Profile Summary",
+        "### 7.9 Search Record Profile Summary",
         "",
         make_table(search_record_profile_summary),
         "",
-        "### 7.9 Search Score Component Gap vs Greedy",
+        "### 7.10 Search Score Component Gap vs Greedy",
         "",
         make_table(search_score_gap_summary),
         "",
-        "### 7.10 Search Turn Lag Summary",
+        "### 7.11 Search Turn Lag Summary",
         "",
         make_table(search_lag_summary),
         "",
-        "### 7.11 Search Lag Config Summary",
+        "### 7.12 Search Lag Config Summary",
         "",
         make_table(search_lag_config_summary),
         "",
-        "### 7.12 Search Lag Event Component Gap",
+        "### 7.13 Search Lag Event Component Gap",
         "",
         make_table(search_lag_event_component_summary),
         "",
-        "### 7.13 Search Early State Gap",
+        "### 7.14 Search Early State Gap",
         "",
         make_table(search_early_state_summary),
         "",
-        "### 7.14 Search Early City Site Quality",
+        "### 7.15 Search Early City Site Quality",
         "",
         make_table(search_city_site_summary),
         "",
-        "### 7.15 Search Mode Transition Diagnostics",
+        "### 7.16 Search Mode Transition Diagnostics",
         "",
         make_table(search_mode_transition_summary),
         "",
-        "### 7.16 Search Greedy Anchor Diagnostics",
+        "### 7.17 Search Greedy Anchor Diagnostics",
         "",
         make_table(search_greedy_anchor_summary),
         "",
-        "### 7.17 Search Network Food Risk",
+        "### 7.18 Search Network Food Risk",
         "",
         make_table(search_network_food_risk_summary),
         "",
-        "### 7.18 Search Timing Value Summary",
+        "### 7.19 Search Timing Value Summary",
         "",
         make_table(search_timing_value_summary),
         "",

@@ -192,7 +192,7 @@ def test_batch_autoplay_fast_mode_exports_artifacts(monkeypatch, tmp_path) -> No
     artifact_manifest = json.loads(
         (artifact_dir / "artifact_manifest.json").read_text(encoding="utf-8")
     )
-    assert artifact_manifest["artifact_schema_version"] == 5
+    assert artifact_manifest["artifact_schema_version"] == 6
 
 
 def test_build_batch_tasks_preserves_seed_order() -> None:
