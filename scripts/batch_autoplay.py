@@ -22,6 +22,7 @@ from microciv.constants import (  # noqa: E402
     DEFAULT_SEARCH_BEAM_WIDTH,
     DEFAULT_SEARCH_CANDIDATE_LIMIT,
     DEFAULT_SEARCH_DEPTH,
+    DEFAULT_SEARCH_MAX_DEPTH,
 )
 from microciv.game.enums import MapDifficulty, PlaybackMode, PolicyType  # noqa: E402
 from microciv.game.models import GameConfig  # noqa: E402
@@ -41,6 +42,7 @@ class BatchGameTask:
     turn_limit: int
     map_difficulty: MapDifficulty
     search_depth: int = DEFAULT_SEARCH_DEPTH
+    search_max_depth: int = DEFAULT_SEARCH_MAX_DEPTH
     search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH
     search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT
 
@@ -74,6 +76,12 @@ def _parse_args() -> argparse.Namespace:
         type=_positive_int,
         default=DEFAULT_SEARCH_DEPTH,
         help=f"Search horizon depth (default: {DEFAULT_SEARCH_DEPTH}).",
+    )
+    parser.add_argument(
+        "--search-max-depth",
+        type=_positive_int,
+        default=DEFAULT_SEARCH_MAX_DEPTH,
+        help=f"Search dynamic maximum depth (default: {DEFAULT_SEARCH_MAX_DEPTH}).",
     )
     parser.add_argument(
         "--search-beam-width",
@@ -193,6 +201,7 @@ def run_single_game(
     turn_limit: int,
     map_difficulty: MapDifficulty,
     search_depth: int = DEFAULT_SEARCH_DEPTH,
+    search_max_depth: int = DEFAULT_SEARCH_MAX_DEPTH,
     search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH,
     search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT,
 ) -> RecordEntry:
@@ -204,6 +213,7 @@ def run_single_game(
         playback_mode=PlaybackMode.SPEED,
         seed=seed,
         search_depth=search_depth,
+        search_max_depth=search_max_depth,
         search_beam_width=search_beam_width,
         search_candidate_limit=search_candidate_limit,
     )
@@ -228,6 +238,7 @@ def run_single_game_task(task: BatchGameTask) -> RecordEntry:
         turn_limit=task.turn_limit,
         map_difficulty=task.map_difficulty,
         search_depth=task.search_depth,
+        search_max_depth=task.search_max_depth,
         search_beam_width=task.search_beam_width,
         search_candidate_limit=task.search_candidate_limit,
     )
@@ -242,6 +253,7 @@ def build_batch_tasks(
     turn_limit: int,
     map_difficulty: MapDifficulty,
     search_depth: int = DEFAULT_SEARCH_DEPTH,
+    search_max_depth: int = DEFAULT_SEARCH_MAX_DEPTH,
     search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH,
     search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT,
 ) -> list[BatchGameTask]:
@@ -253,6 +265,7 @@ def build_batch_tasks(
             turn_limit=turn_limit,
             map_difficulty=map_difficulty,
             search_depth=search_depth,
+            search_max_depth=search_max_depth,
             search_beam_width=search_beam_width,
             search_candidate_limit=search_candidate_limit,
         )
@@ -349,6 +362,7 @@ def main() -> int:
         turn_limit=args.turn_limit,
         map_difficulty=map_difficulty,
         search_depth=args.search_depth,
+        search_max_depth=args.search_max_depth,
         search_beam_width=args.search_beam_width,
         search_candidate_limit=args.search_candidate_limit,
     )
@@ -385,7 +399,7 @@ def main() -> int:
     policy_name = args.policy
     if policy_type is PolicyType.SEARCH:
         policy_name = (
-            f"{policy_name}_d{args.search_depth}_b{args.search_beam_width}_"
+            f"{policy_name}_d{args.search_depth}-{args.search_max_depth}_b{args.search_beam_width}_"
             f"c{args.search_candidate_limit}"
         )
     base_name = (
@@ -427,6 +441,7 @@ def main() -> int:
             "games": args.games,
             "policy": args.policy,
             "search_depth": args.search_depth,
+            "search_max_depth": args.search_max_depth,
             "search_beam_width": args.search_beam_width,
             "search_candidate_limit": args.search_candidate_limit,
             "map_size": args.map_size,

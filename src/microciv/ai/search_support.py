@@ -9,11 +9,15 @@ from microciv.ai.heuristics import (
     build_heuristic_context,
     building_action_score,
     city_expansion_score_for_context,
+    city_network_pressure,
+    context_passable_network_map,
     partition_actions,
     research_action_score,
     road_site_score_for_context,
+    site_budget,
 )
 from microciv.ai.policy import get_legal_actions
+from microciv.constants import FOOD_CONSUMPTION_PER_CITY
 from microciv.game.actions import Action
 from microciv.game.enums import ActionType, BuildingType, TechType
 from microciv.game.models import GameState
@@ -84,6 +88,8 @@ class SearchLeafEvaluation:
     total_wood: int
     total_ore: int
     total_science: int
+    food_pressure: int
+    starving_turns: int
 
 
 def generate_search_candidates(
@@ -170,19 +176,23 @@ def evaluate_search_leaf(state: GameState) -> SearchLeafEvaluation:
     starving = starving_network_count(state)
     network_count = len(state.networks)
     largest_network = largest_network_size(state)
+    food_pressure = _max_food_pressure(state)
+    starving_turns = sum(network.consecutive_starving_turns for network in state.networks.values())
 
     value = breakdown.total * 100
-    value += connected * 90
-    value += largest_network * 120
-    value += building_count(state) * 60
-    value += tech_count(state) * 150
-    value += _bounded_resource_value(resources.food, positive_cap=80, negative_cap=80, weight=6)
+    value += connected * 120
+    value += largest_network * 160
+    value += building_count(state) * 75
+    value += tech_count(state) * 170
+    value += _bounded_resource_value(resources.food, positive_cap=100, negative_cap=160, weight=10)
     value += _bounded_resource_value(resources.wood, positive_cap=80, negative_cap=40, weight=3)
     value += _bounded_resource_value(resources.ore, positive_cap=60, negative_cap=40, weight=4)
     value += _bounded_resource_value(resources.science, positive_cap=60, negative_cap=20, weight=3)
-    value -= isolated * 450
-    value -= starving * 1200
-    value -= max(0, network_count - 1) * 180
+    value -= isolated * 650
+    value -= starving * 2200
+    value -= starving_turns * 500
+    value -= food_pressure * 150
+    value -= max(0, network_count - 1) * 260
 
     return SearchLeafEvaluation(
         value=value,
@@ -196,6 +206,8 @@ def evaluate_search_leaf(state: GameState) -> SearchLeafEvaluation:
         total_wood=resources.wood,
         total_ore=resources.ore,
         total_science=resources.science,
+        food_pressure=food_pressure,
+        starving_turns=starving_turns,
     )
 
 
@@ -205,31 +217,51 @@ def _score_candidate(
     context: HeuristicContext,
 ) -> SearchCandidate:
     if action.action_type is ActionType.BUILD_CITY and action.coord is not None:
+        score = city_expansion_score_for_context(context, action.coord)
+        score += _city_food_safety_score(state, action.coord, context)
         return SearchCandidate(
             action=action,
             action_type=action.action_type,
-            rank_score=city_expansion_score_for_context(context, action.coord),
-            reason="city_expansion",
+            rank_score=score,
+            reason="city_food_safe_expansion",
         )
     if action.action_type is ActionType.BUILD_ROAD and action.coord is not None:
+        score = road_site_score_for_context(context, action.coord)
+        score += _road_food_rescue_score(state, action.coord, context)
         return SearchCandidate(
             action=action,
             action_type=action.action_type,
-            rank_score=road_site_score_for_context(context, action.coord),
-            reason="road_structure",
+            rank_score=score,
+            reason="road_structure_rescue",
         )
     if action.action_type is ActionType.BUILD_BUILDING:
+        score = building_action_score(state, action)
+        if action.city_id is not None and action.building_type is BuildingType.FARM:
+            city = state.cities[action.city_id]
+            network = state.networks[city.network_id]
+            pressure = city_network_pressure(network)
+            if network.resources.food <= 0:
+                score += 520
+            elif pressure >= FOOD_CONSUMPTION_PER_CITY:
+                score += 260 + (pressure * 8)
         return SearchCandidate(
             action=action,
             action_type=action.action_type,
-            rank_score=building_action_score(state, action),
+            rank_score=score,
             reason="building_yield",
         )
     if action.action_type is ActionType.RESEARCH_TECH:
+        score = research_action_score(state, action)
+        if action.city_id is not None and action.tech_type is TechType.AGRICULTURE:
+            city = state.cities[action.city_id]
+            network = state.networks[city.network_id]
+            pressure = city_network_pressure(network)
+            if network.resources.food <= len(network.city_ids) * FOOD_CONSUMPTION_PER_CITY:
+                score += 320 + max(0, pressure) * 6
         return SearchCandidate(
             action=action,
             action_type=action.action_type,
-            rank_score=research_action_score(state, action),
+            rank_score=score,
             reason="tech_unlock",
         )
     return SearchCandidate(
@@ -268,3 +300,64 @@ def _bounded_resource_value(
 ) -> int:
     bounded = min(max(value, -negative_cap), positive_cap)
     return bounded * weight
+
+
+def _max_food_pressure(state: GameState) -> int:
+    return max((city_network_pressure(network) for network in state.networks.values()), default=0)
+
+
+def _city_food_safety_score(
+    state: GameState,
+    coord: tuple[int, int],
+    context: HeuristicContext,
+) -> int:
+    budget = site_budget(state, coord, context)
+    pressure = _max_food_pressure(state)
+    score = budget.food_balance * 110
+    if budget.food_balance >= 2:
+        score += 280
+    elif budget.food_balance == 1:
+        score += 120
+    elif budget.food_balance == 0:
+        score -= 180
+    else:
+        score -= 700 + (abs(budget.food_balance) * 220)
+    if pressure >= FOOD_CONSUMPTION_PER_CITY and budget.food_balance < 1:
+        score -= 260 + (pressure * 28)
+    return score
+
+
+def _road_food_rescue_score(
+    state: GameState,
+    coord: tuple[int, int],
+    context: HeuristicContext,
+) -> int:
+    passable_map = context_passable_network_map(context)
+    adjacent_network_ids = {
+        passable_map[neighbor]
+        for neighbor in (
+            (coord[0] - 1, coord[1]),
+            (coord[0] + 1, coord[1]),
+            (coord[0], coord[1] - 1),
+            (coord[0], coord[1] + 1),
+        )
+        if neighbor in passable_map
+    }
+    if len(adjacent_network_ids) < 2:
+        return 0
+
+    networks = [state.networks[network_id] for network_id in adjacent_network_ids]
+    pressures = [city_network_pressure(network) for network in networks]
+    has_starving = any(network.resources.food <= 0 for network in networks)
+    has_food_buffer = any(
+        network.resources.food >= len(network.city_ids) * FOOD_CONSUMPTION_PER_CITY * 2
+        for network in networks
+    )
+    score = 180 + (sum(len(network.city_ids) for network in networks) * 30)
+    if has_starving and has_food_buffer:
+        score += 760
+    elif has_starving:
+        score += 420
+    if max(pressures, default=0) >= FOOD_CONSUMPTION_PER_CITY:
+        score += max(pressures) * 12
+    return score

@@ -238,6 +238,9 @@ def test_analyze_batch_reports_search_diagnostics() -> None:
             search_candidates_considered=16,
             search_leaf_count=12,
             search_best_value=12345,
+            search_best_score_total=456,
+            search_best_food_pressure=4,
+            search_best_starving_turns=1,
             search_best_sequence=[
                 RecordSearchActionSnapshot(action_type="build_city", x=0, y=0),
                 RecordSearchActionSnapshot(action_type="skip"),
@@ -251,8 +254,11 @@ def test_analyze_batch_reports_search_diagnostics() -> None:
 
     assert restored_state.config.policy_type is PolicyType.SEARCH
     assert "### 7.1 Search Diagnostic Summary" in report
+    assert "### 7.2 Search Depth Reason Summary" in report
     assert "search_nodes_expanded_mean" in report
+    assert "search_best_food_pressure_mean" in report
     assert int(summary.iloc[0]["search_leaf_count_mean"]) == 12
+    assert int(summary.iloc[0]["search_best_food_pressure_mean"]) == 4
     assert int(summary.iloc[0]["search_sequence_length_mean"]) == 2
 
 
@@ -300,10 +306,10 @@ def test_analyze_batch_separates_search_variants_and_reports_timing() -> None:
             legal_research_tech_count=1,
             legal_skip_count=1,
             chosen_action_type="build_city",
-            search_depth=3,
+            search_depth=5,
             search_base_depth=3,
-            search_max_depth=3,
-            search_depth_reason="fixed",
+            search_max_depth=6,
+            search_depth_reason="network_connect",
             search_beam_width=4,
             search_candidate_limit=6,
             search_nodes_expanded=9,
@@ -318,11 +324,11 @@ def test_analyze_batch_separates_search_variants_and_reports_timing() -> None:
     macro_df = analyze_batch.build_macro_df([shallow, deep])
     report = analyze_batch.generate_report([shallow, deep])
 
-    assert set(summary["policy_variant"]) == {"Search d2 b3 c5", "Search d3 b4 c6"}
-    assert set(macro_df["policy_variant"]) == {"Search d2 b3 c5", "Search d3 b4 c6"}
+    assert set(summary["policy_variant"]) == {"Search d2 b3 c5", "Search d3-6 b4 c6"}
+    assert set(macro_df["policy_variant"]) == {"Search d2 b3 c5", "Search d3-6 b4 c6"}
     assert "decision_time_ms_avg_mean" in report
     assert "Search d2 b3 c5" in report
-    assert "Search d3 b4 c6" in report
+    assert "Search d3-6 b4 c6" in report
 
 
 def test_policy_anomaly_summary_uses_mixed_baselines_and_starvation() -> None:
@@ -382,6 +388,9 @@ def test_policy_anomaly_summary_uses_mixed_baselines_and_starvation() -> None:
 
     anomaly_df = analyze_batch.build_policy_anomaly_df([random, greedy, search])
     summary = analyze_batch.build_policy_anomaly_summary_df([random, greedy, search])
+    matchup = analyze_batch.build_search_matchup_summary_from_macro_df(
+        analyze_batch.build_macro_df([random, greedy, search])
+    )
     report = analyze_batch.generate_report([random, greedy, search])
 
     rows = {row["policy_variant"]: row for row in anomaly_df.to_dict("records")}
@@ -391,7 +400,10 @@ def test_policy_anomaly_summary_uses_mixed_baselines_and_starvation() -> None:
     assert rows["Search d2 b3 c5"]["is_search_under_random"] == 1
     assert rows["Search d2 b3 c5"]["is_search_under_greedy"] == 1
     assert set(summary["policy_variant"]) == {"Random", "Greedy", "Search d2 b3 c5"}
+    assert int(matchup.iloc[0]["same_map_win_rate"]) == 0
     assert "search_under_greedy_count" in report
+    assert "### 7.3 Search Same-Map Matchup Summary" in report
+    assert "task7_acceptance_candidate" in report
     assert "Search d2 b3 c5" in report
 
 

@@ -23,6 +23,7 @@ from microciv.constants import (  # noqa: E402
     DEFAULT_SEARCH_BEAM_WIDTH,
     DEFAULT_SEARCH_CANDIDATE_LIMIT,
     DEFAULT_SEARCH_DEPTH,
+    DEFAULT_SEARCH_MAX_DEPTH,
 )
 from microciv.game.enums import MapDifficulty, PlaybackMode, PolicyType  # noqa: E402
 from microciv.game.models import GameConfig  # noqa: E402
@@ -47,6 +48,7 @@ class GameTask:
     turn_limit: int
     map_difficulty: MapDifficulty
     search_depth: int = DEFAULT_SEARCH_DEPTH
+    search_max_depth: int = DEFAULT_SEARCH_MAX_DEPTH
     search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH
     search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT
 
@@ -86,6 +88,12 @@ def _parse_args() -> argparse.Namespace:
         type=str,
         default=str(DEFAULT_SEARCH_DEPTH),
         help=f"Comma-separated Search depths (default: {DEFAULT_SEARCH_DEPTH}).",
+    )
+    parser.add_argument(
+        "--search-max-depths",
+        type=str,
+        default=str(DEFAULT_SEARCH_MAX_DEPTH),
+        help=f"Comma-separated Search max depths (default: {DEFAULT_SEARCH_MAX_DEPTH}).",
     )
     parser.add_argument(
         "--search-beam-widths",
@@ -208,6 +216,7 @@ def run_game(
     turn_limit: int,
     map_difficulty: MapDifficulty,
     search_depth: int = DEFAULT_SEARCH_DEPTH,
+    search_max_depth: int = DEFAULT_SEARCH_MAX_DEPTH,
     search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH,
     search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT,
 ) -> RecordEntry:
@@ -219,6 +228,7 @@ def run_game(
         playback_mode=PlaybackMode.SPEED,
         seed=seed,
         search_depth=search_depth,
+        search_max_depth=search_max_depth,
         search_beam_width=search_beam_width,
         search_candidate_limit=search_candidate_limit,
     )
@@ -243,6 +253,7 @@ def run_game_task(task: GameTask) -> RecordEntry:
         turn_limit=task.turn_limit,
         map_difficulty=task.map_difficulty,
         search_depth=task.search_depth,
+        search_max_depth=task.search_max_depth,
         search_beam_width=task.search_beam_width,
         search_candidate_limit=task.search_candidate_limit,
     )
@@ -390,6 +401,7 @@ def build_game_tasks(
     policies: list[PolicyType],
     base_combos: list[tuple[int, int, str]],
     search_depths: list[int] | None = None,
+    search_max_depths: list[int] | None = None,
     search_beam_widths: list[int] | None = None,
     search_candidate_limits: list[int] | None = None,
 ) -> tuple[list[GameTask], int]:
@@ -397,6 +409,7 @@ def build_game_tasks(
     next_record_id = 1
     seed = seed_start
     search_depth_values = search_depths or [DEFAULT_SEARCH_DEPTH]
+    search_max_depth_values = search_max_depths or [DEFAULT_SEARCH_MAX_DEPTH]
     search_beam_width_values = search_beam_widths or [DEFAULT_SEARCH_BEAM_WIDTH]
     search_candidate_limit_values = search_candidate_limits or [DEFAULT_SEARCH_CANDIDATE_LIMIT]
     for map_size, turn_limit, difficulty in base_combos:
@@ -404,11 +417,19 @@ def build_game_tasks(
         for _ in range(games_per_combo):
             for policy_type in policies:
                 if policy_type is PolicyType.SEARCH:
-                    for search_depth, search_beam_width, search_candidate_limit in product(
+                    for (
+                        search_depth,
+                        search_max_depth,
+                        search_beam_width,
+                        search_candidate_limit,
+                    ) in product(
                         search_depth_values,
+                        search_max_depth_values,
                         search_beam_width_values,
                         search_candidate_limit_values,
                     ):
+                        if search_max_depth < search_depth:
+                            continue
                         tasks.append(
                             GameTask(
                                 task_index=len(tasks),
@@ -419,6 +440,7 @@ def build_game_tasks(
                                 turn_limit=turn_limit,
                                 map_difficulty=map_difficulty,
                                 search_depth=search_depth,
+                                search_max_depth=search_max_depth,
                                 search_beam_width=search_beam_width,
                                 search_candidate_limit=search_candidate_limit,
                             )
@@ -503,6 +525,10 @@ def main() -> int:
     output_dir: Path = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     search_depths = _parse_csv_int_values(args.search_depths, field_name="search_depths")
+    search_max_depths = _parse_csv_int_values(
+        args.search_max_depths,
+        field_name="search_max_depths",
+    )
     search_beam_widths = _parse_csv_int_values(
         args.search_beam_widths,
         field_name="search_beam_widths",
@@ -524,12 +550,20 @@ def main() -> int:
     }
     search_param_grid = {
         "search_depth": search_depths,
+        "search_max_depth": search_max_depths,
         "search_beam_width": search_beam_widths,
         "search_candidate_limit": search_candidate_limits,
     }
     policies = [_policy_type(policy) for policy in param_grid["policy"]]
     search_variant_count = (
-        len(search_depths) * len(search_beam_widths) * len(search_candidate_limits)
+        sum(
+            1
+            for search_depth in search_depths
+            for search_max_depth in search_max_depths
+            if search_max_depth >= search_depth
+        )
+        * len(search_beam_widths)
+        * len(search_candidate_limits)
         if PolicyType.SEARCH in policies
         else 0
     )
@@ -549,6 +583,7 @@ def main() -> int:
         policies=policies,
         base_combos=base_combos,
         search_depths=search_depths,
+        search_max_depths=search_max_depths,
         search_beam_widths=search_beam_widths,
         search_candidate_limits=search_candidate_limits,
     )

@@ -30,7 +30,7 @@ from microciv.game.models import (
 from microciv.game.scoring import score_breakdown
 from microciv.records.models import RecordEntry
 
-ARTIFACT_SCHEMA_VERSION: Final[int] = 1
+ARTIFACT_SCHEMA_VERSION: Final[int] = 2
 ARTIFACT_MANIFEST_FILENAME: Final[str] = "artifact_manifest.json"
 ARTIFACT_TABLES: Final[tuple[str, ...]] = (
     "macro",
@@ -77,11 +77,20 @@ def policy_variant_label(record: RecordEntry) -> str:
             and context.search_candidate_limit is None
         ):
             continue
-        depth = context.search_depth if context.search_depth is not None else "?"
+        depth = (
+            context.search_base_depth
+            if context.search_base_depth is not None
+            else context.search_depth
+            if context.search_depth is not None
+            else "?"
+        )
+        max_depth = context.search_max_depth
         beam_width = context.search_beam_width if context.search_beam_width is not None else "?"
         candidate_limit = (
             context.search_candidate_limit if context.search_candidate_limit is not None else "?"
         )
+        if isinstance(depth, int) and max_depth is not None and max_depth > depth:
+            return f"Search d{depth}-{max_depth} b{beam_width} c{candidate_limit}"
         return f"Search d{depth} b{beam_width} c{candidate_limit}"
     return "Search d? b? c?"
 
@@ -389,6 +398,18 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             "search_candidates_considered": context.search_candidates_considered,
             "search_leaf_count": context.search_leaf_count,
             "search_best_value": context.search_best_value,
+            "search_best_score_total": context.search_best_score_total,
+            "search_best_connected_city_count": context.search_best_connected_city_count,
+            "search_best_isolated_city_count": context.search_best_isolated_city_count,
+            "search_best_starving_network_count": context.search_best_starving_network_count,
+            "search_best_network_count": context.search_best_network_count,
+            "search_best_largest_network_size": context.search_best_largest_network_size,
+            "search_best_total_food": context.search_best_total_food,
+            "search_best_total_wood": context.search_best_total_wood,
+            "search_best_total_ore": context.search_best_total_ore,
+            "search_best_total_science": context.search_best_total_science,
+            "search_best_food_pressure": context.search_best_food_pressure,
+            "search_best_starving_turns": context.search_best_starving_turns,
             "search_sequence_length": len(context.search_best_sequence),
             "search_first_action_type": (
                 context.search_best_sequence[0].action_type if context.search_best_sequence else ""

@@ -296,6 +296,18 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         search_candidates_considered=11,
         search_leaf_count=9,
         search_best_value=12345,
+        search_best_score_total=321,
+        search_best_connected_city_count=2,
+        search_best_isolated_city_count=0,
+        search_best_starving_network_count=0,
+        search_best_network_count=1,
+        search_best_largest_network_size=2,
+        search_best_total_food=42,
+        search_best_total_wood=7,
+        search_best_total_ore=5,
+        search_best_total_science=9,
+        search_best_food_pressure=0,
+        search_best_starving_turns=0,
         search_best_sequence=[
             RecordSearchActionSnapshot(action_type="build_city", x=1, y=2),
             RecordSearchActionSnapshot(
@@ -312,6 +324,10 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     assert restored.search_depth_reason == "fixed"
     assert restored.search_nodes_expanded == 4
     assert restored.search_best_value == 12345
+    assert restored.search_best_score_total == 321
+    assert restored.search_best_connected_city_count == 2
+    assert restored.search_best_total_food == 42
+    assert restored.search_best_food_pressure == 0
     assert [action.action_type for action in restored.search_best_sequence] == [
         "build_city",
         "research_tech",

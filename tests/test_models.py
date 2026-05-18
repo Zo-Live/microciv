@@ -7,6 +7,7 @@ from microciv.constants import (
     DEFAULT_SEARCH_BEAM_WIDTH,
     DEFAULT_SEARCH_CANDIDATE_LIMIT,
     DEFAULT_SEARCH_DEPTH,
+    DEFAULT_SEARCH_MAX_DEPTH,
     MAX_TURN_LIMIT,
     MIN_MAP_SIZE,
 )
@@ -51,18 +52,21 @@ def test_game_config_factories_follow_new_mode_rules() -> None:
     assert autoplay_config.playback_mode is PlaybackMode.SPEED
     assert autoplay_config.map_difficulty is MapDifficulty.HARD
     assert autoplay_config.search_depth == DEFAULT_SEARCH_DEPTH
+    assert autoplay_config.search_max_depth == DEFAULT_SEARCH_MAX_DEPTH
     assert autoplay_config.search_beam_width == DEFAULT_SEARCH_BEAM_WIDTH
     assert autoplay_config.search_candidate_limit == DEFAULT_SEARCH_CANDIDATE_LIMIT
 
     search_config = GameConfig.for_autoplay(
         policy_type=PolicyType.SEARCH,
         search_depth=2,
+        search_max_depth=5,
         search_beam_width=3,
         search_candidate_limit=5,
     )
 
     assert search_config.policy_type is PolicyType.SEARCH
     assert search_config.search_depth == 2
+    assert search_config.search_max_depth == 5
     assert search_config.search_beam_width == 3
     assert search_config.search_candidate_limit == 5
 
@@ -92,6 +96,9 @@ def test_game_config_rejects_invalid_ranges_and_mode_combinations() -> None:
 
     with pytest.raises(ValueError):
         GameConfig.for_autoplay(policy_type=PolicyType.SEARCH, search_depth=0)
+
+    with pytest.raises(ValueError):
+        GameConfig.for_autoplay(policy_type=PolicyType.SEARCH, search_depth=3, search_max_depth=2)
 
     with pytest.raises(ValueError):
         GameConfig.for_autoplay(policy_type=PolicyType.SEARCH, search_beam_width=0)

@@ -16,12 +16,20 @@ from microciv.constants import (
     DEFAULT_SEARCH_BEAM_WIDTH,
     DEFAULT_SEARCH_CANDIDATE_LIMIT,
     DEFAULT_SEARCH_DEPTH,
+    DEFAULT_SEARCH_MAX_DEPTH,
+    FOOD_CONSUMPTION_PER_CITY,
 )
 from microciv.game.actions import Action
 from microciv.game.enums import ActionType, BuildingType, TechType
 from microciv.game.models import GameState
 
 SEARCH_DEPTH_REASON_FIXED = "fixed"
+SEARCH_DEPTH_REASON_FOOD_RESCUE = "food_rescue"
+SEARCH_DEPTH_REASON_NETWORK_CONNECT = "network_connect"
+SEARCH_DEPTH_REASON_GROWTH_STALL = "growth_stall"
+SEARCH_DEPTH_REASON_FOOD_WATCH = "food_watch"
+SEARCH_DEPTH_REASON_ENDGAME_PUSH = "endgame_push"
+SEARCH_DEPTH_REASON_STEADY = "steady"
 
 _ACTION_TYPE_ORDER: dict[ActionType, int] = {
     ActionType.BUILD_CITY: 0,
@@ -72,6 +80,42 @@ class FixedSearchDepthStrategy:
         return SearchDepthDecision(depth=context.base_depth, reason=SEARCH_DEPTH_REASON_FIXED)
 
 
+class DynamicSearchDepthStrategy:
+    """Choose a deeper horizon for tactical food, network, and endgame positions."""
+
+    def choose_depth(self, context: SearchDepthContext) -> SearchDepthDecision:
+        state = context.state
+        if context.max_depth <= context.base_depth:
+            return SearchDepthDecision(depth=context.base_depth, reason=SEARCH_DEPTH_REASON_FIXED)
+
+        if _has_food_rescue_need(state):
+            return SearchDepthDecision(
+                depth=context.max_depth,
+                reason=SEARCH_DEPTH_REASON_FOOD_RESCUE,
+            )
+        if _has_network_connect_need(state):
+            return SearchDepthDecision(
+                depth=min(context.max_depth, 5),
+                reason=SEARCH_DEPTH_REASON_NETWORK_CONNECT,
+            )
+        if _has_growth_stall(state):
+            return SearchDepthDecision(
+                depth=context.max_depth,
+                reason=SEARCH_DEPTH_REASON_GROWTH_STALL,
+            )
+        if _max_food_pressure(state) >= FOOD_CONSUMPTION_PER_CITY:
+            return SearchDepthDecision(
+                depth=min(context.max_depth, context.base_depth + 2),
+                reason=SEARCH_DEPTH_REASON_FOOD_WATCH,
+            )
+        if _turns_remaining(state) <= 18:
+            return SearchDepthDecision(
+                depth=min(context.max_depth, 5),
+                reason=SEARCH_DEPTH_REASON_ENDGAME_PUSH,
+            )
+        return SearchDepthDecision(depth=context.base_depth, reason=SEARCH_DEPTH_REASON_STEADY)
+
+
 @dataclass(slots=True, frozen=True)
 class PlannedSearchDecision:
     action: Action
@@ -103,21 +147,24 @@ class SearchPolicy(Policy):
         search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH,
         search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT,
         search_depth_strategy: SearchDepthStrategy | None = None,
-        search_max_depth: int | None = None,
+        search_max_depth: int | None = DEFAULT_SEARCH_MAX_DEPTH,
     ) -> None:
         self.search_depth = _require_positive(search_depth, "search_depth")
         self.search_beam_width = _require_positive(search_beam_width, "search_beam_width")
         self.search_candidate_limit = _require_positive(
             search_candidate_limit, "search_candidate_limit"
         )
-        self.search_max_depth = (
-            self.search_depth
-            if search_max_depth is None
-            else _require_positive(search_max_depth, "search_max_depth")
+        self.search_max_depth = _require_positive(
+            self.search_depth if search_max_depth is None else search_max_depth,
+            "search_max_depth",
         )
         if self.search_max_depth < self.search_depth:
             raise ValueError("search_max_depth must be greater than or equal to search_depth")
-        self.search_depth_strategy = search_depth_strategy or FixedSearchDepthStrategy()
+        self.search_depth_strategy = search_depth_strategy or (
+            DynamicSearchDepthStrategy()
+            if self.search_max_depth > self.search_depth
+            else FixedSearchDepthStrategy()
+        )
 
         self._cache_key: tuple[object, ...] | None = None
         self._cached_decision: PlannedSearchDecision | None = None
@@ -145,10 +192,12 @@ class SearchPolicy(Policy):
 
         if best_node is None or not best_node.sequence:
             action = Action.skip()
-            best_value = evaluate_search_leaf(state).value
+            best_evaluation = evaluate_search_leaf(state)
+            best_value = best_evaluation.value
             best_sequence: list[dict[str, object]] = []
         else:
             action = best_node.sequence[0]
+            best_evaluation = best_node.leaf_evaluation
             best_value = best_node.value
             best_sequence = [_action_to_dict(item) for item in best_node.sequence]
 
@@ -165,6 +214,18 @@ class SearchPolicy(Policy):
                 "search_candidates_considered": telemetry.candidates_considered,
                 "search_leaf_count": telemetry.leaf_count,
                 "search_best_value": best_value,
+                "search_best_score_total": best_evaluation.score_total,
+                "search_best_connected_city_count": best_evaluation.connected_city_count,
+                "search_best_isolated_city_count": best_evaluation.isolated_city_count,
+                "search_best_starving_network_count": best_evaluation.starving_network_count,
+                "search_best_network_count": best_evaluation.network_count,
+                "search_best_largest_network_size": best_evaluation.largest_network_size,
+                "search_best_total_food": best_evaluation.total_food,
+                "search_best_total_wood": best_evaluation.total_wood,
+                "search_best_total_ore": best_evaluation.total_ore,
+                "search_best_total_science": best_evaluation.total_science,
+                "search_best_food_pressure": best_evaluation.food_pressure,
+                "search_best_starving_turns": best_evaluation.starving_turns,
                 "search_best_sequence": best_sequence,
             },
         )
@@ -263,6 +324,7 @@ class SearchPolicy(Policy):
             len(state.cities),
             len(state.roads),
             len(state.networks),
+            len(state.stats.decision_contexts),
             state.next_city_id,
             state.next_road_id,
             state.next_network_id,
@@ -278,6 +340,47 @@ def _require_positive(value: int, field_name: str) -> int:
     if value < 1:
         raise ValueError(f"{field_name} must be at least 1")
     return value
+
+
+def _has_food_rescue_need(state: GameState) -> bool:
+    return (
+        any(network.resources.food <= 0 for network in state.networks.values())
+        or sum(network.resources.food for network in state.networks.values()) < 0
+        or _max_food_pressure(state) >= FOOD_CONSUMPTION_PER_CITY * 2
+    )
+
+
+def _has_network_connect_need(state: GameState) -> bool:
+    if len(state.cities) < 2:
+        return False
+    isolated_cities = sum(
+        len(network.city_ids) for network in state.networks.values() if len(network.city_ids) == 1
+    )
+    network_limit = max(1, len(state.cities) // 4)
+    return isolated_cities > 0 or len(state.networks) > network_limit
+
+
+def _has_growth_stall(state: GameState) -> bool:
+    if _turns_remaining(state) < 20:
+        return False
+    recent_contexts = state.stats.decision_contexts[-3:]
+    if len(recent_contexts) < 3:
+        return False
+    return sum(1 for context in recent_contexts if context.get("chosen_action_type") == "skip") >= 2
+
+
+def _max_food_pressure(state: GameState) -> int:
+    return max(
+        (
+            len(network.city_ids) * FOOD_CONSUMPTION_PER_CITY * 2 - network.resources.food
+            for network in state.networks.values()
+        ),
+        default=0,
+    )
+
+
+def _turns_remaining(state: GameState) -> int:
+    return max(0, state.config.turn_limit - state.turn)
 
 
 def _better_node(current: SearchNode | None, candidate: SearchNode) -> SearchNode:

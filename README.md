@@ -97,7 +97,7 @@ pip install -r scripts/requirements.txt
 - `--seed-start`：起始种子
 - `--label`：给批量输出文件附加标签
 - `--policies` / `--map-sizes` / `--turn-limits` / `--difficulties`：覆盖数据集参数网格，数据集默认跑 `greedy,random,search`
-- `--search-depths` / `--search-beam-widths` / `--search-candidate-limits`：覆盖 Search 参数网格
+- `--search-depths` / `--search-max-depths` / `--search-beam-widths` / `--search-candidate-limits`：覆盖 Search 参数网格
 - `--artifact-mode`：输出模式，支持 `auto`、`compat`、`fast`、`dual`
 - `--artifact-format`：artifact 表格式，优先 `parquet`，也可指定 `jsonl`
 - `--full-json-threshold`：`auto` 模式下保留完整 JSON/CSV 的任务数阈值
@@ -108,7 +108,7 @@ pip install -r scripts/requirements.txt
 调参默认使用 `--artifact-mode fast --artifact-format parquet`，再把 `*_artifacts`
 目录传给 `analyze_batch.py`。
 
-分析报告会额外汇总最终分数组成、逐回合分数组成、Greedy 阶段动作分布、Search 诊断、异常率、决策耗时与网络风险指标。详细参数请使用 `--help` 查看。
+分析报告会额外汇总最终分数组成、逐回合分数组成、Greedy 阶段动作分布、Search 深度原因、同图分差、异常率、决策耗时与网络风险指标。详细参数请使用 `--help` 查看。
 
 ## 操作说明
 

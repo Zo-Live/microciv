@@ -211,6 +211,7 @@ def test_build_batch_tasks_preserves_search_parameters() -> None:
         turn_limit=30,
         map_difficulty=batch_autoplay._map_difficulty_from_str("normal"),
         search_depth=2,
+        search_max_depth=5,
         search_beam_width=3,
         search_candidate_limit=5,
     )
@@ -218,6 +219,7 @@ def test_build_batch_tasks_preserves_search_parameters() -> None:
     assert [task.seed for task in tasks] == [20, 21]
     assert all(task.policy_type is PolicyType.SEARCH for task in tasks)
     assert all(task.search_depth == 2 for task in tasks)
+    assert all(task.search_max_depth == 5 for task in tasks)
     assert all(task.search_beam_width == 3 for task in tasks)
     assert all(task.search_candidate_limit == 5 for task in tasks)
 
@@ -288,6 +290,7 @@ def test_batch_autoplay_exports_search_outputs_with_search_config(
         assert isinstance(task, batch_autoplay.BatchGameTask)
         assert task.policy_type is PolicyType.SEARCH
         assert task.search_depth == 2
+        assert task.search_max_depth == 6
         assert task.search_beam_width == 3
         assert task.search_candidate_limit == 5
         return _make_record(seed=task.seed, policy_type=task.policy_type, final_score=50)
@@ -322,7 +325,7 @@ def test_batch_autoplay_exports_search_outputs_with_search_config(
     exit_code = batch_autoplay.main()
 
     assert exit_code == 0
-    base_name = "search_d2_b3_c5_16_80_normal_12_12_search"
+    base_name = "search_d2-6_b3_c5_16_80_normal_12_12_search"
     database = RecordDatabase.from_dict(
         json.loads((tmp_path / f"{base_name}.json").read_text(encoding="utf-8"))
     )
@@ -331,5 +334,6 @@ def test_batch_autoplay_exports_search_outputs_with_search_config(
     assert database.records[0].ai_type == "Search"
     assert summary["policy"] == "search"
     assert summary["search_depth"] == 2
+    assert summary["search_max_depth"] == 6
     assert summary["search_beam_width"] == 3
     assert summary["search_candidate_limit"] == 5

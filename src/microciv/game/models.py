@@ -11,6 +11,7 @@ from microciv.constants import (
     DEFAULT_SEARCH_BEAM_WIDTH,
     DEFAULT_SEARCH_CANDIDATE_LIMIT,
     DEFAULT_SEARCH_DEPTH,
+    DEFAULT_SEARCH_MAX_DEPTH,
     DEFAULT_TURN_LIMIT,
     MAX_MAP_SIZE,
     MAX_TURN_LIMIT,
@@ -355,6 +356,7 @@ class GameConfig:
     playback_mode: PlaybackMode = PlaybackMode.NONE
     seed: int = 0
     search_depth: int = DEFAULT_SEARCH_DEPTH
+    search_max_depth: int = DEFAULT_SEARCH_MAX_DEPTH
     search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH
     search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT
 
@@ -372,6 +374,10 @@ class GameConfig:
             raise ValueError("map_difficulty must be a MapDifficulty value.")
         if self.search_depth < 1:
             raise ValueError("search_depth must be at least 1.")
+        if self.search_max_depth < 1:
+            raise ValueError("search_max_depth must be at least 1.")
+        if self.search_max_depth < self.search_depth:
+            raise ValueError("search_max_depth must be greater than or equal to search_depth.")
         if self.search_beam_width < 1:
             raise ValueError("search_beam_width must be at least 1.")
         if self.search_candidate_limit < 1:
@@ -419,6 +425,7 @@ class GameConfig:
         playback_mode: PlaybackMode = PlaybackMode.NORMAL,
         seed: int = 0,
         search_depth: int = DEFAULT_SEARCH_DEPTH,
+        search_max_depth: int = DEFAULT_SEARCH_MAX_DEPTH,
         search_beam_width: int = DEFAULT_SEARCH_BEAM_WIDTH,
         search_candidate_limit: int = DEFAULT_SEARCH_CANDIDATE_LIMIT,
     ) -> GameConfig:
@@ -431,6 +438,7 @@ class GameConfig:
             playback_mode=playback_mode,
             seed=seed,
             search_depth=search_depth,
+            search_max_depth=search_max_depth,
             search_beam_width=search_beam_width,
             search_candidate_limit=search_candidate_limit,
         )

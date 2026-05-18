@@ -298,6 +298,7 @@ class MicroCivController:
                     playback_mode=config.playback_mode,
                     seed=config.seed,
                     search_depth=config.search_depth,
+                    search_max_depth=config.search_max_depth,
                     search_beam_width=config.search_beam_width,
                     search_candidate_limit=config.search_candidate_limit,
                 ),
@@ -573,6 +574,10 @@ class MicroCivController:
                 changes.get("playback_mode", config.playback_mode),
             )
             search_depth = cast(int, changes.get("search_depth", config.search_depth))
+            search_max_depth = cast(
+                int,
+                changes.get("search_max_depth", config.search_max_depth),
+            )
             search_beam_width = cast(
                 int,
                 changes.get("search_beam_width", config.search_beam_width),
@@ -589,6 +594,7 @@ class MicroCivController:
                 playback_mode=playback_mode,
                 seed=seed,
                 search_depth=search_depth,
+                search_max_depth=search_max_depth,
                 search_beam_width=search_beam_width,
                 search_candidate_limit=search_candidate_limit,
             )

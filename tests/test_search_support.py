@@ -61,6 +61,29 @@ def test_search_candidate_limit_one_returns_skip_when_only_skip_is_legal() -> No
     assert [candidate.action for candidate in candidate_set.candidates] == [Action.skip()]
 
 
+def test_search_city_candidates_prefer_food_safe_site_over_risky_resource_site() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (row, col): Tile(base_terrain=TerrainType.FOREST)
+        for row in range(5)
+        for col in range(5)
+    }
+    for coord in [(3, 3), (3, 4), (4, 3), (4, 4)]:
+        state.board[coord] = Tile(base_terrain=TerrainType.PLAIN)
+    state.board[(2, 2)] = Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY)
+    state.cities = {1: City(city_id=1, coord=(2, 2), founded_turn=1, network_id=1)}
+    state.networks = {1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=0))}
+
+    candidate_set = generate_search_candidates(state, SearchCandidateConfig(candidate_limit=30))
+    city_candidates = {
+        candidate.action.coord: candidate
+        for candidate in candidate_set.candidates
+        if candidate.action_type is ActionType.BUILD_CITY
+    }
+
+    assert city_candidates[(4, 4)].rank_score > city_candidates[(0, 0)].rank_score
+
+
 def test_budget_helpers_report_site_and_future_network_budget() -> None:
     state = _mixed_action_state()
     context = build_heuristic_context(state)

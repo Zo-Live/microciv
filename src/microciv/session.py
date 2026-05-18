@@ -136,6 +136,7 @@ def create_game_session(config: GameConfig) -> GameSession:
     elif config.policy_type is PolicyType.SEARCH:
         policy = SearchPolicy(
             search_depth=config.search_depth,
+            search_max_depth=config.search_max_depth,
             search_beam_width=config.search_beam_width,
             search_candidate_limit=config.search_candidate_limit,
         )

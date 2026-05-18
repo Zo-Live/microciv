@@ -107,10 +107,12 @@ def test_generate_dataset_exports_anomaly_json_and_csv(monkeypatch, tmp_path) ->
         turn_limit: int,
         map_difficulty: object,
         search_depth: int = 3,
+        search_max_depth: int = 6,
         search_beam_width: int = 4,
         search_candidate_limit: int = 16,
     ) -> RecordEntry:
-        del map_size, turn_limit, map_difficulty, search_depth, search_beam_width
+        del map_size, turn_limit, map_difficulty, search_depth, search_max_depth
+        del search_beam_width
         del search_candidate_limit
         if policy_type is PolicyType.GREEDY:
             score = 5 if seed == 1 else -3
@@ -333,6 +335,7 @@ def test_build_game_tasks_expands_search_grid_after_fixed_seed_baselines() -> No
         policies=[PolicyType.GREEDY, PolicyType.RANDOM, PolicyType.SEARCH],
         base_combos=[(12, 30, "normal")],
         search_depths=[1, 2],
+        search_max_depths=[6],
         search_beam_widths=[3],
         search_candidate_limits=[4, 5],
     )
@@ -348,10 +351,15 @@ def test_build_game_tasks_expands_search_grid_after_fixed_seed_baselines() -> No
         (11, PolicyType.SEARCH),
     ]
     assert [
-        (task.search_depth, task.search_beam_width, task.search_candidate_limit)
+        (
+            task.search_depth,
+            task.search_max_depth,
+            task.search_beam_width,
+            task.search_candidate_limit,
+        )
         for task in tasks
         if task.policy_type is PolicyType.SEARCH
-    ] == [(1, 3, 4), (1, 3, 5), (2, 3, 4), (2, 3, 5)]
+    ] == [(1, 6, 3, 4), (1, 6, 3, 5), (2, 6, 3, 4), (2, 6, 3, 5)]
 
 
 def test_generate_dataset_parallel_path_uses_process_pool_and_keeps_order(
@@ -467,6 +475,8 @@ def test_generate_dataset_parallel_path_includes_search_grid_tasks(
             "greedy,random,search",
             "--search-depths",
             "1,2",
+            "--search-max-depths",
+            "6",
             "--search-beam-widths",
             "3",
             "--search-candidate-limits",
@@ -491,15 +501,21 @@ def test_generate_dataset_parallel_path_includes_search_grid_tasks(
     _, tasks, _chunksize = fake_executor.map_calls[0]
     assert len(tasks) == 6
     assert [
-        (task.policy_type, task.search_depth, task.search_beam_width, task.search_candidate_limit)
+        (
+            task.policy_type,
+            task.search_depth,
+            task.search_max_depth,
+            task.search_beam_width,
+            task.search_candidate_limit,
+        )
         for task in tasks
     ] == [
-        (PolicyType.GREEDY, 3, 4, 16),
-        (PolicyType.RANDOM, 3, 4, 16),
-        (PolicyType.SEARCH, 1, 3, 4),
-        (PolicyType.SEARCH, 1, 3, 5),
-        (PolicyType.SEARCH, 2, 3, 4),
-        (PolicyType.SEARCH, 2, 3, 5),
+        (PolicyType.GREEDY, 3, 6, 4, 16),
+        (PolicyType.RANDOM, 3, 6, 4, 16),
+        (PolicyType.SEARCH, 1, 6, 3, 4),
+        (PolicyType.SEARCH, 1, 6, 3, 5),
+        (PolicyType.SEARCH, 2, 6, 3, 4),
+        (PolicyType.SEARCH, 2, 6, 3, 5),
     ]
 
     manifest = json.loads(
@@ -510,6 +526,7 @@ def test_generate_dataset_parallel_path_includes_search_grid_tasks(
     assert manifest["search_variant_count"] == 4
     assert manifest["search_param_grid"] == {
         "search_depth": [1, 2],
+        "search_max_depth": [6],
         "search_beam_width": [3],
         "search_candidate_limit": [4, 5],
     }

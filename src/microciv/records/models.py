@@ -17,7 +17,7 @@ from microciv.game.scoring import (
 )
 from microciv.utils.grid import Coord, coord_sort_key
 
-RECORDS_SCHEMA_VERSION = 6
+RECORDS_SCHEMA_VERSION = 7
 
 CSV_FIELD_ORDER: tuple[str, ...] = (
     "record_id",
@@ -567,6 +567,18 @@ class RecordDecisionContext:
     search_candidates_considered: int | None = None
     search_leaf_count: int | None = None
     search_best_value: int | None = None
+    search_best_score_total: int | None = None
+    search_best_connected_city_count: int | None = None
+    search_best_isolated_city_count: int | None = None
+    search_best_starving_network_count: int | None = None
+    search_best_network_count: int | None = None
+    search_best_largest_network_size: int | None = None
+    search_best_total_food: int | None = None
+    search_best_total_wood: int | None = None
+    search_best_total_ore: int | None = None
+    search_best_total_science: int | None = None
+    search_best_food_pressure: int | None = None
+    search_best_starving_turns: int | None = None
     search_best_sequence: list[RecordSearchActionSnapshot] = field(default_factory=list)
 
     @classmethod
@@ -623,6 +635,26 @@ class RecordDecisionContext:
             search_candidates_considered=_optional_int(payload, "search_candidates_considered"),
             search_leaf_count=_optional_int(payload, "search_leaf_count"),
             search_best_value=_optional_int(payload, "search_best_value"),
+            search_best_score_total=_optional_int(payload, "search_best_score_total"),
+            search_best_connected_city_count=_optional_int(
+                payload, "search_best_connected_city_count"
+            ),
+            search_best_isolated_city_count=_optional_int(
+                payload, "search_best_isolated_city_count"
+            ),
+            search_best_starving_network_count=_optional_int(
+                payload, "search_best_starving_network_count"
+            ),
+            search_best_network_count=_optional_int(payload, "search_best_network_count"),
+            search_best_largest_network_size=_optional_int(
+                payload, "search_best_largest_network_size"
+            ),
+            search_best_total_food=_optional_int(payload, "search_best_total_food"),
+            search_best_total_wood=_optional_int(payload, "search_best_total_wood"),
+            search_best_total_ore=_optional_int(payload, "search_best_total_ore"),
+            search_best_total_science=_optional_int(payload, "search_best_total_science"),
+            search_best_food_pressure=_optional_int(payload, "search_best_food_pressure"),
+            search_best_starving_turns=_optional_int(payload, "search_best_starving_turns"),
             search_best_sequence=[
                 RecordSearchActionSnapshot.from_dict(item)
                 for item in _list_of_dicts(payload, "search_best_sequence")
@@ -711,6 +743,30 @@ class RecordDecisionContext:
             result["search_leaf_count"] = self.search_leaf_count
         if self.search_best_value is not None:
             result["search_best_value"] = self.search_best_value
+        if self.search_best_score_total is not None:
+            result["search_best_score_total"] = self.search_best_score_total
+        if self.search_best_connected_city_count is not None:
+            result["search_best_connected_city_count"] = self.search_best_connected_city_count
+        if self.search_best_isolated_city_count is not None:
+            result["search_best_isolated_city_count"] = self.search_best_isolated_city_count
+        if self.search_best_starving_network_count is not None:
+            result["search_best_starving_network_count"] = self.search_best_starving_network_count
+        if self.search_best_network_count is not None:
+            result["search_best_network_count"] = self.search_best_network_count
+        if self.search_best_largest_network_size is not None:
+            result["search_best_largest_network_size"] = self.search_best_largest_network_size
+        if self.search_best_total_food is not None:
+            result["search_best_total_food"] = self.search_best_total_food
+        if self.search_best_total_wood is not None:
+            result["search_best_total_wood"] = self.search_best_total_wood
+        if self.search_best_total_ore is not None:
+            result["search_best_total_ore"] = self.search_best_total_ore
+        if self.search_best_total_science is not None:
+            result["search_best_total_science"] = self.search_best_total_science
+        if self.search_best_food_pressure is not None:
+            result["search_best_food_pressure"] = self.search_best_food_pressure
+        if self.search_best_starving_turns is not None:
+            result["search_best_starving_turns"] = self.search_best_starving_turns
         if self.search_depth is not None or self.search_best_sequence:
             result["search_best_sequence"] = [
                 action.to_dict() for action in self.search_best_sequence

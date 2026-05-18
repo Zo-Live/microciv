@@ -424,15 +424,103 @@ def build_search_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataF
 
     value_cols = [
         "search_depth",
+        "search_max_depth",
         "search_beam_width",
         "search_candidate_limit",
         "search_nodes_expanded",
         "search_candidates_considered",
         "search_leaf_count",
         "search_best_value",
+        "search_best_score_total",
+        "search_best_starving_network_count",
+        "search_best_food_pressure",
+        "search_best_starving_turns",
+        "search_best_network_count",
+        "search_best_isolated_city_count",
         "search_sequence_length",
     ]
+    value_cols = [column for column in value_cols if column in search_df]
     return _summary_table(search_df, ["policy_variant"], value_cols)
+
+
+def build_search_depth_reason_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataFrame:
+    if decision_df.empty or "search_depth_reason" not in decision_df:
+        return pd.DataFrame()
+    search_df = decision_df[
+        decision_df.get("search_depth_reason", pd.Series(dtype=object)).fillna("") != ""
+    ].copy()
+    if search_df.empty:
+        return pd.DataFrame()
+    for column in ["search_depth", "search_leaf_count", "search_best_food_pressure"]:
+        if column not in search_df:
+            search_df[column] = 0
+    grouped = (
+        search_df.groupby(["policy_variant", "search_depth_reason"], dropna=False)
+        .agg(
+            samples=("search_depth_reason", "size"),
+            search_depth_mean=("search_depth", "mean"),
+            search_depth_max=("search_depth", "max"),
+            search_leaf_count_mean=("search_leaf_count", "mean"),
+            search_best_food_pressure_mean=("search_best_food_pressure", "mean"),
+        )
+        .reset_index()
+    )
+    return grouped.sort_values(["policy_variant", "search_depth_reason"])
+
+
+def build_search_matchup_summary_from_macro_df(macro_df: pd.DataFrame) -> pd.DataFrame:
+    if macro_df.empty or "ai_type" not in macro_df or "final_score" not in macro_df:
+        return pd.DataFrame()
+    key_cols = ["seed", "map_size", "turn_limit", "map_difficulty"]
+    if any(column not in macro_df for column in key_cols):
+        return pd.DataFrame()
+
+    baseline_cols = [*key_cols, "final_score"]
+    greedy_df = (
+        macro_df[macro_df["ai_type"] == GREEDY_LABEL][baseline_cols]
+        .rename(columns={"final_score": "greedy_score"})
+        .copy()
+    )
+    random_df = (
+        macro_df[macro_df["ai_type"] == RANDOM_LABEL][baseline_cols]
+        .rename(columns={"final_score": "random_score"})
+        .copy()
+    )
+    search_df = macro_df[macro_df["ai_type"] == SEARCH_LABEL].copy()
+    if search_df.empty:
+        return pd.DataFrame()
+
+    merged = search_df.merge(greedy_df, on=key_cols, how="left").merge(
+        random_df,
+        on=key_cols,
+        how="left",
+    )
+    merged["score_gap_vs_greedy"] = merged["final_score"] - merged["greedy_score"]
+    merged["score_gap_vs_random"] = merged["final_score"] - merged["random_score"]
+    merged["meets_same_map_bar"] = (
+        (merged["score_gap_vs_greedy"] >= 0) & (merged["score_gap_vs_random"] >= 0)
+    ).astype(int)
+    summary = (
+        merged.groupby(["policy_variant"], dropna=False)
+        .agg(
+            samples=("final_score", "size"),
+            same_map_win_rate=("meets_same_map_bar", "mean"),
+            avg_score_gap_vs_greedy=("score_gap_vs_greedy", "mean"),
+            median_score_gap_vs_greedy=("score_gap_vs_greedy", "median"),
+            avg_score_gap_vs_random=("score_gap_vs_random", "mean"),
+            median_score_gap_vs_random=("score_gap_vs_random", "median"),
+        )
+        .reset_index()
+    )
+    summary["same_map_win_rate"] = summary["same_map_win_rate"] * 100
+    summary["task7_acceptance_candidate"] = (
+        (summary["same_map_win_rate"] >= 95)
+        & (summary["avg_score_gap_vs_greedy"] >= 0)
+        & (summary["median_score_gap_vs_greedy"] >= 0)
+        & (summary["avg_score_gap_vs_random"] >= 0)
+        & (summary["median_score_gap_vs_random"] >= 0)
+    ).astype(int)
+    return summary.sort_values(["task7_acceptance_candidate", "same_map_win_rate"], ascending=False)
 
 
 def build_map_df(records: list[RecordEntry]) -> pd.DataFrame:
@@ -1076,6 +1164,8 @@ def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
 
     stage_summary = build_stage_summary_from_decision_df(decision_df)
     search_summary = build_search_summary_from_decision_df(decision_df)
+    search_depth_reason_summary = build_search_depth_reason_summary_from_decision_df(decision_df)
+    search_matchup_summary = build_search_matchup_summary_from_macro_df(macro_df)
     anomaly_df = build_policy_anomaly_df_from_macro(macro_df)
     anomaly_summary = policy_anomaly_summary_from_df(anomaly_df)
     anomaly_config_summary = policy_anomaly_config_summary_from_df(anomaly_df)
@@ -1305,6 +1395,14 @@ def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
         "",
         make_table(search_summary),
         "",
+        "### 7.2 Search Depth Reason Summary",
+        "",
+        make_table(search_depth_reason_summary),
+        "",
+        "### 7.3 Search Same-Map Matchup Summary",
+        "",
+        make_table(search_matchup_summary),
+        "",
         "## 8. Network And Risk Summary",
         "",
         make_table(network_summary),
@@ -1375,6 +1473,8 @@ def generate_report(records: list[RecordEntry]) -> str:
     decision_df = build_decision_context_df(records)
     stage_df = build_stage_summary_from_decision_df(decision_df)
     search_summary = build_search_summary_from_decision_df(decision_df)
+    search_depth_reason_summary = build_search_depth_reason_summary_from_decision_df(decision_df)
+    search_matchup_summary = build_search_matchup_summary_from_macro_df(macro_df)
     map_df = build_map_df(records)
     anomaly_cases = collect_policy_anomaly_cases(records)
     anomaly_summary = build_policy_anomaly_summary_df(records)
@@ -1584,6 +1684,14 @@ def generate_report(records: list[RecordEntry]) -> str:
         "### 7.1 Search Diagnostic Summary",
         "",
         make_table(search_summary),
+        "",
+        "### 7.2 Search Depth Reason Summary",
+        "",
+        make_table(search_depth_reason_summary),
+        "",
+        "### 7.3 Search Same-Map Matchup Summary",
+        "",
+        make_table(search_matchup_summary),
         "",
         "## 8. Network And Risk Summary",
         "",

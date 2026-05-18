@@ -7,6 +7,11 @@ from microciv.ai.search import (
     DEFAULT_SEARCH_BEAM_WIDTH,
     DEFAULT_SEARCH_CANDIDATE_LIMIT,
     DEFAULT_SEARCH_DEPTH,
+    DEFAULT_SEARCH_MAX_DEPTH,
+    SEARCH_DEPTH_REASON_FOOD_RESCUE,
+    SEARCH_DEPTH_REASON_GROWTH_STALL,
+    SEARCH_DEPTH_REASON_NETWORK_CONNECT,
+    SEARCH_DEPTH_REASON_STEADY,
     SearchDepthContext,
     SearchDepthDecision,
     SearchPolicy,
@@ -39,14 +44,17 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     assert validate_action(state, action).is_valid
     assert context["search_depth"] == DEFAULT_SEARCH_DEPTH
     assert context["search_base_depth"] == DEFAULT_SEARCH_DEPTH
-    assert context["search_max_depth"] == DEFAULT_SEARCH_DEPTH
-    assert context["search_depth_reason"] == "fixed"
+    assert context["search_max_depth"] == DEFAULT_SEARCH_MAX_DEPTH
+    assert context["search_depth_reason"] == SEARCH_DEPTH_REASON_STEADY
     assert context["search_beam_width"] == DEFAULT_SEARCH_BEAM_WIDTH
     assert context["search_candidate_limit"] == DEFAULT_SEARCH_CANDIDATE_LIMIT
     assert context["search_nodes_expanded"] > 0
     assert context["search_candidates_considered"] >= context["search_leaf_count"]
     assert context["search_leaf_count"] > 0
     assert isinstance(context["search_best_value"], int)
+    assert isinstance(context["search_best_score_total"], int)
+    assert isinstance(context["search_best_food_pressure"], int)
+    assert isinstance(context["search_best_starving_turns"], int)
     best_sequence = context["search_best_sequence"]
     assert isinstance(best_sequence, list)
     assert best_sequence
@@ -80,6 +88,68 @@ def test_search_policy_uses_custom_depth_strategy() -> None:
     assert context["search_depth_reason"] == "test_deepen"
 
 
+def test_search_policy_uses_fixed_depth_when_max_equals_base() -> None:
+    state = _mixed_action_state()
+    policy = SearchPolicy(search_depth=2, search_max_depth=2)
+
+    context = policy.explain_decision(state)
+
+    assert context["search_depth"] == 2
+    assert context["search_max_depth"] == 2
+    assert context["search_depth_reason"] == "fixed"
+
+
+def test_search_policy_dynamic_depth_prioritizes_food_rescue() -> None:
+    state = _mixed_action_state()
+    state.networks[1].resources.food = -2
+    policy = SearchPolicy(
+        search_depth=2,
+        search_max_depth=6,
+        search_beam_width=1,
+        search_candidate_limit=3,
+    )
+
+    context = policy.explain_decision(state)
+
+    assert context["search_depth"] == 6
+    assert context["search_depth_reason"] == SEARCH_DEPTH_REASON_FOOD_RESCUE
+
+
+def test_search_policy_dynamic_depth_detects_network_connect_need() -> None:
+    state = _two_isolated_city_state()
+    policy = SearchPolicy(
+        search_depth=2,
+        search_max_depth=6,
+        search_beam_width=1,
+        search_candidate_limit=3,
+    )
+
+    context = policy.explain_decision(state)
+
+    assert context["search_depth"] == 5
+    assert context["search_depth_reason"] == SEARCH_DEPTH_REASON_NETWORK_CONNECT
+
+
+def test_search_policy_dynamic_depth_detects_growth_stall() -> None:
+    state = _mixed_action_state()
+    state.stats.decision_contexts = [
+        {"turn": 1, "chosen_action_type": "skip"},
+        {"turn": 2, "chosen_action_type": "build_building"},
+        {"turn": 3, "chosen_action_type": "skip"},
+    ]
+    policy = SearchPolicy(
+        search_depth=2,
+        search_max_depth=6,
+        search_beam_width=1,
+        search_candidate_limit=3,
+    )
+
+    context = policy.explain_decision(state)
+
+    assert context["search_depth"] == 6
+    assert context["search_depth_reason"] == SEARCH_DEPTH_REASON_GROWTH_STALL
+
+
 def test_search_policy_rejects_invalid_parameters() -> None:
     with pytest.raises(ValueError, match="search_depth"):
         SearchPolicy(search_depth=0)
@@ -87,6 +157,8 @@ def test_search_policy_rejects_invalid_parameters() -> None:
         SearchPolicy(search_beam_width=0)
     with pytest.raises(ValueError, match="search_candidate_limit"):
         SearchPolicy(search_candidate_limit=0)
+    with pytest.raises(ValueError, match="search_max_depth"):
+        SearchPolicy(search_max_depth=0)
     with pytest.raises(ValueError, match="search_max_depth"):
         SearchPolicy(search_depth=3, search_max_depth=2)
 
@@ -112,7 +184,12 @@ def test_search_policy_can_finish_short_fixed_seed_game() -> None:
         for coord, tile in generated.board.items()
     }
     engine = GameEngine(state)
-    policy = SearchPolicy(search_depth=2, search_beam_width=2, search_candidate_limit=6)
+    policy = SearchPolicy(
+        search_depth=2,
+        search_max_depth=2,
+        search_beam_width=2,
+        search_candidate_limit=6,
+    )
 
     while not state.is_game_over:
         action = policy.select_action(state)
@@ -132,6 +209,7 @@ def test_create_game_session_constructs_search_policy_from_config() -> None:
         policy_type=PolicyType.SEARCH,
         playback_mode=PlaybackMode.SPEED,
         search_depth=2,
+        search_max_depth=5,
         search_beam_width=3,
         search_candidate_limit=5,
     )
@@ -140,6 +218,7 @@ def test_create_game_session_constructs_search_policy_from_config() -> None:
 
     assert isinstance(session.policy, SearchPolicy)
     assert session.policy.search_depth == 2
+    assert session.policy.search_max_depth == 5
     assert session.policy.search_beam_width == 3
     assert session.policy.search_candidate_limit == 5
 
@@ -205,6 +284,29 @@ def _mixed_action_state() -> GameState:
     }
     state.next_city_id = 2
     state.next_network_id = 2
+    return state
+
+
+def _two_isolated_city_state() -> GameState:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (0, 2): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (1, 0): Tile(base_terrain=TerrainType.FOREST),
+        (1, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 2): Tile(base_terrain=TerrainType.MOUNTAIN),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1),
+        2: City(city_id=2, coord=(0, 2), founded_turn=2, network_id=2),
+    }
+    state.networks = {
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=40)),
+        2: Network(network_id=2, city_ids={2}, resources=ResourcePool(food=40)),
+    }
+    state.next_city_id = 3
+    state.next_network_id = 3
     return state
 
 
