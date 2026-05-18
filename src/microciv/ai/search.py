@@ -36,6 +36,17 @@ SEARCH_DEPTH_REASON_FOOD_WATCH = "food_watch"
 SEARCH_DEPTH_REASON_ENDGAME_PUSH = "endgame_push"
 SEARCH_DEPTH_REASON_STEADY = "steady"
 
+_SEARCH_PRESSURE_COMPONENT_KEYS: tuple[str, ...] = (
+    "isolated_penalty",
+    "starving_penalty",
+    "starving_turn_penalty",
+    "food_pressure_penalty",
+    "fragmentation_penalty",
+    "expansion_deficit_penalty",
+    "early_fill_penalty",
+    "road_overbuild_penalty",
+)
+
 _ACTION_TYPE_ORDER: dict[ActionType, int] = {
     ActionType.BUILD_CITY: 0,
     ActionType.BUILD_ROAD: 1,
@@ -98,7 +109,8 @@ class DynamicSearchDepthStrategy:
                 depth=context.max_depth,
                 reason=SEARCH_DEPTH_REASON_FOOD_RESCUE,
             )
-        if _has_network_connect_need(state):
+        profile = build_search_position_profile(state)
+        if not profile.is_healthy_steady and _has_network_connect_need(state):
             return SearchDepthDecision(
                 depth=min(context.max_depth, 5),
                 reason=SEARCH_DEPTH_REASON_NETWORK_CONNECT,
@@ -108,12 +120,14 @@ class DynamicSearchDepthStrategy:
                 depth=context.max_depth,
                 reason=SEARCH_DEPTH_REASON_GROWTH_STALL,
             )
+        if profile.is_healthy_steady:
+            return SearchDepthDecision(depth=context.base_depth, reason=SEARCH_DEPTH_REASON_STEADY)
         if _max_food_pressure(state) >= FOOD_CONSUMPTION_PER_CITY:
             return SearchDepthDecision(
                 depth=min(context.max_depth, context.base_depth + 2),
                 reason=SEARCH_DEPTH_REASON_FOOD_WATCH,
             )
-        if _turns_remaining(state) <= 18:
+        if _turns_remaining(state) <= _endgame_push_threshold(state):
             return SearchDepthDecision(
                 depth=min(context.max_depth, 5),
                 reason=SEARCH_DEPTH_REASON_ENDGAME_PUSH,
@@ -211,6 +225,16 @@ class SearchPolicy(Policy):
             best_value = best_node.value
             best_sequence_adjustment = best_node.sequence_adjustment
             best_sequence = [_action_to_dict(item) for item in best_node.sequence]
+        (
+            dominant_pressure,
+            dominant_pressure_value,
+            risk_pressure_total,
+            is_risk_dominated,
+            is_sequence_adjusted,
+        ) = _search_pressure_diagnostics(
+            best_evaluation.value_components,
+            best_sequence_adjustment,
+        )
         root_profile = telemetry.root_profile or build_search_position_profile(state)
         root_legal_counts = telemetry.root_legal_counts_by_type or {
             action_type: 0 for action_type in ActionType
@@ -257,6 +281,11 @@ class SearchPolicy(Policy):
                 "search_best_value": best_value,
                 "search_value_components": best_evaluation.value_components,
                 "search_sequence_adjustment": best_sequence_adjustment,
+                "search_dominant_pressure": dominant_pressure,
+                "search_dominant_pressure_value": dominant_pressure_value,
+                "search_risk_pressure_total": risk_pressure_total,
+                "search_is_risk_dominated": is_risk_dominated,
+                "search_is_sequence_adjusted": is_sequence_adjusted,
                 "search_best_score_total": best_evaluation.score_total,
                 "search_best_connected_city_count": best_evaluation.connected_city_count,
                 "search_best_isolated_city_count": best_evaluation.isolated_city_count,
@@ -452,6 +481,36 @@ def _sequence_adjustment(
     return adjustment
 
 
+def _search_pressure_diagnostics(
+    value_components: dict[str, int],
+    sequence_adjustment: int,
+) -> tuple[str | None, int, int, bool, bool]:
+    pressure_items: list[tuple[str, int]] = [
+        (key, value)
+        for key, value in value_components.items()
+        if key in _SEARCH_PRESSURE_COMPONENT_KEYS and value < 0
+    ]
+    risk_pressure_total = sum(-value for _, value in pressure_items)
+
+    candidates = pressure_items.copy()
+    if sequence_adjustment != 0:
+        candidates.append(("search_sequence_adjustment", sequence_adjustment))
+    if not candidates:
+        return None, 0, risk_pressure_total, False, False
+
+    dominant_pressure, dominant_value = max(
+        candidates,
+        key=lambda item: (abs(item[1]), item[0]),
+    )
+    return (
+        dominant_pressure,
+        dominant_value,
+        risk_pressure_total,
+        dominant_pressure != "search_sequence_adjustment" and dominant_value < 0,
+        dominant_pressure == "search_sequence_adjustment",
+    )
+
+
 def _has_food_rescue_need(state: GameState) -> bool:
     return (
         any(network.resources.food <= 0 for network in state.networks.values())
@@ -491,6 +550,11 @@ def _max_food_pressure(state: GameState) -> int:
 
 def _turns_remaining(state: GameState) -> int:
     return max(0, state.config.turn_limit - state.turn)
+
+
+def _endgame_push_threshold(state: GameState) -> int:
+    turn_limit = state.config.turn_limit
+    return max(10, min(18, turn_limit // 4))
 
 
 def _better_node(current: SearchNode | None, candidate: SearchNode) -> SearchNode:

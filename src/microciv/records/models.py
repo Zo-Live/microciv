@@ -580,6 +580,11 @@ class RecordDecisionContext:
     search_best_value: int | None = None
     search_value_components: dict[str, int] = field(default_factory=dict)
     search_sequence_adjustment: int | None = None
+    search_dominant_pressure: str | None = None
+    search_dominant_pressure_value: int | None = None
+    search_risk_pressure_total: int | None = None
+    search_is_risk_dominated: bool | None = None
+    search_is_sequence_adjusted: bool | None = None
     search_best_score_total: int | None = None
     search_best_connected_city_count: int | None = None
     search_best_isolated_city_count: int | None = None
@@ -679,6 +684,13 @@ class RecordDecisionContext:
             search_best_value=_optional_int(payload, "search_best_value"),
             search_value_components=_mapping_of_ints(payload, "search_value_components"),
             search_sequence_adjustment=_optional_int(payload, "search_sequence_adjustment"),
+            search_dominant_pressure=_optional_str(payload, "search_dominant_pressure"),
+            search_dominant_pressure_value=_optional_int(
+                payload, "search_dominant_pressure_value"
+            ),
+            search_risk_pressure_total=_optional_int(payload, "search_risk_pressure_total"),
+            search_is_risk_dominated=_optional_bool(payload, "search_is_risk_dominated"),
+            search_is_sequence_adjusted=_optional_bool(payload, "search_is_sequence_adjusted"),
             search_best_score_total=_optional_int(payload, "search_best_score_total"),
             search_best_connected_city_count=_optional_int(
                 payload, "search_best_connected_city_count"
@@ -825,6 +837,16 @@ class RecordDecisionContext:
             result["search_value_components"] = self.search_value_components
         if self.search_sequence_adjustment is not None:
             result["search_sequence_adjustment"] = self.search_sequence_adjustment
+        if self.search_dominant_pressure is not None:
+            result["search_dominant_pressure"] = self.search_dominant_pressure
+        if self.search_dominant_pressure_value is not None:
+            result["search_dominant_pressure_value"] = self.search_dominant_pressure_value
+        if self.search_risk_pressure_total is not None:
+            result["search_risk_pressure_total"] = self.search_risk_pressure_total
+        if self.search_is_risk_dominated is not None:
+            result["search_is_risk_dominated"] = self.search_is_risk_dominated
+        if self.search_is_sequence_adjusted is not None:
+            result["search_is_sequence_adjusted"] = self.search_is_sequence_adjusted
         if self.search_best_score_total is not None:
             result["search_best_score_total"] = self.search_best_score_total
         if self.search_best_connected_city_count is not None:

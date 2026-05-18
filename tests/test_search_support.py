@@ -101,9 +101,49 @@ def test_search_expand_mode_preserves_safe_city_candidates() -> None:
     counts = candidate_set.candidate_counts_by_type
 
     assert candidate_set.profile.mode == "expand"
+    assert candidate_set.profile.is_healthy_steady is True
     assert counts[ActionType.BUILD_CITY] >= 3
     assert counts[ActionType.BUILD_CITY] > counts[ActionType.BUILD_BUILDING]
     assert counts[ActionType.BUILD_CITY] > counts[ActionType.RESEARCH_TECH]
+    assert counts[ActionType.BUILD_BUILDING] <= 1
+    assert counts[ActionType.RESEARCH_TECH] <= 1
+
+
+def test_search_healthy_steady_limits_fill_candidates() -> None:
+    state = GameState.empty(GameConfig.for_play(turn_limit=30))
+    state.turn = 18
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN),
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (0, 2): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (1, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 2): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (2, 0): Tile(base_terrain=TerrainType.FOREST),
+        (2, 1): Tile(base_terrain=TerrainType.MOUNTAIN),
+        (2, 2): Tile(base_terrain=TerrainType.PLAIN),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(1, 0), founded_turn=1, network_id=1),
+        2: City(city_id=2, coord=(1, 2), founded_turn=2, network_id=1),
+    }
+    state.networks = {
+        1: Network(
+            network_id=1,
+            city_ids={1, 2},
+            resources=ResourcePool(food=14, wood=60, ore=60, science=60),
+            unlocked_techs={TechType.AGRICULTURE},
+        )
+    }
+    state.next_city_id = 3
+    state.next_network_id = 2
+
+    candidate_set = generate_search_candidates(state, SearchCandidateConfig(candidate_limit=6))
+
+    assert candidate_set.profile.is_healthy_steady is True
+    assert candidate_set.profile.mode == "expand"
+    assert candidate_set.candidate_counts_by_type[ActionType.BUILD_BUILDING] <= 1
+    assert candidate_set.candidate_counts_by_type[ActionType.RESEARCH_TECH] <= 1
 
 
 def test_budget_helpers_report_site_and_future_network_budget() -> None:

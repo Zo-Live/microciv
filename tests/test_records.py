@@ -309,6 +309,11 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         search_best_value=12345,
         search_value_components={"score_total": 1000, "expansion_deficit_penalty": -200},
         search_sequence_adjustment=2500,
+        search_dominant_pressure="search_sequence_adjustment",
+        search_dominant_pressure_value=2500,
+        search_risk_pressure_total=200,
+        search_is_risk_dominated=False,
+        search_is_sequence_adjusted=True,
         search_best_score_total=321,
         search_best_connected_city_count=2,
         search_best_isolated_city_count=0,
@@ -342,6 +347,11 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     assert restored.search_best_value == 12345
     assert restored.search_value_components["score_total"] == 1000
     assert restored.search_sequence_adjustment == 2500
+    assert restored.search_dominant_pressure == "search_sequence_adjustment"
+    assert restored.search_dominant_pressure_value == 2500
+    assert restored.search_risk_pressure_total == 200
+    assert restored.search_is_risk_dominated is False
+    assert restored.search_is_sequence_adjusted is True
     assert restored.search_best_score_total == 321
     assert restored.search_best_connected_city_count == 2
     assert restored.search_best_total_food == 42

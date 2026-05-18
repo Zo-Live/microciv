@@ -66,6 +66,13 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     assert isinstance(context["search_best_value"], int)
     assert isinstance(context["search_value_components"], dict)
     assert isinstance(context["search_sequence_adjustment"], int)
+    assert context["search_dominant_pressure"] is None or isinstance(
+        context["search_dominant_pressure"], str
+    )
+    assert isinstance(context["search_dominant_pressure_value"], int)
+    assert isinstance(context["search_risk_pressure_total"], int)
+    assert isinstance(context["search_is_risk_dominated"], bool)
+    assert isinstance(context["search_is_sequence_adjusted"], bool)
     assert isinstance(context["search_best_score_total"], int)
     assert isinstance(context["search_best_food_pressure"], int)
     assert isinstance(context["search_best_starving_turns"], int)
@@ -93,6 +100,22 @@ def test_search_policy_suppresses_early_skip_when_actions_exist() -> None:
 
     assert action.action_type is not ActionType.SKIP
     assert context["search_root_candidate_skip_count"] == 0
+
+
+def test_search_policy_keeps_healthy_expand_state_at_steady_depth() -> None:
+    state = _healthy_mild_pressure_expand_state()
+    policy = SearchPolicy(
+        search_depth=2,
+        search_max_depth=6,
+        search_beam_width=1,
+        search_candidate_limit=5,
+    )
+
+    context = policy.explain_decision(state)
+
+    assert context["search_mode"] == "expand"
+    assert context["search_depth"] == 2
+    assert context["search_depth_reason"] == SEARCH_DEPTH_REASON_STEADY
 
 
 def test_search_policy_uses_custom_depth_strategy() -> None:
@@ -332,6 +355,37 @@ def _two_isolated_city_state() -> GameState:
     }
     state.next_city_id = 3
     state.next_network_id = 3
+    return state
+
+
+def _healthy_mild_pressure_expand_state() -> GameState:
+    state = GameState.empty(GameConfig.for_play(turn_limit=30))
+    state.turn = 18
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN),
+        (0, 1): Tile(base_terrain=TerrainType.FOREST),
+        (0, 2): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (1, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 2): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (2, 0): Tile(base_terrain=TerrainType.FOREST),
+        (2, 1): Tile(base_terrain=TerrainType.MOUNTAIN),
+        (2, 2): Tile(base_terrain=TerrainType.PLAIN),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(1, 0), founded_turn=1, network_id=1),
+        2: City(city_id=2, coord=(1, 2), founded_turn=2, network_id=1),
+    }
+    state.networks = {
+        1: Network(
+            network_id=1,
+            city_ids={1, 2},
+            resources=ResourcePool(food=12, wood=60, ore=60, science=60),
+            unlocked_techs={TechType.AGRICULTURE},
+        )
+    }
+    state.next_city_id = 3
+    state.next_network_id = 2
     return state
 
 

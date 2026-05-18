@@ -30,7 +30,7 @@ from microciv.game.models import (
 from microciv.game.scoring import score_breakdown
 from microciv.records.models import RecordEntry
 
-ARTIFACT_SCHEMA_VERSION: Final[int] = 2
+ARTIFACT_SCHEMA_VERSION: Final[int] = 3
 ARTIFACT_MANIFEST_FILENAME: Final[str] = "artifact_manifest.json"
 ARTIFACT_TABLES: Final[tuple[str, ...]] = (
     "macro",
@@ -422,6 +422,19 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             "search_leaf_count": context.search_leaf_count,
             "search_best_value": context.search_best_value,
             "search_sequence_adjustment": context.search_sequence_adjustment,
+            "search_dominant_pressure": context.search_dominant_pressure or "",
+            "search_dominant_pressure_value": context.search_dominant_pressure_value,
+            "search_risk_pressure_total": context.search_risk_pressure_total,
+            "search_is_risk_dominated": (
+                int(context.search_is_risk_dominated)
+                if context.search_is_risk_dominated is not None
+                else None
+            ),
+            "search_is_sequence_adjusted": (
+                int(context.search_is_sequence_adjusted)
+                if context.search_is_sequence_adjusted is not None
+                else None
+            ),
             "search_best_score_total": context.search_best_score_total,
             "search_best_connected_city_count": context.search_best_connected_city_count,
             "search_best_isolated_city_count": context.search_best_isolated_city_count,

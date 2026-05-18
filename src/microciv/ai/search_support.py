@@ -63,6 +63,7 @@ class SearchPositionProfile:
     """Public, Greedy-independent position summary for Search pruning and diagnostics."""
 
     mode: str
+    is_healthy_steady: bool
     turns_remaining: int
     city_count: int
     target_city_count: int
@@ -242,10 +243,25 @@ def build_search_position_profile(state: GameState) -> SearchPositionProfile:
     food_pressure = _max_food_pressure(state)
     target_city_count = search_target_city_count(state)
     expansion_deficit = max(0, target_city_count - city_count_value)
+    isolated_risk_limit = max(1, city_count_value // 3)
+    network_risk_limit = max(2, city_count_value // 3)
+    steady_turn_threshold = max(10, min(18, state.config.turn_limit // 4))
+    is_healthy_steady = (
+        turns_remaining > steady_turn_threshold
+        and starving == 0
+        and resources.food >= 0
+        and food_pressure <= FOOD_CONSUMPTION_PER_CITY
+        and isolated <= isolated_risk_limit
+        and network_count <= network_risk_limit
+    )
 
     if starving > 0 or resources.food < 0 or food_pressure >= FOOD_CONSUMPTION_PER_CITY * 2:
         mode = SEARCH_MODE_RESCUE
-    elif city_count_value >= 2 and (isolated > 0 or network_count > max(1, city_count_value // 4)):
+    elif (
+        not is_healthy_steady
+        and city_count_value >= 2
+        and (isolated > 0 or network_count > max(1, city_count_value // 4))
+    ):
         mode = SEARCH_MODE_CONNECT
     elif turns_remaining > 6 and expansion_deficit > 0:
         mode = SEARCH_MODE_EXPAND
@@ -254,6 +270,7 @@ def build_search_position_profile(state: GameState) -> SearchPositionProfile:
 
     return SearchPositionProfile(
         mode=mode,
+        is_healthy_steady=is_healthy_steady,
         turns_remaining=turns_remaining,
         city_count=city_count_value,
         target_city_count=target_city_count,
@@ -288,6 +305,10 @@ def evaluate_search_leaf(state: GameState) -> SearchLeafEvaluation:
     largest_network = largest_network_size(state)
     food_pressure = _max_food_pressure(state)
     starving_turns = sum(network.consecutive_starving_turns for network in state.networks.values())
+    profile = build_search_position_profile(state)
+    isolated_weight = 450 if profile.is_healthy_steady else 650
+    food_pressure_weight = 100 if profile.is_healthy_steady else 150
+    fragmentation_weight = 180 if profile.is_healthy_steady else 260
 
     components = {
         "score_total": breakdown.total * 90,
@@ -307,14 +328,14 @@ def evaluate_search_leaf(state: GameState) -> SearchLeafEvaluation:
         "science_stock": _bounded_resource_value(
             resources.science, positive_cap=60, negative_cap=20, weight=3
         ),
-        "isolated_penalty": -(isolated * 650),
+        "isolated_penalty": -(isolated * isolated_weight),
         "starving_penalty": -(starving * 2200),
         "starving_turn_penalty": -(starving_turns * 500),
-        "food_pressure_penalty": -(food_pressure * 150),
-        "fragmentation_penalty": -(max(0, network_count - 1) * 260),
-        "expansion_deficit_penalty": -_expansion_deficit_penalty(state),
-        "early_fill_penalty": -_early_fill_penalty(state),
-        "road_overbuild_penalty": -_road_overbuild_penalty(state),
+        "food_pressure_penalty": -(food_pressure * food_pressure_weight),
+        "fragmentation_penalty": -(max(0, network_count - 1) * fragmentation_weight),
+        "expansion_deficit_penalty": -_expansion_deficit_penalty(state, profile),
+        "early_fill_penalty": -_early_fill_penalty(state, profile),
+        "road_overbuild_penalty": -_road_overbuild_penalty(state, profile),
     }
     value = sum(components.values())
 
@@ -486,6 +507,13 @@ def _candidate_type_quotas(
             ActionType.BUILD_BUILDING: 1,
             ActionType.RESEARCH_TECH: 1,
         }
+    elif profile.is_healthy_steady:
+        weights = {
+            ActionType.BUILD_CITY: 5,
+            ActionType.BUILD_ROAD: 4,
+            ActionType.BUILD_BUILDING: 1,
+            ActionType.RESEARCH_TECH: 1,
+        }
     else:
         weights = {
             ActionType.BUILD_CITY: 3,
@@ -554,6 +582,15 @@ def _candidate_type_maxima(
     if profile.mode == SEARCH_MODE_EXPAND and profile.turns_remaining > 10:
         maxima[ActionType.BUILD_BUILDING] = quotas.get(ActionType.BUILD_BUILDING, 0)
         maxima[ActionType.RESEARCH_TECH] = quotas.get(ActionType.RESEARCH_TECH, 0)
+    elif profile.is_healthy_steady and profile.mode == SEARCH_MODE_FILL:
+        maxima[ActionType.BUILD_BUILDING] = min(
+            maxima[ActionType.BUILD_BUILDING],
+            max(1, limit // 3),
+        )
+        maxima[ActionType.RESEARCH_TECH] = min(
+            maxima[ActionType.RESEARCH_TECH],
+            max(1, limit // 3),
+        )
     return maxima
 
 
@@ -583,28 +620,41 @@ def _is_safe_city_site(
     return profile.total_food >= (profile.city_count + 1) * FOOD_CONSUMPTION_PER_CITY * 4
 
 
-def _expansion_deficit_penalty(state: GameState) -> int:
-    profile = build_search_position_profile(state)
+def _expansion_deficit_penalty(
+    state: GameState,
+    profile: SearchPositionProfile | None = None,
+) -> int:
+    profile = profile or build_search_position_profile(state)
     if profile.turns_remaining <= 6 or profile.expansion_deficit <= 0:
         return 0
-    return min(36_000, profile.expansion_deficit * 2_400)
+    weight = 1_500 if profile.is_healthy_steady else 2_400
+    return min(36_000, profile.expansion_deficit * weight)
 
 
-def _early_fill_penalty(state: GameState) -> int:
-    profile = build_search_position_profile(state)
+def _early_fill_penalty(
+    state: GameState,
+    profile: SearchPositionProfile | None = None,
+) -> int:
+    profile = profile or build_search_position_profile(state)
     if profile.turns_remaining <= 10 or profile.expansion_deficit <= 0:
         return 0
     fill_count = building_count(state) + tech_count(state)
     allowed_fill = max(1, profile.city_count // 2)
-    return max(0, fill_count - allowed_fill) * 3_800
+    weight = 2_200 if profile.is_healthy_steady else 3_800
+    return max(0, fill_count - allowed_fill) * weight
 
 
-def _road_overbuild_penalty(state: GameState) -> int:
+def _road_overbuild_penalty(
+    state: GameState,
+    profile: SearchPositionProfile | None = None,
+) -> int:
     city_count_value = len(state.cities)
     if city_count_value <= 0:
         return len(state.roads) * 4_000
     road_allowance = max(2, city_count_value // 2)
-    return max(0, len(state.roads) - road_allowance) * 4_000
+    profile = profile or build_search_position_profile(state)
+    weight = 2_500 if profile.is_healthy_steady else 4_000
+    return max(0, len(state.roads) - road_allowance) * weight
 
 
 def _road_merges_networks(coord: tuple[int, int], context: HeuristicContext) -> bool:

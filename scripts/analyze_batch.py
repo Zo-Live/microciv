@@ -437,6 +437,10 @@ def build_search_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataF
         "search_leaf_count",
         "search_best_value",
         "search_sequence_adjustment",
+        "search_dominant_pressure_value",
+        "search_risk_pressure_total",
+        "search_is_risk_dominated",
+        "search_is_sequence_adjusted",
         "search_best_score_total",
         "search_best_starving_network_count",
         "search_best_food_pressure",
@@ -470,6 +474,9 @@ def build_search_mode_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.
         "search_root_candidate_skip_count",
         "search_sequence_adjustment",
         "search_best_value",
+        "search_risk_pressure_total",
+        "search_is_risk_dominated",
+        "search_is_sequence_adjusted",
     ]
     for column in numeric_cols:
         if column not in search_df:
@@ -507,10 +514,71 @@ def build_search_mode_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.
                 ),
                 "candidate_skip_mean": _metric_mean(group, "search_root_candidate_skip_count"),
                 "sequence_adjustment_mean": _metric_mean(group, "search_sequence_adjustment"),
+                "risk_pressure_mean": _metric_mean(group, "search_risk_pressure_total"),
+                "risk_dominated_pct": _metric_mean(group, "search_is_risk_dominated") * 100,
+                "sequence_adjusted_pct": (
+                    _metric_mean(group, "search_is_sequence_adjusted") * 100
+                ),
                 "best_value_mean": _metric_mean(group, "search_best_value"),
             }
         )
     return pd.DataFrame(rows).sort_values(["policy_variant", "search_mode"])
+
+
+def build_search_pressure_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataFrame:
+    if decision_df.empty or "search_dominant_pressure" not in decision_df:
+        return pd.DataFrame()
+    search_df = decision_df[
+        decision_df.get("search_dominant_pressure", pd.Series(dtype=object)).fillna("") != ""
+    ].copy()
+    if search_df.empty:
+        return pd.DataFrame()
+
+    numeric_cols = [
+        "search_dominant_pressure_value",
+        "search_risk_pressure_total",
+        "search_is_risk_dominated",
+        "search_is_sequence_adjusted",
+        "search_sequence_adjustment",
+        "search_best_value",
+    ]
+    for column in numeric_cols:
+        if column not in search_df:
+            search_df[column] = 0
+
+    rows: list[dict[str, object]] = []
+    for (policy_variant, dominant_pressure), group in search_df.groupby(
+        ["policy_variant", "search_dominant_pressure"],
+        dropna=False,
+    ):
+        total = len(group)
+        chosen_counts = Counter(group["chosen_action_type"])
+        rows.append(
+            {
+                "policy_variant": policy_variant,
+                "search_dominant_pressure": dominant_pressure,
+                "samples": total,
+                "chosen_city_pct": chosen_counts["build_city"] / total * 100,
+                "chosen_road_pct": chosen_counts["build_road"] / total * 100,
+                "chosen_building_pct": chosen_counts["build_building"] / total * 100,
+                "chosen_tech_pct": chosen_counts["research_tech"] / total * 100,
+                "chosen_skip_pct": chosen_counts["skip"] / total * 100,
+                "dominant_pressure_value_mean": _metric_mean(
+                    group, "search_dominant_pressure_value"
+                ),
+                "risk_pressure_total_mean": _metric_mean(group, "search_risk_pressure_total"),
+                "risk_dominated_pct": _metric_mean(group, "search_is_risk_dominated") * 100,
+                "sequence_adjusted_pct": (
+                    _metric_mean(group, "search_is_sequence_adjusted") * 100
+                ),
+                "sequence_adjustment_mean": _metric_mean(group, "search_sequence_adjustment"),
+                "best_value_mean": _metric_mean(group, "search_best_value"),
+            }
+        )
+    return pd.DataFrame(rows).sort_values(
+        ["policy_variant", "samples", "search_dominant_pressure"],
+        ascending=[True, False, True],
+    )
 
 
 def build_search_depth_reason_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataFrame:
@@ -1236,6 +1304,7 @@ def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
     search_summary = build_search_summary_from_decision_df(decision_df)
     search_mode_summary = build_search_mode_summary_from_decision_df(decision_df)
     search_depth_reason_summary = build_search_depth_reason_summary_from_decision_df(decision_df)
+    search_pressure_summary = build_search_pressure_summary_from_decision_df(decision_df)
     search_matchup_summary = build_search_matchup_summary_from_macro_df(macro_df)
     anomaly_df = build_policy_anomaly_df_from_macro(macro_df)
     anomaly_summary = policy_anomaly_summary_from_df(anomaly_df)
@@ -1474,7 +1543,11 @@ def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
         "",
         make_table(search_mode_summary),
         "",
-        "### 7.4 Search Same-Map Matchup Summary",
+        "### 7.4 Search Pressure Driver Summary",
+        "",
+        make_table(search_pressure_summary),
+        "",
+        "### 7.5 Search Same-Map Matchup Summary",
         "",
         make_table(search_matchup_summary),
         "",
@@ -1550,6 +1623,7 @@ def generate_report(records: list[RecordEntry]) -> str:
     search_summary = build_search_summary_from_decision_df(decision_df)
     search_mode_summary = build_search_mode_summary_from_decision_df(decision_df)
     search_depth_reason_summary = build_search_depth_reason_summary_from_decision_df(decision_df)
+    search_pressure_summary = build_search_pressure_summary_from_decision_df(decision_df)
     search_matchup_summary = build_search_matchup_summary_from_macro_df(macro_df)
     map_df = build_map_df(records)
     anomaly_cases = collect_policy_anomaly_cases(records)
@@ -1769,7 +1843,11 @@ def generate_report(records: list[RecordEntry]) -> str:
         "",
         make_table(search_mode_summary),
         "",
-        "### 7.4 Search Same-Map Matchup Summary",
+        "### 7.4 Search Pressure Driver Summary",
+        "",
+        make_table(search_pressure_summary),
+        "",
+        "### 7.5 Search Same-Map Matchup Summary",
         "",
         make_table(search_matchup_summary),
         "",
