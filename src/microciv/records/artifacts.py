@@ -30,7 +30,7 @@ from microciv.game.models import (
 from microciv.game.scoring import score_breakdown
 from microciv.records.models import RecordEntry
 
-ARTIFACT_SCHEMA_VERSION: Final[int] = 3
+ARTIFACT_SCHEMA_VERSION: Final[int] = 4
 ARTIFACT_MANIFEST_FILENAME: Final[str] = "artifact_manifest.json"
 ARTIFACT_TABLES: Final[tuple[str, ...]] = (
     "macro",
@@ -450,6 +450,53 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             "search_sequence_length": len(context.search_best_sequence),
             "search_first_action_type": (
                 context.search_best_sequence[0].action_type if context.search_best_sequence else ""
+            ),
+            "search_root_chosen_rank": context.search_root_chosen_rank,
+            "search_root_chosen_value": context.search_root_chosen_value,
+            "search_root_best_value": context.search_root_best_value,
+            "search_root_value_margin": context.search_root_value_margin,
+            "search_root_best_action_type": context.search_root_best_action_type or "",
+            "search_root_chosen_action_type": context.search_root_chosen_action_type or "",
+            "search_root_best_build_city_value": context.search_root_best_build_city_value,
+            "search_root_best_build_road_value": context.search_root_best_build_road_value,
+            "search_root_best_build_building_value": (
+                context.search_root_best_build_building_value
+            ),
+            "search_root_best_research_tech_value": (
+                context.search_root_best_research_tech_value
+            ),
+            "search_root_best_skip_value": context.search_root_best_skip_value,
+            "search_root_candidate_cut_ratio": context.search_root_candidate_cut_ratio,
+            "search_root_safe_city_candidate_count": (
+                context.search_root_safe_city_candidate_count
+            ),
+            "search_root_effective_connection_road_candidate_count": (
+                context.search_root_effective_connection_road_candidate_count
+            ),
+            "search_root_rescue_candidate_count": context.search_root_rescue_candidate_count,
+            "search_delta_starving_network_count": (
+                context.search_delta_starving_network_count
+            ),
+            "search_delta_food_pressure": context.search_delta_food_pressure,
+            "search_delta_isolated_city_count": context.search_delta_isolated_city_count,
+            "search_delta_network_count": context.search_delta_network_count,
+            "search_delta_connected_city_count": context.search_delta_connected_city_count,
+            "search_delta_road_overbuild": context.search_delta_road_overbuild,
+            "search_road_merges_networks": (
+                int(context.search_road_merges_networks)
+                if context.search_road_merges_networks is not None
+                else None
+            ),
+            "search_road_connected_city_delta": context.search_road_connected_city_delta,
+            "search_road_is_redundant": (
+                int(context.search_road_is_redundant)
+                if context.search_road_is_redundant is not None
+                else None
+            ),
+            "search_road_after_full_connectivity": (
+                int(context.search_road_after_full_connectivity)
+                if context.search_road_after_full_connectivity is not None
+                else None
             ),
         }
         for key, value in context.greedy_score_breakdown.items():

@@ -97,6 +97,9 @@ class SearchCandidateSet:
     legal_counts_by_type: dict[ActionType, int]
     candidate_counts_by_type: dict[ActionType, int]
     profile: SearchPositionProfile
+    safe_city_candidate_count: int = 0
+    effective_connection_road_candidate_count: int = 0
+    rescue_candidate_count: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -157,12 +160,21 @@ def generate_search_candidates(
         ]
         pool = non_skip_candidates or scored_by_type.get(ActionType.SKIP, [])
         candidates = pool[:1]
+        safe_city_count, connection_road_count, rescue_count = _candidate_health_counts(
+            candidates,
+            state,
+            context,
+            profile,
+        )
         return SearchCandidateSet(
             candidates=candidates,
             legal_action_count=len(legal_actions),
             legal_counts_by_type=legal_counts_by_type,
             candidate_counts_by_type=_candidate_counts(candidates),
             profile=profile,
+            safe_city_candidate_count=safe_city_count,
+            effective_connection_road_candidate_count=connection_road_count,
+            rescue_candidate_count=rescue_count,
         )
 
     skip_candidates = scored_by_type.get(ActionType.SKIP, []) if config.include_skip else []
@@ -222,12 +234,21 @@ def generate_search_candidates(
         selected[skip_candidates[0].action] = skip_candidates[0]
 
     candidates = sorted(selected.values(), key=_candidate_sort_key)[: config.candidate_limit]
+    safe_city_count, connection_road_count, rescue_count = _candidate_health_counts(
+        candidates,
+        state,
+        context,
+        profile,
+    )
     return SearchCandidateSet(
         candidates=candidates,
         legal_action_count=len(legal_actions),
         legal_counts_by_type=legal_counts_by_type,
         candidate_counts_by_type=_candidate_counts(candidates),
         profile=profile,
+        safe_city_candidate_count=safe_city_count,
+        effective_connection_road_candidate_count=connection_road_count,
+        rescue_candidate_count=rescue_count,
     )
 
 
@@ -599,6 +620,47 @@ def _candidate_counts(candidates: list[SearchCandidate]) -> dict[ActionType, int
         action_type: sum(1 for candidate in candidates if candidate.action_type is action_type)
         for action_type in ActionType
     }
+
+
+def _candidate_health_counts(
+    candidates: list[SearchCandidate],
+    state: GameState,
+    context: HeuristicContext,
+    profile: SearchPositionProfile,
+) -> tuple[int, int, int]:
+    safe_city_count = 0
+    connection_road_count = 0
+    rescue_count = 0
+    for candidate in candidates:
+        action = candidate.action
+        if action.action_type is ActionType.BUILD_CITY and action.coord is not None:
+            if _is_safe_city_site(state, action.coord, context, profile):
+                safe_city_count += 1
+            if _city_food_safety_score(state, action.coord, context) > 0:
+                rescue_count += 1
+            continue
+        if action.action_type is ActionType.BUILD_ROAD and action.coord is not None:
+            if _road_merges_networks(action.coord, context):
+                connection_road_count += 1
+            if _road_food_rescue_score(state, action.coord, context) > 0:
+                rescue_count += 1
+            continue
+        if action.action_type is ActionType.BUILD_BUILDING:
+            if action.city_id is None or action.building_type is not BuildingType.FARM:
+                continue
+            city = state.cities[action.city_id]
+            network = state.networks[city.network_id]
+            if network.resources.food <= 0 or city_network_pressure(network) >= 0:
+                rescue_count += 1
+            continue
+        if action.action_type is ActionType.RESEARCH_TECH:
+            if action.city_id is None or action.tech_type is not TechType.AGRICULTURE:
+                continue
+            city = state.cities[action.city_id]
+            network = state.networks[city.network_id]
+            if network.resources.food <= len(network.city_ids) * FOOD_CONSUMPTION_PER_CITY:
+                rescue_count += 1
+    return safe_city_count, connection_road_count, rescue_count
 
 
 def _selected_count(

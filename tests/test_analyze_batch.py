@@ -226,6 +226,23 @@ def test_generate_report_from_artifacts_uses_tabular_input(tmp_path) -> None:
             search_risk_pressure_total=100,
             search_is_risk_dominated=False,
             search_is_sequence_adjusted=True,
+            search_root_chosen_rank=1,
+            search_root_chosen_value=1500,
+            search_root_best_value=1500,
+            search_root_value_margin=0,
+            search_root_best_action_type="build_city",
+            search_root_chosen_action_type="build_city",
+            search_root_candidate_cut_ratio=0.25,
+            search_root_safe_city_candidate_count=2,
+            search_root_effective_connection_road_candidate_count=1,
+            search_root_rescue_candidate_count=1,
+            search_delta_food_pressure=-2,
+            search_delta_connected_city_count=1,
+            search_delta_road_overbuild=0,
+            search_road_merges_networks=False,
+            search_road_connected_city_delta=0,
+            search_road_is_redundant=False,
+            search_road_after_full_connectivity=False,
         )
     ]
     records = [
@@ -243,6 +260,8 @@ def test_generate_report_from_artifacts_uses_tabular_input(tmp_path) -> None:
     assert "Greedy" in report
     assert "Random" in report
     assert "### 7.4 Search Pressure Driver Summary" in report
+    assert "### 7.6 Search Candidate Health Summary" in report
+    assert "### 7.7 Search Road Quality Summary" in report
     assert "search_sequence_adjustment" in report
 
 
@@ -284,6 +303,23 @@ def test_analyze_batch_reports_search_diagnostics() -> None:
             search_best_score_total=456,
             search_best_food_pressure=4,
             search_best_starving_turns=1,
+            search_root_chosen_rank=2,
+            search_root_chosen_value=123,
+            search_root_best_value=456,
+            search_root_value_margin=333,
+            search_root_best_action_type="build_road",
+            search_root_chosen_action_type="build_city",
+            search_root_candidate_cut_ratio=0.5,
+            search_root_safe_city_candidate_count=1,
+            search_root_effective_connection_road_candidate_count=1,
+            search_root_rescue_candidate_count=2,
+            search_delta_food_pressure=-3,
+            search_delta_connected_city_count=0,
+            search_delta_road_overbuild=0,
+            search_road_merges_networks=False,
+            search_road_connected_city_delta=0,
+            search_road_is_redundant=False,
+            search_road_after_full_connectivity=False,
             search_best_sequence=[
                 RecordSearchActionSnapshot(action_type="build_city", x=0, y=0),
                 RecordSearchActionSnapshot(action_type="skip"),
@@ -307,6 +343,9 @@ def test_analyze_batch_reports_search_diagnostics() -> None:
     assert "search_sequence_adjustment_mean" in report
     assert "search_risk_pressure_total_mean" in report
     assert "risk_pressure_total_mean" in report
+    assert "search_root_chosen_rank_mean" in report
+    assert "search_root_candidate_cut_ratio_mean" in report
+    assert "### 7.9 Search Score Component Gap vs Greedy" in report
     assert "search_value_score_total_mean" in report
     assert "search_best_food_pressure_mean" in report
     assert int(summary.iloc[0]["search_leaf_count_mean"]) == 12

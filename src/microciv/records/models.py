@@ -17,7 +17,7 @@ from microciv.game.scoring import (
 )
 from microciv.utils.grid import Coord, coord_sort_key
 
-RECORDS_SCHEMA_VERSION = 7
+RECORDS_SCHEMA_VERSION = 8
 
 CSV_FIELD_ORDER: tuple[str, ...] = (
     "record_id",
@@ -120,6 +120,14 @@ def _require_float(payload: Mapping[str, object], field_name: str) -> float:
     if isinstance(value, str):
         return float(value)
     raise ValueError(f"{field_name} must be a number.")
+
+
+def _optional_float(payload: Mapping[str, object], field_name: str) -> float | None:
+    if field_name not in payload:
+        return None
+    if payload[field_name] is None:
+        return None
+    return _require_float(payload, field_name)
 
 
 def _require_str(payload: Mapping[str, object], field_name: str) -> str:
@@ -604,6 +612,31 @@ class RecordDecisionContext:
     search_best_food_pressure: int | None = None
     search_best_starving_turns: int | None = None
     search_best_sequence: list[RecordSearchActionSnapshot] = field(default_factory=list)
+    search_root_chosen_rank: int | None = None
+    search_root_chosen_value: int | None = None
+    search_root_best_value: int | None = None
+    search_root_value_margin: int | None = None
+    search_root_best_action_type: str | None = None
+    search_root_chosen_action_type: str | None = None
+    search_root_best_build_city_value: int | None = None
+    search_root_best_build_road_value: int | None = None
+    search_root_best_build_building_value: int | None = None
+    search_root_best_research_tech_value: int | None = None
+    search_root_best_skip_value: int | None = None
+    search_root_candidate_cut_ratio: float | None = None
+    search_root_safe_city_candidate_count: int | None = None
+    search_root_effective_connection_road_candidate_count: int | None = None
+    search_root_rescue_candidate_count: int | None = None
+    search_delta_starving_network_count: int | None = None
+    search_delta_food_pressure: int | None = None
+    search_delta_isolated_city_count: int | None = None
+    search_delta_network_count: int | None = None
+    search_delta_connected_city_count: int | None = None
+    search_delta_road_overbuild: int | None = None
+    search_road_merges_networks: bool | None = None
+    search_road_connected_city_delta: int | None = None
+    search_road_is_redundant: bool | None = None
+    search_road_after_full_connectivity: bool | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> RecordDecisionContext:
@@ -721,6 +754,59 @@ class RecordDecisionContext:
                 RecordSearchActionSnapshot.from_dict(item)
                 for item in _list_of_dicts(payload, "search_best_sequence")
             ],
+            search_root_chosen_rank=_optional_int(payload, "search_root_chosen_rank"),
+            search_root_chosen_value=_optional_int(payload, "search_root_chosen_value"),
+            search_root_best_value=_optional_int(payload, "search_root_best_value"),
+            search_root_value_margin=_optional_int(payload, "search_root_value_margin"),
+            search_root_best_action_type=_optional_str(payload, "search_root_best_action_type"),
+            search_root_chosen_action_type=_optional_str(
+                payload, "search_root_chosen_action_type"
+            ),
+            search_root_best_build_city_value=_optional_int(
+                payload, "search_root_best_build_city_value"
+            ),
+            search_root_best_build_road_value=_optional_int(
+                payload, "search_root_best_build_road_value"
+            ),
+            search_root_best_build_building_value=_optional_int(
+                payload, "search_root_best_build_building_value"
+            ),
+            search_root_best_research_tech_value=_optional_int(
+                payload, "search_root_best_research_tech_value"
+            ),
+            search_root_best_skip_value=_optional_int(payload, "search_root_best_skip_value"),
+            search_root_candidate_cut_ratio=_optional_float(
+                payload, "search_root_candidate_cut_ratio"
+            ),
+            search_root_safe_city_candidate_count=_optional_int(
+                payload, "search_root_safe_city_candidate_count"
+            ),
+            search_root_effective_connection_road_candidate_count=_optional_int(
+                payload, "search_root_effective_connection_road_candidate_count"
+            ),
+            search_root_rescue_candidate_count=_optional_int(
+                payload, "search_root_rescue_candidate_count"
+            ),
+            search_delta_starving_network_count=_optional_int(
+                payload, "search_delta_starving_network_count"
+            ),
+            search_delta_food_pressure=_optional_int(payload, "search_delta_food_pressure"),
+            search_delta_isolated_city_count=_optional_int(
+                payload, "search_delta_isolated_city_count"
+            ),
+            search_delta_network_count=_optional_int(payload, "search_delta_network_count"),
+            search_delta_connected_city_count=_optional_int(
+                payload, "search_delta_connected_city_count"
+            ),
+            search_delta_road_overbuild=_optional_int(payload, "search_delta_road_overbuild"),
+            search_road_merges_networks=_optional_bool(payload, "search_road_merges_networks"),
+            search_road_connected_city_delta=_optional_int(
+                payload, "search_road_connected_city_delta"
+            ),
+            search_road_is_redundant=_optional_bool(payload, "search_road_is_redundant"),
+            search_road_after_full_connectivity=_optional_bool(
+                payload, "search_road_after_full_connectivity"
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -881,6 +967,74 @@ class RecordDecisionContext:
             result["search_best_sequence"] = [
                 action.to_dict() for action in self.search_best_sequence
             ]
+        if self.search_root_chosen_rank is not None:
+            result["search_root_chosen_rank"] = self.search_root_chosen_rank
+        if self.search_root_chosen_value is not None:
+            result["search_root_chosen_value"] = self.search_root_chosen_value
+        if self.search_root_best_value is not None:
+            result["search_root_best_value"] = self.search_root_best_value
+        if self.search_root_value_margin is not None:
+            result["search_root_value_margin"] = self.search_root_value_margin
+        if self.search_root_best_action_type is not None:
+            result["search_root_best_action_type"] = self.search_root_best_action_type
+        if self.search_root_chosen_action_type is not None:
+            result["search_root_chosen_action_type"] = self.search_root_chosen_action_type
+        if self.search_root_best_build_city_value is not None:
+            result["search_root_best_build_city_value"] = self.search_root_best_build_city_value
+        if self.search_root_best_build_road_value is not None:
+            result["search_root_best_build_road_value"] = self.search_root_best_build_road_value
+        if self.search_root_best_build_building_value is not None:
+            result["search_root_best_build_building_value"] = (
+                self.search_root_best_build_building_value
+            )
+        if self.search_root_best_research_tech_value is not None:
+            result["search_root_best_research_tech_value"] = (
+                self.search_root_best_research_tech_value
+            )
+        if self.search_root_best_skip_value is not None:
+            result["search_root_best_skip_value"] = self.search_root_best_skip_value
+        if self.search_root_candidate_cut_ratio is not None:
+            result["search_root_candidate_cut_ratio"] = self.search_root_candidate_cut_ratio
+        if self.search_root_safe_city_candidate_count is not None:
+            result["search_root_safe_city_candidate_count"] = (
+                self.search_root_safe_city_candidate_count
+            )
+        if self.search_root_effective_connection_road_candidate_count is not None:
+            result["search_root_effective_connection_road_candidate_count"] = (
+                self.search_root_effective_connection_road_candidate_count
+            )
+        if self.search_root_rescue_candidate_count is not None:
+            result["search_root_rescue_candidate_count"] = (
+                self.search_root_rescue_candidate_count
+            )
+        if self.search_delta_starving_network_count is not None:
+            result["search_delta_starving_network_count"] = (
+                self.search_delta_starving_network_count
+            )
+        if self.search_delta_food_pressure is not None:
+            result["search_delta_food_pressure"] = self.search_delta_food_pressure
+        if self.search_delta_isolated_city_count is not None:
+            result["search_delta_isolated_city_count"] = self.search_delta_isolated_city_count
+        if self.search_delta_network_count is not None:
+            result["search_delta_network_count"] = self.search_delta_network_count
+        if self.search_delta_connected_city_count is not None:
+            result["search_delta_connected_city_count"] = (
+                self.search_delta_connected_city_count
+            )
+        if self.search_delta_road_overbuild is not None:
+            result["search_delta_road_overbuild"] = self.search_delta_road_overbuild
+        if self.search_road_merges_networks is not None:
+            result["search_road_merges_networks"] = self.search_road_merges_networks
+        if self.search_road_connected_city_delta is not None:
+            result["search_road_connected_city_delta"] = (
+                self.search_road_connected_city_delta
+            )
+        if self.search_road_is_redundant is not None:
+            result["search_road_is_redundant"] = self.search_road_is_redundant
+        if self.search_road_after_full_connectivity is not None:
+            result["search_road_after_full_connectivity"] = (
+                self.search_road_after_full_connectivity
+            )
         return result
 
 

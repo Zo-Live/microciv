@@ -29,6 +29,7 @@ from microciv.records.artifacts import (  # noqa: E402
     is_artifact_dir,
     loads_json_bytes,
     read_artifact_frames,
+    record_action_rows,
     record_behavior_row,
     record_decision_rows,
     record_macro_row,
@@ -363,6 +364,13 @@ def build_decision_context_df(records: list[RecordEntry]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def build_action_df(records: list[RecordEntry]) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for record in records:
+        rows.extend(record_action_rows(record))
+    return pd.DataFrame(rows)
+
+
 def build_behavior_df(records: list[RecordEntry]) -> pd.DataFrame:
     return pd.DataFrame(record_behavior_row(record) for record in records)
 
@@ -581,6 +589,136 @@ def build_search_pressure_summary_from_decision_df(decision_df: pd.DataFrame) ->
     )
 
 
+def build_search_candidate_health_summary_from_decision_df(
+    decision_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if decision_df.empty or "search_depth" not in decision_df:
+        return pd.DataFrame()
+    search_df = decision_df[decision_df["search_depth"].notna()].copy()
+    if search_df.empty:
+        return pd.DataFrame()
+    value_cols = [
+        "search_root_candidate_cut_ratio",
+        "search_root_chosen_rank",
+        "search_root_chosen_value",
+        "search_root_best_value",
+        "search_root_value_margin",
+        "search_root_safe_city_candidate_count",
+        "search_root_effective_connection_road_candidate_count",
+        "search_root_rescue_candidate_count",
+        "search_delta_starving_network_count",
+        "search_delta_food_pressure",
+        "search_delta_isolated_city_count",
+        "search_delta_network_count",
+        "search_delta_connected_city_count",
+        "search_delta_road_overbuild",
+    ]
+    return _summary_table(
+        search_df,
+        ["policy_variant"],
+        [column for column in value_cols if column in search_df],
+    )
+
+
+def build_search_road_quality_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataFrame:
+    if decision_df.empty or "search_road_connected_city_delta" not in decision_df:
+        return pd.DataFrame()
+    road_df = decision_df[
+        decision_df.get("chosen_action_type", pd.Series(dtype=object)).fillna("")
+        == "build_road"
+    ].copy()
+    if road_df.empty:
+        return pd.DataFrame()
+    for column in [
+        "search_road_merges_networks",
+        "search_road_is_redundant",
+        "search_road_after_full_connectivity",
+        "search_road_connected_city_delta",
+        "search_delta_network_count",
+    ]:
+        if column not in road_df:
+            road_df[column] = 0
+    grouped = (
+        road_df.groupby(["policy_variant"], dropna=False)
+        .agg(
+            road_actions=("chosen_action_type", "size"),
+            merge_rate=("search_road_merges_networks", "mean"),
+            redundant_rate=("search_road_is_redundant", "mean"),
+            after_full_connectivity_rate=("search_road_after_full_connectivity", "mean"),
+            connected_city_delta_mean=("search_road_connected_city_delta", "mean"),
+            network_delta_mean=("search_delta_network_count", "mean"),
+        )
+        .reset_index()
+    )
+    for column in ["merge_rate", "redundant_rate", "after_full_connectivity_rate"]:
+        grouped[column] = grouped[column] * 100
+    return grouped.sort_values(["policy_variant"])
+
+
+def build_search_record_profile_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataFrame:
+    if decision_df.empty or "search_depth" not in decision_df:
+        return pd.DataFrame()
+    search_df = decision_df[decision_df["search_depth"].notna()].copy()
+    if search_df.empty or "record_id" not in search_df:
+        return pd.DataFrame()
+
+    rows: list[dict[str, object]] = []
+    for (policy_variant, record_id), group in search_df.groupby(
+        ["policy_variant", "record_id"],
+        dropna=False,
+    ):
+        total = len(group) or 1
+        mode_counts = Counter(group.get("search_mode", pd.Series(dtype=object)).fillna(""))
+        reason_counts = Counter(
+            group.get("search_depth_reason", pd.Series(dtype=object)).fillna("")
+        )
+        pressure_counts = Counter(
+            group.get("search_dominant_pressure", pd.Series(dtype=object)).fillna("")
+        )
+        rows.append(
+            {
+                "policy_variant": policy_variant,
+                "record_id": record_id,
+                "turns": total,
+                "rescue_pct": mode_counts["rescue"] / total * 100,
+                "connect_pct": mode_counts["connect"] / total * 100,
+                "expand_pct": mode_counts["expand"] / total * 100,
+                "fill_pct": mode_counts["fill"] / total * 100,
+                "food_rescue_depth_pct": reason_counts["food_rescue"] / total * 100,
+                "network_connect_depth_pct": reason_counts["network_connect"] / total * 100,
+                "risk_dominated_pct": _metric_mean(group, "search_is_risk_dominated") * 100,
+                "sequence_adjusted_pct": (
+                    _metric_mean(group, "search_is_sequence_adjusted") * 100
+                ),
+                "road_overbuild_pressure_pct": (
+                    pressure_counts["road_overbuild_penalty"] / total * 100
+                ),
+                "starving_pressure_pct": (
+                    pressure_counts["starving_turn_penalty"]
+                    + pressure_counts["starving_penalty"]
+                )
+                / total
+                * 100,
+            }
+        )
+    record_df = pd.DataFrame(rows)
+    if record_df.empty:
+        return record_df
+    value_cols = [
+        "rescue_pct",
+        "connect_pct",
+        "expand_pct",
+        "fill_pct",
+        "food_rescue_depth_pct",
+        "network_connect_depth_pct",
+        "risk_dominated_pct",
+        "sequence_adjusted_pct",
+        "road_overbuild_pressure_pct",
+        "starving_pressure_pct",
+    ]
+    return _summary_table(record_df, ["policy_variant"], value_cols)
+
+
 def build_search_depth_reason_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataFrame:
     if decision_df.empty or "search_depth_reason" not in decision_df:
         return pd.DataFrame()
@@ -659,6 +797,63 @@ def build_search_matchup_summary_from_macro_df(macro_df: pd.DataFrame) -> pd.Dat
         & (summary["median_score_gap_vs_random"] >= 0)
     ).astype(int)
     return summary.sort_values(["task7_acceptance_candidate", "same_map_win_rate"], ascending=False)
+
+
+def build_search_score_component_gap_summary_from_score_df(
+    score_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if score_df.empty or "ai_type" not in score_df:
+        return pd.DataFrame()
+    key_cols = ["seed", "map_size", "turn_limit", "map_difficulty"]
+    if any(column not in score_df for column in key_cols):
+        return pd.DataFrame()
+    component_cols = [
+        "total_score",
+        "city_score",
+        "connected_city_score",
+        "resource_ring_score",
+        "building_score",
+        "tech_score",
+        "building_utilization_score",
+        "resource_score",
+        "food_score",
+        "wood_score",
+        "ore_score",
+        "science_score",
+        "starving_network_penalty",
+        "fragmented_network_penalty",
+        "isolated_city_penalty",
+        "unproductive_road_penalty",
+    ]
+    component_cols = [column for column in component_cols if column in score_df]
+    if not component_cols:
+        return pd.DataFrame()
+
+    greedy_df = score_df[score_df["ai_type"] == GREEDY_LABEL][
+        [*key_cols, *component_cols]
+    ].copy()
+    search_df = score_df[score_df["ai_type"] == SEARCH_LABEL].copy()
+    if greedy_df.empty or search_df.empty:
+        return pd.DataFrame()
+    greedy_df = greedy_df.rename(
+        columns={column: f"greedy_{column}" for column in component_cols}
+    )
+    merged = search_df.merge(greedy_df, on=key_cols, how="left")
+    rows: list[dict[str, object]] = []
+    for policy_variant, group in merged.groupby(["policy_variant"], dropna=False):
+        row: dict[str, object] = {
+            "policy_variant": policy_variant,
+            "samples": len(group),
+        }
+        for column in component_cols:
+            greedy_column = f"greedy_{column}"
+            if greedy_column not in group:
+                continue
+            row[f"{column}_gap_mean"] = (
+                group[column].fillna(0) - group[greedy_column].fillna(0)
+            ).mean()
+        rows.append(row)
+    return pd.DataFrame(rows).sort_values(["policy_variant"])
 
 
 def build_map_df(records: list[RecordEntry]) -> pd.DataFrame:
@@ -1219,6 +1414,51 @@ def policy_anomaly_config_summary_from_df(anomaly_df: pd.DataFrame) -> pd.DataFr
     )
 
 
+def search_anomaly_cases_from_df(
+    anomaly_df: pd.DataFrame,
+    *,
+    limit: int = 30,
+) -> list[dict[str, object]]:
+    if anomaly_df.empty or "ai_type" not in anomaly_df:
+        return []
+    search_df = anomaly_df[
+        (anomaly_df["ai_type"] == SEARCH_LABEL)
+        & (anomaly_df.get("is_anomaly", pd.Series(dtype=float)).fillna(0) == 1)
+    ].copy()
+    if search_df.empty:
+        return []
+    for column in [
+        "is_negative_score",
+        "is_search_under_random",
+        "is_search_under_greedy",
+        "starvation_turns",
+        "score_gap_vs_random",
+        "score_gap_vs_greedy",
+        "final_score",
+    ]:
+        if column not in search_df:
+            search_df[column] = 0
+    search_df["search_case_priority"] = (
+        search_df["is_negative_score"].fillna(0) * 10_000
+        + search_df["is_search_under_random"].fillna(0) * 5_000
+        + search_df["starvation_turns"].fillna(0)
+    )
+    return (
+        search_df.sort_values(
+            [
+                "search_case_priority",
+                "score_gap_vs_greedy",
+                "score_gap_vs_random",
+                "final_score",
+                "record_id",
+            ],
+            ascending=[False, True, True, True, True],
+        )
+        .head(limit)
+        .to_dict("records")
+    )
+
+
 def render_policy_anomaly_row(row: dict[str, object], action_df: pd.DataFrame) -> list[str]:
     """Render a compact anomaly case from artifact rows."""
     lines = [
@@ -1257,6 +1497,69 @@ def render_policy_anomaly_row(row: dict[str, object], action_df: pd.DataFrame) -
     return lines
 
 
+def render_search_anomaly_row(
+    row: dict[str, object],
+    action_df: pd.DataFrame,
+    decision_df: pd.DataFrame,
+) -> list[str]:
+    record_id = int(_number(row.get("record_id"), 0))
+    lines = [
+        (
+            f"### Search Case record_id={record_id} seed={_number(row.get('seed'), 0):.0f} "
+            f"policy={row.get('policy_variant', '')} "
+            f"config={_number(row.get('map_size'), 0):.0f}/"
+            f"{_number(row.get('turn_limit'), 0):.0f}/{row.get('map_difficulty', '')}"
+        ),
+        (
+            f"- scores: search={_number(row.get('final_score'), 0):.0f}, "
+            f"greedy={_fmt_optional(row.get('greedy_baseline_score'))}, "
+            f"random={_fmt_optional(row.get('random_score'))}, "
+            f"gap_vs_greedy={_fmt_optional(row.get('score_gap_vs_greedy'))}, "
+            f"gap_vs_random={_fmt_optional(row.get('score_gap_vs_random'))}"
+        ),
+        (
+            f"- flags: negative={bool(_number(row.get('is_negative_score'), 0))}, "
+            f"starvation={bool(_number(row.get('has_starvation'), 0))}, "
+            f"under_random={bool(_number(row.get('is_search_under_random'), 0))}, "
+            f"under_greedy={bool(_number(row.get('is_search_under_greedy'), 0))}, "
+            f"first_starvation={_fmt_optional(row.get('first_starvation_turn'))}, "
+            f"starvation_turns={_number(row.get('starvation_turns'), 0):.0f}"
+        ),
+        "- first 20 decisions:",
+        "```",
+        render_search_decision_window_from_df(action_df, decision_df, record_id),
+        "```",
+        "- last 20 decisions:",
+        "```",
+        render_search_decision_window_from_df(
+            action_df,
+            decision_df,
+            record_id,
+            from_end=True,
+        ),
+        "```",
+        "",
+    ]
+    first_starvation = row.get("first_starvation_turn")
+    if not _is_missing(first_starvation):
+        lines.extend(
+            [
+                "- first starvation window:",
+                "```",
+                render_search_decision_window_from_df(
+                    action_df,
+                    decision_df,
+                    record_id,
+                    center_turn=int(_number(first_starvation, 0)),
+                    max_turns=9,
+                ),
+                "```",
+                "",
+            ]
+        )
+    return lines
+
+
 def render_action_log_from_df(
     action_df: pd.DataFrame,
     record_id: int,
@@ -1287,6 +1590,61 @@ def render_action_log_from_df(
     return "\n".join(lines)
 
 
+def render_search_decision_window_from_df(
+    action_df: pd.DataFrame,
+    decision_df: pd.DataFrame,
+    record_id: int,
+    max_turns: int = 20,
+    *,
+    from_end: bool = False,
+    center_turn: int | None = None,
+) -> str:
+    if action_df.empty or "record_id" not in action_df:
+        return "_No actions_"
+    actions = action_df[action_df["record_id"] == record_id].sort_values("action_index")
+    if actions.empty:
+        return "_No actions_"
+    if center_turn is not None:
+        lower = center_turn - max_turns // 2
+        upper = center_turn + max_turns // 2
+        actions = actions[(actions["turn"] >= lower) & (actions["turn"] <= upper)]
+    elif from_end:
+        actions = actions.tail(max_turns)
+    else:
+        actions = actions.head(max_turns)
+
+    decisions_by_turn: dict[int, dict[str, object]] = {}
+    if not decision_df.empty and "record_id" in decision_df:
+        decision_subset = decision_df[decision_df["record_id"] == record_id]
+        decisions_by_turn = {
+            int(_number(item.get("turn"), 0)): item
+            for item in decision_subset.to_dict("records")
+        }
+
+    lines = []
+    for action in actions.to_dict("records"):
+        turn = int(_number(action.get("turn"), 0))
+        decision = decisions_by_turn.get(turn, {})
+        coord = (
+            f"({_fmt_optional(action.get('x'))},{_fmt_optional(action.get('y'))})"
+            if not _is_missing(action.get("x"))
+            else "-"
+        )
+        lines.append(
+            f"  T{turn:>3} | {str(action.get('action_type', '')):18} | coord={coord:8} | "
+            f"mode={decision.get('search_mode', '-') or '-':8} | "
+            f"depth={_fmt_optional(decision.get('search_depth')):>3} | "
+            f"reason={decision.get('search_depth_reason', '-') or '-':15} | "
+            f"pressure={decision.get('search_dominant_pressure', '-') or '-':24} | "
+            f"rank={_fmt_optional(decision.get('search_root_chosen_rank')):>3} | "
+            f"margin={_fmt_optional(decision.get('search_root_value_margin')):>6} | "
+            f"d_food={_fmt_optional(decision.get('search_delta_food_pressure')):>4} | "
+            f"d_conn={_fmt_optional(decision.get('search_delta_connected_city_count')):>4} | "
+            f"road_redundant={_fmt_optional(decision.get('search_road_is_redundant'))}"
+        )
+    return "\n".join(lines) if lines else "_No actions_"
+
+
 def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
     """Generate a report directly from artifact tables."""
     macro_df = frames.get("macro", pd.DataFrame())
@@ -1306,9 +1664,18 @@ def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
     search_depth_reason_summary = build_search_depth_reason_summary_from_decision_df(decision_df)
     search_pressure_summary = build_search_pressure_summary_from_decision_df(decision_df)
     search_matchup_summary = build_search_matchup_summary_from_macro_df(macro_df)
+    search_candidate_health_summary = build_search_candidate_health_summary_from_decision_df(
+        decision_df
+    )
+    search_road_quality_summary = build_search_road_quality_summary_from_decision_df(decision_df)
+    search_record_profile_summary = build_search_record_profile_summary_from_decision_df(
+        decision_df
+    )
+    search_score_gap_summary = build_search_score_component_gap_summary_from_score_df(score_df)
     anomaly_df = build_policy_anomaly_df_from_macro(macro_df)
     anomaly_summary = policy_anomaly_summary_from_df(anomaly_df)
     anomaly_config_summary = policy_anomaly_config_summary_from_df(anomaly_df)
+    search_anomaly_cases = search_anomaly_cases_from_df(anomaly_df)
     anomaly_cases = (
         anomaly_df[anomaly_df["is_anomaly"] == 1]
         .sort_values(["policy_variant", "seed", "record_id"])
@@ -1551,6 +1918,22 @@ def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
         "",
         make_table(search_matchup_summary),
         "",
+        "### 7.6 Search Candidate Health Summary",
+        "",
+        make_table(search_candidate_health_summary),
+        "",
+        "### 7.7 Search Road Quality Summary",
+        "",
+        make_table(search_road_quality_summary),
+        "",
+        "### 7.8 Search Record Profile Summary",
+        "",
+        make_table(search_record_profile_summary),
+        "",
+        "### 7.9 Search Score Component Gap vs Greedy",
+        "",
+        make_table(search_score_gap_summary),
+        "",
         "## 8. Network And Risk Summary",
         "",
         make_table(network_summary),
@@ -1567,9 +1950,21 @@ def generate_report_from_artifacts(frames: dict[str, pd.DataFrame]) -> str:
         "",
         make_table(anomaly_config_summary),
         "",
-        "## 11. Anomaly Cases",
+        "### 10.2 Search Anomaly Cases",
         "",
     ]
+    if not search_anomaly_cases:
+        lines.extend(["_No data_", ""])
+    else:
+        for row in search_anomaly_cases:
+            lines.extend(render_search_anomaly_row(row, action_df, decision_df))
+
+    lines.extend(
+        [
+            "## 11. Anomaly Cases",
+            "",
+        ]
+    )
     if not anomaly_cases:
         lines.extend(["_No data_", ""])
     else:
@@ -1619,16 +2014,27 @@ def generate_report(records: list[RecordEntry]) -> str:
     turn_score_df = build_turn_score_breakdown_df(records)
     behavior_df = build_behavior_df(records)
     decision_df = build_decision_context_df(records)
+    action_df = build_action_df(records)
     stage_df = build_stage_summary_from_decision_df(decision_df)
     search_summary = build_search_summary_from_decision_df(decision_df)
     search_mode_summary = build_search_mode_summary_from_decision_df(decision_df)
     search_depth_reason_summary = build_search_depth_reason_summary_from_decision_df(decision_df)
     search_pressure_summary = build_search_pressure_summary_from_decision_df(decision_df)
     search_matchup_summary = build_search_matchup_summary_from_macro_df(macro_df)
+    search_candidate_health_summary = build_search_candidate_health_summary_from_decision_df(
+        decision_df
+    )
+    search_road_quality_summary = build_search_road_quality_summary_from_decision_df(decision_df)
+    search_record_profile_summary = build_search_record_profile_summary_from_decision_df(
+        decision_df
+    )
+    search_score_gap_summary = build_search_score_component_gap_summary_from_score_df(score_df)
     map_df = build_map_df(records)
     anomaly_cases = collect_policy_anomaly_cases(records)
     anomaly_summary = build_policy_anomaly_summary_df(records)
     anomaly_config_summary = build_policy_anomaly_config_summary_df(records)
+    anomaly_df = build_policy_anomaly_df(records)
+    search_anomaly_cases = search_anomaly_cases_from_df(anomaly_df)
     samples = _sample_rows(records)
 
     dataset_overview = pd.DataFrame(
@@ -1851,6 +2257,22 @@ def generate_report(records: list[RecordEntry]) -> str:
         "",
         make_table(search_matchup_summary),
         "",
+        "### 7.6 Search Candidate Health Summary",
+        "",
+        make_table(search_candidate_health_summary),
+        "",
+        "### 7.7 Search Road Quality Summary",
+        "",
+        make_table(search_road_quality_summary),
+        "",
+        "### 7.8 Search Record Profile Summary",
+        "",
+        make_table(search_record_profile_summary),
+        "",
+        "### 7.9 Search Score Component Gap vs Greedy",
+        "",
+        make_table(search_score_gap_summary),
+        "",
         "## 8. Network And Risk Summary",
         "",
         make_table(network_summary),
@@ -1867,9 +2289,22 @@ def generate_report(records: list[RecordEntry]) -> str:
         "",
         make_table(anomaly_config_summary),
         "",
-        "## 11. Anomaly Cases",
+        "### 10.2 Search Anomaly Cases",
         "",
     ]
+
+    if not search_anomaly_cases:
+        lines.extend(["_No data_", ""])
+    else:
+        for row in search_anomaly_cases:
+            lines.extend(render_search_anomaly_row(row, action_df, decision_df))
+
+    lines.extend(
+        [
+            "## 11. Anomaly Cases",
+            "",
+        ]
+    )
 
     if not anomaly_cases:
         lines.extend(["_No data_", ""])

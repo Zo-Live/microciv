@@ -4,6 +4,7 @@ import csv
 import importlib.util
 import json
 import sys
+from concurrent.futures import Future
 from pathlib import Path
 
 from microciv.game.enums import PolicyType
@@ -20,7 +21,7 @@ SPEC.loader.exec_module(batch_autoplay)
 class _FakeProcessPoolExecutor:
     def __init__(self, *, max_workers: int) -> None:
         self.max_workers = max_workers
-        self.map_calls: list[tuple[object, list[object], int]] = []
+        self.submit_calls: list[tuple[object, tuple[object, ...]]] = []
 
     def __enter__(self) -> _FakeProcessPoolExecutor:
         return self
@@ -28,17 +29,16 @@ class _FakeProcessPoolExecutor:
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         del exc_type, exc, tb
 
-    def map(
+    def submit(
         self,
         fn: object,
-        iterable: object,
-        *,
-        chunksize: int,
-    ) -> list[object]:
-        items = list(iterable)
-        self.map_calls.append((fn, items, chunksize))
+        *args: object,
+    ) -> Future[object]:
+        self.submit_calls.append((fn, args))
         assert callable(fn)
-        return [fn(item) for item in items]
+        future: Future[object] = Future()
+        future.set_result(fn(*args))
+        return future
 
 
 def _make_record(*, seed: int, policy_type: PolicyType, final_score: int) -> RecordEntry:
@@ -181,11 +181,14 @@ def test_batch_autoplay_fast_mode_exports_artifacts(monkeypatch, tmp_path) -> No
     artifact_dir = tmp_path / "greedy_16_80_normal_1_1_fast_artifacts"
     summary_path = tmp_path / "greedy_16_80_normal_1_1_fast_summary.json"
     assert artifact_dir.exists()
-    assert (artifact_dir / "macro.jsonl").exists()
+    assert (artifact_dir / "macro_part_000000.jsonl").exists()
+    assert (artifact_dir / "artifact_manifest.json").exists()
     assert not (tmp_path / "greedy_16_80_normal_1_1_fast.json").exists()
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["effective_artifact_mode"] == "fast"
     assert summary["artifact_file_format"] == "jsonl"
+    assert summary["batch_count"] == 1
+    assert summary["effective_chunksize"] == 8
 
 
 def test_build_batch_tasks_preserves_seed_order() -> None:
@@ -222,6 +225,25 @@ def test_build_batch_tasks_preserves_search_parameters() -> None:
     assert all(task.search_max_depth == 5 for task in tasks)
     assert all(task.search_beam_width == 3 for task in tasks)
     assert all(task.search_candidate_limit == 5 for task in tasks)
+
+
+def test_batch_autoplay_auto_chunksize_is_bounded() -> None:
+    assert (
+        batch_autoplay._effective_chunksize(
+            "auto",
+            total_tasks=1000,
+            workers=4,
+        )
+        == 32
+    )
+    assert (
+        batch_autoplay._effective_chunksize(
+            "auto",
+            total_tasks=10_000,
+            workers=4,
+        )
+        == 64
+    )
 
 
 def test_batch_autoplay_parallel_path_uses_process_pool(monkeypatch, tmp_path) -> None:
@@ -262,10 +284,11 @@ def test_batch_autoplay_parallel_path_uses_process_pool(monkeypatch, tmp_path) -
     exit_code = batch_autoplay.main()
 
     assert exit_code == 0
-    assert len(fake_executor.map_calls) == 1
-    _, tasks, chunksize = fake_executor.map_calls[0]
-    assert chunksize == 4
-    assert [task.seed for task in tasks] == [8, 9, 10]
+    assert len(fake_executor.submit_calls) == 1
+    _, args = fake_executor.submit_calls[0]
+    batch = args[0]
+    assert isinstance(batch, batch_autoplay.BatchGameTaskBatch)
+    assert [task.seed for task in batch.tasks] == [8, 9, 10]
 
     summary = json.loads(
         (tmp_path / "random_16_80_normal_8_10_parallel_summary.json").read_text(encoding="utf-8")
@@ -280,6 +303,8 @@ def test_batch_autoplay_parallel_path_uses_process_pool(monkeypatch, tmp_path) -
     assert summary["execution_mode"] == "parallel"
     assert summary["workers"] == 2
     assert summary["chunksize"] == 4
+    assert summary["effective_chunksize"] == 4
+    assert summary["batch_count"] == 1
 
 
 def test_batch_autoplay_exports_search_outputs_with_search_config(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from microciv.ai.policy import Policy, simulate_action
@@ -150,14 +150,25 @@ class SearchNode:
     leaf_evaluation: SearchLeafEvaluation
 
 
+@dataclass(slots=True, frozen=True)
+class RootCandidateDiagnostic:
+    action: Action
+    value: int
+
+
 @dataclass(slots=True)
 class SearchTelemetry:
     nodes_expanded: int = 0
     candidates_considered: int = 0
     leaf_count: int = 0
+    root_legal_action_count: int = 0
     root_profile: SearchPositionProfile | None = None
     root_legal_counts_by_type: dict[ActionType, int] | None = None
     root_candidate_counts_by_type: dict[ActionType, int] | None = None
+    root_safe_city_candidate_count: int = 0
+    root_effective_connection_road_candidate_count: int = 0
+    root_rescue_candidate_count: int = 0
+    root_candidate_diagnostics: list[RootCandidateDiagnostic] = field(default_factory=list)
 
 
 class SearchPolicy(Policy):
@@ -242,6 +253,18 @@ class SearchPolicy(Policy):
         root_candidate_counts = telemetry.root_candidate_counts_by_type or {
             action_type: 0 for action_type in ActionType
         }
+        root_candidate_diagnostics = _root_candidate_diagnostics(
+            telemetry.root_candidate_diagnostics,
+            chosen_action=action,
+        )
+        action_delta_diagnostics = _action_delta_diagnostics(state, action)
+        legal_action_count = telemetry.root_legal_action_count
+        root_candidate_total = sum(root_candidate_counts.values())
+        candidate_cut_ratio = (
+            (legal_action_count - root_candidate_total) / legal_action_count
+            if legal_action_count
+            else 0.0
+        )
 
         decision = PlannedSearchDecision(
             action=action,
@@ -275,6 +298,14 @@ class SearchPolicy(Policy):
                     ActionType.RESEARCH_TECH
                 ],
                 "search_root_candidate_skip_count": root_candidate_counts[ActionType.SKIP],
+                "search_root_candidate_cut_ratio": candidate_cut_ratio,
+                "search_root_safe_city_candidate_count": (
+                    telemetry.root_safe_city_candidate_count
+                ),
+                "search_root_effective_connection_road_candidate_count": (
+                    telemetry.root_effective_connection_road_candidate_count
+                ),
+                "search_root_rescue_candidate_count": telemetry.root_rescue_candidate_count,
                 "search_nodes_expanded": telemetry.nodes_expanded,
                 "search_candidates_considered": telemetry.candidates_considered,
                 "search_leaf_count": telemetry.leaf_count,
@@ -299,6 +330,8 @@ class SearchPolicy(Policy):
                 "search_best_food_pressure": best_evaluation.food_pressure,
                 "search_best_starving_turns": best_evaluation.starving_turns,
                 "search_best_sequence": best_sequence,
+                **root_candidate_diagnostics,
+                **action_delta_diagnostics,
             },
         )
         self._cache_key = cache_key
@@ -351,8 +384,16 @@ class SearchPolicy(Policy):
                 candidate_set = generate_search_candidates(node.state, candidate_config)
                 if not node.sequence and telemetry.root_profile is None:
                     telemetry.root_profile = candidate_set.profile
+                    telemetry.root_legal_action_count = candidate_set.legal_action_count
                     telemetry.root_legal_counts_by_type = candidate_set.legal_counts_by_type
                     telemetry.root_candidate_counts_by_type = candidate_set.candidate_counts_by_type
+                    telemetry.root_safe_city_candidate_count = (
+                        candidate_set.safe_city_candidate_count
+                    )
+                    telemetry.root_effective_connection_road_candidate_count = (
+                        candidate_set.effective_connection_road_candidate_count
+                    )
+                    telemetry.root_rescue_candidate_count = candidate_set.rescue_candidate_count
                 telemetry.nodes_expanded += 1
                 telemetry.candidates_considered += len(candidate_set.candidates)
 
@@ -373,6 +414,13 @@ class SearchPolicy(Policy):
                         sequence_adjustment=sequence_adjustment,
                         leaf_evaluation=leaf_evaluation,
                     )
+                    if not node.sequence:
+                        telemetry.root_candidate_diagnostics.append(
+                            RootCandidateDiagnostic(
+                                action=candidate.action,
+                                value=child.value,
+                            )
+                        )
                     next_nodes.append(child)
                     best_node = _better_node(best_node, child)
 
@@ -420,6 +468,99 @@ def _require_positive(value: int, field_name: str) -> int:
     if value < 1:
         raise ValueError(f"{field_name} must be at least 1")
     return value
+
+
+def _root_candidate_diagnostics(
+    candidates: list[RootCandidateDiagnostic],
+    *,
+    chosen_action: Action,
+) -> dict[str, object]:
+    result: dict[str, object] = {
+        "search_root_chosen_action_type": chosen_action.action_type.value,
+    }
+    for action_type in ActionType:
+        values = [
+            candidate.value
+            for candidate in candidates
+            if candidate.action.action_type is action_type
+        ]
+        result[f"search_root_best_{action_type.value}_value"] = max(values) if values else None
+
+    if not candidates:
+        return result
+
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (-candidate.value, _action_sort_key(candidate.action)),
+    )
+    best_candidate = ranked[0]
+    chosen_rank: int | None = None
+    chosen_value: int | None = None
+    for index, candidate in enumerate(ranked, start=1):
+        if candidate.action == chosen_action:
+            chosen_rank = index
+            chosen_value = candidate.value
+            break
+
+    result.update(
+        {
+            "search_root_chosen_rank": chosen_rank,
+            "search_root_chosen_value": chosen_value,
+            "search_root_best_value": best_candidate.value,
+            "search_root_value_margin": (
+                best_candidate.value - chosen_value if chosen_value is not None else None
+            ),
+            "search_root_best_action_type": best_candidate.action.action_type.value,
+        }
+    )
+    return result
+
+
+def _action_delta_diagnostics(state: GameState, action: Action) -> dict[str, object]:
+    before = build_search_position_profile(state)
+    after_state = simulate_action(state, action)
+    after = build_search_position_profile(after_state)
+    road_connected_city_delta = after.connected_city_count - before.connected_city_count
+    road_merges_networks = (
+        action.action_type is ActionType.BUILD_ROAD and after.network_count < before.network_count
+    )
+    road_after_full_connectivity = (
+        action.action_type is ActionType.BUILD_ROAD
+        and before.city_count >= 2
+        and before.connected_city_count >= before.city_count
+    )
+    road_is_redundant = (
+        action.action_type is ActionType.BUILD_ROAD
+        and not road_merges_networks
+        and road_connected_city_delta <= 0
+    )
+    return {
+        "search_delta_starving_network_count": (
+            after.starving_network_count - before.starving_network_count
+        ),
+        "search_delta_food_pressure": after.food_pressure - before.food_pressure,
+        "search_delta_isolated_city_count": after.isolated_city_count - before.isolated_city_count,
+        "search_delta_network_count": after.network_count - before.network_count,
+        "search_delta_connected_city_count": (
+            after.connected_city_count - before.connected_city_count
+        ),
+        "search_delta_road_overbuild": _road_overbuild_metric(after_state)
+        - _road_overbuild_metric(state),
+        "search_road_merges_networks": road_merges_networks,
+        "search_road_connected_city_delta": (
+            road_connected_city_delta if action.action_type is ActionType.BUILD_ROAD else 0
+        ),
+        "search_road_is_redundant": road_is_redundant,
+        "search_road_after_full_connectivity": road_after_full_connectivity,
+    }
+
+
+def _road_overbuild_metric(state: GameState) -> int:
+    city_count_value = len(state.cities)
+    if city_count_value <= 0:
+        return len(state.roads)
+    road_allowance = max(2, city_count_value // 2)
+    return max(0, len(state.roads) - road_allowance)
 
 
 def _sequence_adjustment(

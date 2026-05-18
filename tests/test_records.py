@@ -379,6 +379,28 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         search_best_total_science=9,
         search_best_food_pressure=0,
         search_best_starving_turns=0,
+        search_root_chosen_rank=2,
+        search_root_chosen_value=12000,
+        search_root_best_value=13000,
+        search_root_value_margin=1000,
+        search_root_best_action_type="build_road",
+        search_root_chosen_action_type="build_city",
+        search_root_best_build_city_value=12000,
+        search_root_best_build_road_value=13000,
+        search_root_candidate_cut_ratio=0.25,
+        search_root_safe_city_candidate_count=2,
+        search_root_effective_connection_road_candidate_count=1,
+        search_root_rescue_candidate_count=3,
+        search_delta_starving_network_count=-1,
+        search_delta_food_pressure=-4,
+        search_delta_isolated_city_count=0,
+        search_delta_network_count=-1,
+        search_delta_connected_city_count=2,
+        search_delta_road_overbuild=0,
+        search_road_merges_networks=True,
+        search_road_connected_city_delta=2,
+        search_road_is_redundant=False,
+        search_road_after_full_connectivity=False,
         search_best_sequence=[
             RecordSearchActionSnapshot(action_type="build_city", x=1, y=2),
             RecordSearchActionSnapshot(
@@ -409,6 +431,16 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     assert restored.search_best_connected_city_count == 2
     assert restored.search_best_total_food == 42
     assert restored.search_best_food_pressure == 0
+    assert restored.search_root_chosen_rank == 2
+    assert restored.search_root_best_value == 13000
+    assert restored.search_root_value_margin == 1000
+    assert restored.search_root_best_action_type == "build_road"
+    assert restored.search_root_candidate_cut_ratio == 0.25
+    assert restored.search_root_safe_city_candidate_count == 2
+    assert restored.search_delta_food_pressure == -4
+    assert restored.search_delta_connected_city_count == 2
+    assert restored.search_road_merges_networks is True
+    assert restored.search_road_is_redundant is False
     assert [action.action_type for action in restored.search_best_sequence] == [
         "build_city",
         "research_tech",
