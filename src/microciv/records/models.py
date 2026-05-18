@@ -80,6 +80,8 @@ def _require_int(payload: Mapping[str, object], field_name: str) -> int:
 def _optional_int(payload: Mapping[str, object], field_name: str) -> int | None:
     if field_name not in payload:
         return None
+    if payload[field_name] is None:
+        return None
     return _require_int(payload, field_name)
 
 
@@ -106,6 +108,8 @@ def _require_bool(payload: Mapping[str, object], field_name: str) -> bool:
 def _optional_bool(payload: Mapping[str, object], field_name: str) -> bool | None:
     if field_name not in payload:
         return None
+    if payload[field_name] is None:
+        return None
     return _require_bool(payload, field_name)
 
 
@@ -127,6 +131,8 @@ def _require_str(payload: Mapping[str, object], field_name: str) -> str:
 
 def _optional_str(payload: Mapping[str, object], field_name: str) -> str | None:
     if field_name not in payload:
+        return None
+    if payload[field_name] is None:
         return None
     return _require_str(payload, field_name)
 

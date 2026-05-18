@@ -12,6 +12,7 @@ from microciv.game.models import (
     Network,
     ResourcePool,
     Road,
+    Stats,
     Tile,
 )
 from microciv.records.export import export_records_json
@@ -207,6 +208,58 @@ def test_record_entry_accepts_search_ai_type_roundtrip() -> None:
 
     assert entry.ai_type == "Search"
     assert restored.ai_type == "Search"
+
+
+def test_record_entry_accepts_explicit_none_optional_decision_fields() -> None:
+    state = build_completed_autoplay_state(policy_type=PolicyType.SEARCH)
+    state.stats.decision_contexts = [
+        {
+            "turn": 1,
+            "legal_actions_count": 1,
+            "legal_build_city_count": 0,
+            "legal_build_road_count": 0,
+            "legal_build_building_count": 0,
+            "legal_research_tech_count": 0,
+            "legal_skip_count": 1,
+            "chosen_action_type": None,
+            "search_depth": None,
+            "search_dominant_pressure": None,
+            "search_is_risk_dominated": None,
+        }
+    ]
+
+    entry = RecordEntry.from_game_state(
+        record_id=4,
+        timestamp="2026-04-09T12:37:56+08:00",
+        state=state,
+    )
+
+    context = entry.decision_contexts[0]
+    assert context.chosen_action_type is None
+    assert context.search_depth is None
+    assert context.search_dominant_pressure is None
+    assert context.search_is_risk_dominated is None
+
+
+def test_stats_record_decision_context_omits_none_policy_context_values() -> None:
+    stats = Stats()
+
+    stats.record_decision_context(
+        turn=1,
+        legal_actions_count=1,
+        legal_build_city_count=0,
+        legal_build_road_count=0,
+        legal_build_building_count=0,
+        legal_research_tech_count=0,
+        legal_skip_count=1,
+        policy_context={
+            "search_depth": 3,
+            "search_dominant_pressure": None,
+        },
+    )
+
+    assert stats.decision_contexts[0]["search_depth"] == 3
+    assert "search_dominant_pressure" not in stats.decision_contexts[0]
 
 
 def test_record_store_can_delete_and_clear_records(tmp_path) -> None:

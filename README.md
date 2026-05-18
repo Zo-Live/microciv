@@ -69,7 +69,7 @@ python scripts/batch_autoplay.py -n <games> --policy <policy> --label <tag>
 # 大规模参数网格数据集生成（大样本推荐输出 artifact 目录 / manifest）
 python scripts/generate_dataset.py -n <games-per-combo> --label <tag>
 
-# 任务 7 / 大规模调参推荐路径：跳过完整 Records JSON，直接写 artifact
+# 大规模调参推荐路径：跳过完整 Records JSON，直接写 artifact
 python scripts/generate_dataset.py -n <games-per-combo> --label <tag> \
   --artifact-mode fast --artifact-format parquet
 

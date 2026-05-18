@@ -342,7 +342,9 @@ class Stats:
         if chosen_action_type is not None:
             ctx["chosen_action_type"] = chosen_action_type
         if policy_context:
-            ctx.update(policy_context)
+            ctx.update(
+                key_value for key_value in policy_context.items() if key_value[1] is not None
+            )
         self.decision_contexts.append(ctx)
 
 

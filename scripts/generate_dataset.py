@@ -7,7 +7,7 @@ import csv
 import os
 import shutil
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from itertools import product
@@ -53,6 +53,7 @@ DEFAULT_FULL_JSON_THRESHOLD: Final[int] = 1000
 AUTO_CHUNKSIZE: Final[str] = "auto"
 AUTO_CHUNKSIZE_TARGET_BATCHES_PER_WORKER: Final[int] = 8
 AUTO_CHUNKSIZE_MAX: Final[int] = 64
+DEFAULT_PROGRESS_INTERVAL_SECONDS: Final[float] = 10.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +123,13 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be greater than 0")
+    return parsed
+
+
 def _chunksize_arg(value: str) -> int | str:
     if value == AUTO_CHUNKSIZE:
         return AUTO_CHUNKSIZE
@@ -136,7 +144,11 @@ def _default_worker_count() -> int:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate large MicroCiv dataset.")
     parser.add_argument(
-        "-n", "--games-per-combo", type=int, default=10, help="Games per parameter combo."
+        "-n",
+        "--games-per-combo",
+        type=_positive_int,
+        default=10,
+        help="Games per parameter combo.",
     )
     parser.add_argument("--seed-start", type=int, default=1, help="Global starting seed offset.")
     parser.add_argument(
@@ -237,6 +249,15 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "Maximum task count for auto mode to keep full legacy JSON "
             f"(default: {DEFAULT_FULL_JSON_THRESHOLD})."
+        ),
+    )
+    parser.add_argument(
+        "--progress-interval-seconds",
+        type=_positive_float,
+        default=DEFAULT_PROGRESS_INTERVAL_SECONDS,
+        help=(
+            "Minimum seconds between progress heartbeats "
+            f"(default: {DEFAULT_PROGRESS_INTERVAL_SECONDS:g})."
         ),
     )
     return parser.parse_args()
@@ -755,22 +776,61 @@ def _print_progress(
     total: int,
     started_at: float,
     mode: str,
+    completed_batches: int | None = None,
+    total_batches: int | None = None,
+    running_batches: int | None = None,
+    pending_batches: int | None = None,
+    previous_completed: int | None = None,
+    previous_elapsed: float | None = None,
+    worker_cpu_seconds_total: float = 0.0,
+    worker_elapsed_seconds_total: float = 0.0,
+    workers: int = 1,
 ) -> None:
     elapsed = perf_counter() - started_at
-    average = elapsed / max(completed, 1)
-    remaining = average * max(total - completed, 0)
+    average = elapsed / completed if completed else 0.0
+    remaining = average * max(total - completed, 0) if completed else 0.0
+    eta_text = f"{remaining:.2f}s" if completed else "unknown"
+    throughput = completed / max(elapsed, 0.000001)
+    recent_rate = throughput
+    if previous_completed is not None and previous_elapsed is not None:
+        recent_completed = max(completed - previous_completed, 0)
+        recent_elapsed = elapsed - previous_elapsed
+        recent_rate = recent_completed / max(recent_elapsed, 0.000001)
+    batch_text = ""
+    if completed_batches is not None and total_batches is not None:
+        batch_text = f", batches={completed_batches}/{total_batches}"
+    worker_text = ""
+    if running_batches is not None and pending_batches is not None:
+        worker_text = f", running_batches={running_batches}, pending_batches={pending_batches}"
+    parallel_efficiency_pct = (
+        worker_cpu_seconds_total / max(elapsed * max(workers, 1), 0.000001) * 100
+    )
     print(
-        f"[{mode}] {completed}/{total} games complete in {elapsed:.2f}s "
-        f"({average:.3f}s per game, eta {remaining:.2f}s)",
+        f"[{mode}] {completed}/{total} games complete{batch_text}{worker_text} "
+        f"in {elapsed:.2f}s (avg {average:.3f}s/game, "
+        f"throughput {throughput:.2f} games/s, recent {recent_rate:.2f} games/s, "
+        f"eta {eta_text}, worker_cpu {worker_cpu_seconds_total:.2f}s, "
+        f"worker_elapsed {worker_elapsed_seconds_total:.2f}s, "
+        f"parallel_eff {parallel_efficiency_pct:.1f}%)",
         file=sys.stderr,
     )
 
 
-def _should_print_progress(completed: int, previous_completed: int, total: int) -> bool:
+def _should_print_progress(
+    *,
+    completed: int,
+    previous_completed: int,
+    total: int,
+    now: float,
+    last_printed_at: float,
+    progress_interval_seconds: float,
+) -> bool:
     if completed == total:
         return True
     progress_interval = _progress_interval(total)
-    return completed // progress_interval > previous_completed // progress_interval
+    if completed // progress_interval > previous_completed // progress_interval:
+        return True
+    return now - last_printed_at >= progress_interval_seconds
 
 
 def _collect_batch_results(
@@ -792,22 +852,63 @@ def _collect_batch_results(
     )
 
 
-def run_task_batches_serial(batches: list[GameTaskBatch], *, total_tasks: int) -> DatasetRunResult:
+def _batch_failure_message(batch: GameTaskBatch, exc: BaseException) -> str:
+    task_indexes = [task.task_index for task in batch.tasks]
+    task_range = (
+        f"{min(task_indexes)}-{max(task_indexes)}" if task_indexes else "empty"
+    )
+    return (
+        f"Dataset worker batch {batch.batch_index} failed "
+        f"(tasks={task_range}, size={len(batch.tasks)}): {exc}"
+    )
+
+
+def run_task_batches_serial(
+    batches: list[GameTaskBatch],
+    *,
+    total_tasks: int,
+    progress_interval_seconds: float,
+) -> DatasetRunResult:
     batch_results: list[WorkerBatchResult] = []
     started_at = perf_counter()
+    last_printed_at = started_at
+    last_printed_completed = 0
+    last_printed_elapsed = 0.0
     completed = 0
     for batch in batches:
         previous_completed = completed
-        result = run_game_batch(batch)
+        try:
+            result = run_game_batch(batch)
+        except Exception as exc:
+            raise RuntimeError(_batch_failure_message(batch, exc)) from exc
         batch_results.append(result)
         completed += result.completed
-        if _should_print_progress(completed, previous_completed, total_tasks):
+        now = perf_counter()
+        if _should_print_progress(
+            completed=completed,
+            previous_completed=previous_completed,
+            total=total_tasks,
+            now=now,
+            last_printed_at=last_printed_at,
+            progress_interval_seconds=progress_interval_seconds,
+        ):
             _print_progress(
                 completed=completed,
                 total=total_tasks,
                 started_at=started_at,
                 mode="serial",
+                completed_batches=len(batch_results),
+                total_batches=len(batches),
+                previous_completed=last_printed_completed,
+                previous_elapsed=last_printed_elapsed,
+                worker_cpu_seconds_total=sum(item.worker_cpu_seconds for item in batch_results),
+                worker_elapsed_seconds_total=sum(
+                    item.worker_elapsed_seconds for item in batch_results
+                ),
             )
+            last_printed_at = now
+            last_printed_completed = completed
+            last_printed_elapsed = now - started_at
     return _collect_batch_results(
         batch_results,
         run_elapsed_seconds=perf_counter() - started_at,
@@ -819,26 +920,66 @@ def run_task_batches_parallel(
     *,
     total_tasks: int,
     workers: int,
+    progress_interval_seconds: float,
 ) -> DatasetRunResult:
     batch_results: list[WorkerBatchResult] = []
     started_at = perf_counter()
+    last_printed_at = started_at
+    last_printed_completed = 0
+    last_printed_elapsed = 0.0
     completed = 0
     with ProcessPoolExecutor(max_workers=workers) as executor:
-        future_to_batch_index = {
-            executor.submit(run_game_batch, batch): batch.batch_index for batch in batches
-        }
-        for future in as_completed(future_to_batch_index):
+        future_to_batch = {executor.submit(run_game_batch, batch): batch for batch in batches}
+        pending: set[Future[WorkerBatchResult]] = set(future_to_batch)
+        while pending:
+            done, pending = wait(
+                pending,
+                timeout=progress_interval_seconds,
+                return_when=FIRST_COMPLETED,
+            )
             previous_completed = completed
-            result = future.result()
-            batch_results.append(result)
-            completed += result.completed
-            if _should_print_progress(completed, previous_completed, total_tasks):
+            for future in done:
+                batch = future_to_batch[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    for pending_future in pending:
+                        pending_future.cancel()
+                    raise RuntimeError(_batch_failure_message(batch, exc)) from exc
+                batch_results.append(result)
+                completed += result.completed
+            now = perf_counter()
+            if _should_print_progress(
+                completed=completed,
+                previous_completed=previous_completed,
+                total=total_tasks,
+                now=now,
+                last_printed_at=last_printed_at,
+                progress_interval_seconds=progress_interval_seconds,
+            ):
+                running_batches = sum(1 for pending_future in pending if pending_future.running())
                 _print_progress(
                     completed=completed,
                     total=total_tasks,
                     started_at=started_at,
                     mode="parallel",
+                    completed_batches=len(batch_results),
+                    total_batches=len(batches),
+                    running_batches=running_batches,
+                    pending_batches=len(pending) - running_batches,
+                    previous_completed=last_printed_completed,
+                    previous_elapsed=last_printed_elapsed,
+                    worker_cpu_seconds_total=sum(
+                        item.worker_cpu_seconds for item in batch_results
+                    ),
+                    worker_elapsed_seconds_total=sum(
+                        item.worker_elapsed_seconds for item in batch_results
+                    ),
+                    workers=workers,
                 )
+                last_printed_at = now
+                last_printed_completed = completed
+                last_printed_elapsed = now - started_at
     return _collect_batch_results(
         batch_results,
         run_elapsed_seconds=perf_counter() - started_at,
@@ -952,42 +1093,6 @@ def _write_partitioned_artifact_manifest(
     return artifact_file_format
 
 
-def run_tasks_serial(tasks: list[GameTask]) -> list[RecordEntry]:
-    records: list[RecordEntry] = []
-    progress_interval = _progress_interval(len(tasks))
-    started_at = perf_counter()
-    for index, task in enumerate(tasks, start=1):
-        records.append(run_game_task(task))
-        if index == len(tasks) or index % progress_interval == 0:
-            _print_progress(completed=index, total=len(tasks), started_at=started_at, mode="serial")
-    return records
-
-
-def run_tasks_parallel(
-    tasks: list[GameTask],
-    *,
-    workers: int,
-    chunksize: int,
-) -> list[RecordEntry]:
-    records: list[RecordEntry] = []
-    progress_interval = _progress_interval(len(tasks))
-    started_at = perf_counter()
-    with ProcessPoolExecutor(max_workers=workers) as executor:
-        for index, record in enumerate(
-            executor.map(run_game_task, tasks, chunksize=chunksize),
-            start=1,
-        ):
-            records.append(record)
-            if index == len(tasks) or index % progress_interval == 0:
-                _print_progress(
-                    completed=index,
-                    total=len(tasks),
-                    started_at=started_at,
-                    mode="parallel",
-                )
-    return records
-
-
 def main() -> int:
     args = _parse_args()
     output_dir: Path = args.output_dir
@@ -1008,12 +1113,8 @@ def main() -> int:
 
     param_grid = {
         "policy": _parse_csv_values(args.policies, field_name="policies"),
-        "map_size": [
-            int(item) for item in _parse_csv_values(args.map_sizes, field_name="map_sizes")
-        ],
-        "turn_limit": [
-            int(item) for item in _parse_csv_values(args.turn_limits, field_name="turn_limits")
-        ],
+        "map_size": _parse_csv_int_values(args.map_sizes, field_name="map_sizes"),
+        "turn_limit": _parse_csv_int_values(args.turn_limits, field_name="turn_limits"),
         "map_difficulty": _parse_csv_values(args.difficulties, field_name="difficulties"),
     }
     search_param_grid = {
@@ -1056,6 +1157,10 @@ def main() -> int:
         search_candidate_limits=search_candidate_limits,
     )
     total_games = len(tasks)
+    if total_games < 1:
+        raise ValueError(
+            "Dataset task plan is empty. Check --policies and Search depth/max-depth values."
+        )
     run_tag = args.label.strip().replace(" ", "_")
     base_name = "dataset"
     if run_tag:
@@ -1098,7 +1203,7 @@ def main() -> int:
     print(
         f"Execution mode: {execution_mode} (workers={args.workers}, "
         f"chunksize={args.chunksize}, effective_chunksize={effective_chunksize}, "
-        f"batches={len(batches)})",
+        f"batches={len(batches)}, progress_interval={args.progress_interval_seconds:g}s)",
         file=sys.stderr,
     )
     print(
@@ -1109,12 +1214,17 @@ def main() -> int:
 
     try:
         run_result = (
-            run_task_batches_serial(batches, total_tasks=total_games)
+            run_task_batches_serial(
+                batches,
+                total_tasks=total_games,
+                progress_interval_seconds=args.progress_interval_seconds,
+            )
             if args.workers == 1
             else run_task_batches_parallel(
                 batches,
                 total_tasks=total_games,
                 workers=args.workers,
+                progress_interval_seconds=args.progress_interval_seconds,
             )
         )
 
@@ -1206,6 +1316,7 @@ def main() -> int:
             "workers": args.workers,
             "chunksize": args.chunksize,
             "effective_chunksize": effective_chunksize,
+            "progress_interval_seconds": args.progress_interval_seconds,
             "batch_count": len(batches),
             "execution_mode": execution_mode,
             "artifact_mode": args.artifact_mode,

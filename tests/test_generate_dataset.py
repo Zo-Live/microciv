@@ -7,6 +7,8 @@ import sys
 from concurrent.futures import Future
 from pathlib import Path
 
+import pytest
+
 from microciv.game.enums import PolicyType
 from microciv.records.models import RecordDatabase, RecordEntry
 
@@ -94,6 +96,31 @@ def _make_record(
         turn_elapsed_ms_avg=0.0,
         turn_elapsed_ms_max=0.0,
         session_elapsed_ms=0.0,
+    )
+
+
+def _make_task(index: int, *, policy_type: PolicyType = PolicyType.GREEDY) -> object:
+    return generate_dataset.GameTask(
+        task_index=index,
+        record_id=index + 1,
+        seed=index + 1,
+        policy_type=policy_type,
+        map_size=12,
+        turn_limit=30,
+        map_difficulty=generate_dataset.MapDifficulty.NORMAL,
+    )
+
+
+def _make_batch(batch_index: int, task_count: int = 1) -> object:
+    tasks = tuple(_make_task(index) for index in range(task_count))
+    return generate_dataset.GameTaskBatch(
+        batch_index=batch_index,
+        tasks=tasks,
+        output_dir=Path("/tmp"),
+        part_dir=Path("/tmp"),
+        artifact_dir=None,
+        artifact_format="jsonl",
+        effective_artifact_mode="compat",
     )
 
 
@@ -238,6 +265,8 @@ def test_generate_dataset_fast_mode_exports_artifacts_without_full_json(
             "fast",
             "--artifact-format",
             "jsonl",
+            "--progress-interval-seconds",
+            "2.5",
         ],
     )
 
@@ -257,6 +286,7 @@ def test_generate_dataset_fast_mode_exports_artifacts_without_full_json(
     assert manifest["dataset_json_path"] == ""
     assert manifest["artifact_dir"].endswith("dataset_fast_artifacts")
     assert manifest["effective_chunksize"] == 1
+    assert manifest["progress_interval_seconds"] == 2.5
 
     artifact_manifest = json.loads(
         (artifact_dir / "artifact_manifest.json").read_text(encoding="utf-8")
@@ -320,6 +350,35 @@ def test_generate_dataset_defaults_to_three_policies(monkeypatch, tmp_path) -> N
     assert manifest["search_variant_count"] == 1
 
 
+def test_generate_dataset_rejects_empty_search_grid(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_dataset.py",
+            "-n",
+            "1",
+            "--output-dir",
+            str(tmp_path),
+            "--policies",
+            "search",
+            "--search-depths",
+            "3",
+            "--search-max-depths",
+            "2",
+            "--map-sizes",
+            "12",
+            "--turn-limits",
+            "30",
+            "--difficulties",
+            "normal",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="task plan is empty"):
+        generate_dataset.main()
+
+
 def test_build_game_tasks_preserves_seed_pairing_and_record_order() -> None:
     tasks, seed_end = generate_dataset.build_game_tasks(
         seed_start=5,
@@ -370,6 +429,90 @@ def test_build_game_tasks_expands_search_grid_after_fixed_seed_baselines() -> No
         for task in tasks
         if task.policy_type is PolicyType.SEARCH
     ] == [(1, 6, 3, 4), (1, 6, 3, 5), (2, 6, 3, 4), (2, 6, 3, 5)]
+
+
+def test_run_task_batches_parallel_prints_heartbeat_without_completed_batch(
+    monkeypatch,
+    capsys,
+) -> None:
+    future: Future[object] = Future()
+
+    class DeferredProcessPoolExecutor:
+        def __init__(self, *, max_workers: int) -> None:
+            assert max_workers == 1
+
+        def __enter__(self) -> DeferredProcessPoolExecutor:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+        def submit(self, fn: object, *args: object) -> Future[object]:
+            del fn, args
+            return future
+
+    wait_calls = 0
+
+    def fake_wait(
+        pending: set[Future[object]],
+        *,
+        timeout: float,
+        return_when: object,
+    ) -> tuple[set[Future[object]], set[Future[object]]]:
+        nonlocal wait_calls
+        del timeout, return_when
+        wait_calls += 1
+        if wait_calls == 1:
+            return set(), pending
+        future.set_result(
+            generate_dataset.WorkerBatchResult(batch_index=0, completed=1, summaries=[])
+        )
+        return set(pending), set()
+
+    monkeypatch.setattr(generate_dataset, "ProcessPoolExecutor", DeferredProcessPoolExecutor)
+    monkeypatch.setattr(generate_dataset, "wait", fake_wait)
+
+    result = generate_dataset.run_task_batches_parallel(
+        [_make_batch(0)],
+        total_tasks=1,
+        workers=1,
+        progress_interval_seconds=0.0,
+    )
+
+    captured = capsys.readouterr()
+    assert result.batch_results[0].completed == 1
+    assert "[parallel] 0/1 games complete" in captured.err
+    assert "pending_batches=1" in captured.err
+    assert "[parallel] 1/1 games complete" in captured.err
+
+
+def test_run_task_batches_parallel_wraps_worker_failure(monkeypatch) -> None:
+    future: Future[object] = Future()
+    future.set_exception(ValueError("boom"))
+
+    class FailingProcessPoolExecutor:
+        def __init__(self, *, max_workers: int) -> None:
+            assert max_workers == 1
+
+        def __enter__(self) -> FailingProcessPoolExecutor:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+        def submit(self, fn: object, *args: object) -> Future[object]:
+            del fn, args
+            return future
+
+    monkeypatch.setattr(generate_dataset, "ProcessPoolExecutor", FailingProcessPoolExecutor)
+
+    with pytest.raises(RuntimeError, match=r"batch 3 failed .*tasks=0-1.*boom"):
+        generate_dataset.run_task_batches_parallel(
+            [_make_batch(3, task_count=2)],
+            total_tasks=2,
+            workers=1,
+            progress_interval_seconds=10.0,
+        )
 
 
 def test_generate_dataset_parallel_path_uses_process_pool_and_keeps_order(
