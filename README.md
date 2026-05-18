@@ -31,7 +31,8 @@ pip install -e ".[dev]"
 
 ### （可选）安装数据分析脚本依赖
 
-`scripts/analyze_batch.py` 依赖 `pandas` 与 `tabulate`，主游戏本身零运行依赖。按需安装：
+批量分析脚本依赖 `pandas` 与 `tabulate`；高性能 JSON/Parquet 路径可使用
+`orjson` 与 `pyarrow`。主游戏本身零运行依赖。按需安装：
 
 ```bash
 uv sync --extra analysis        # uv
@@ -62,17 +63,23 @@ uv run python main.py
 项目提供了无界面的批量运行脚本，用于让 AI 自动执行大量局数并导出结果：
 
 ```bash
-# 快速批量运行（单一参数配置，输出 JSON / CSV / summary）
+# 快速批量运行（单一参数配置，小样本默认输出 JSON / CSV / summary）
 python scripts/batch_autoplay.py -n <games> --policy <policy> --label <tag>
 
-# 大规模参数网格数据集生成（输出 dataset JSON / CSV / manifest）
+# 大规模参数网格数据集生成（大样本推荐输出 artifact 目录 / manifest）
 python scripts/generate_dataset.py -n <games-per-combo> --label <tag>
 
-# 生成诊断报告（需要 pandas + tabulate）
+# 任务 7 / 大规模调参推荐路径：跳过完整 Records JSON，直接写 artifact
+python scripts/generate_dataset.py -n <games-per-combo> --label <tag> \
+  --artifact-mode fast --artifact-format parquet
+
+# 生成诊断报告（支持 dataset JSON 或 artifact 目录输入）
 python scripts/analyze_batch.py --input <dataset.json> --output <report.md>
+python scripts/analyze_batch.py --input <dataset_artifacts_dir> --output <report.md>
 ```
 
-数据分析脚本依赖 `pandas` 和 `tabulate`；推荐通过项目的 `analysis` extras 安装：
+数据分析脚本依赖 `pandas` 和 `tabulate`；artifact 性能路径优先使用 `orjson` 和
+`pyarrow`，缺失时会回退标准 JSONL。推荐通过项目的 `analysis` extras 安装：
 
 ```bash
 uv sync --extra analysis
@@ -91,7 +98,15 @@ pip install -r scripts/requirements.txt
 - `--label`：给批量输出文件附加标签
 - `--policies` / `--map-sizes` / `--turn-limits` / `--difficulties`：覆盖数据集参数网格，数据集默认跑 `greedy,random,search`
 - `--search-depths` / `--search-beam-widths` / `--search-candidate-limits`：覆盖 Search 参数网格
+- `--artifact-mode`：输出模式，支持 `auto`、`compat`、`fast`、`dual`
+- `--artifact-format`：artifact 表格式，优先 `parquet`，也可指定 `jsonl`
+- `--full-json-threshold`：`auto` 模式下保留完整 JSON/CSV 的任务数阈值
 - `--no-export-json` / `--no-export-csv` / `--no-write-summary`：控制单配置批跑输出
+
+`compat` 输出完整 Records JSON/CSV；`fast` 只输出 artifact 目录和 manifest；`dual`
+同时输出两者；`auto` 小样本走 `compat`、超过阈值走 `fast`。任务 7 或更大的 Search
+调参默认使用 `--artifact-mode fast --artifact-format parquet`，再把 `*_artifacts`
+目录传给 `analyze_batch.py`。
 
 分析报告会额外汇总最终分数组成、逐回合分数组成、Greedy 阶段动作分布、Search 诊断、异常率、决策耗时与网络风险指标。详细参数请使用 `--help` 查看。
 
@@ -128,9 +143,9 @@ MicroCiv 是一款回合制文明经营游戏，运行在终端中。游戏以�
 ```
 microciv/
 ├── src/microciv/
-│   ├── ai/            # AI 策略（Greedy、Random、Custom 占位）
+│   ├── ai/            # AI 策略（Greedy、Random、Search、Custom 占位）
 │   ├── game/          # 核心规则与状态机
-│   ├── records/       # 本地持久化与导出
+│   ├── records/       # 本地持久化、导出与 artifact 表
 │   ├── tui/           # 终端 UI 组件（像素字体）
 │   ├── utils/         # 坐标、邻接、排序、RNG 工具
 │   ├── session.py     # 运行时会话与自动播放辅助
@@ -142,7 +157,7 @@ microciv/
 ├── docs/              # 项目文档与流程图
 ├── tests/             # 测试套件
 ├── data/              # 运行时 Records 数据
-└── exports/           # 导出目录（JSON / CSV）
+└── exports/           # 导出目录（JSON / CSV / artifacts）
 ```
 
 ## 开发

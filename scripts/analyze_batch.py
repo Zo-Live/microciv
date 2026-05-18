@@ -56,7 +56,7 @@ def _parse_args() -> argparse.Namespace:
         "--input",
         type=Path,
         default=ROOT / "exports" / "dataset" / "dataset.json",
-        help="Path to dataset JSON.",
+        help="Path to dataset JSON or artifact directory.",
     )
     parser.add_argument(
         "--output",

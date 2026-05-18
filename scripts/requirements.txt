@@ -6,4 +6,6 @@
 # This file is kept as an alternative for environments without uv / pyproject extras.
 
 pandas>=3.0.2
+orjson>=3.11.5
+pyarrow>=21.0.0
 tabulate>=0.10
