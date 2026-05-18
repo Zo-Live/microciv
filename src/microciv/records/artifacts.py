@@ -462,9 +462,7 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             "search_root_best_build_building_value": (
                 context.search_root_best_build_building_value
             ),
-            "search_root_best_research_tech_value": (
-                context.search_root_best_research_tech_value
-            ),
+            "search_root_best_research_tech_value": (context.search_root_best_research_tech_value),
             "search_root_best_skip_value": context.search_root_best_skip_value,
             "search_root_candidate_cut_ratio": context.search_root_candidate_cut_ratio,
             "search_root_safe_city_candidate_count": (
@@ -474,9 +472,17 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
                 context.search_root_effective_connection_road_candidate_count
             ),
             "search_root_rescue_candidate_count": context.search_root_rescue_candidate_count,
-            "search_delta_starving_network_count": (
-                context.search_delta_starving_network_count
+            "search_root_effective_city_candidate_count": (
+                context.search_root_effective_city_candidate_count
             ),
+            "search_root_redundant_road_candidate_count": (
+                context.search_root_redundant_road_candidate_count
+            ),
+            "search_root_high_roi_building_candidate_count": (
+                context.search_root_high_roi_building_candidate_count
+            ),
+            "search_root_gated_candidate_count": context.search_root_gated_candidate_count,
+            "search_delta_starving_network_count": (context.search_delta_starving_network_count),
             "search_delta_food_pressure": context.search_delta_food_pressure,
             "search_delta_isolated_city_count": context.search_delta_isolated_city_count,
             "search_delta_network_count": context.search_delta_network_count,

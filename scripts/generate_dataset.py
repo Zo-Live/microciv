@@ -854,9 +854,7 @@ def _collect_batch_results(
 
 def _batch_failure_message(batch: GameTaskBatch, exc: BaseException) -> str:
     task_indexes = [task.task_index for task in batch.tasks]
-    task_range = (
-        f"{min(task_indexes)}-{max(task_indexes)}" if task_indexes else "empty"
-    )
+    task_range = f"{min(task_indexes)}-{max(task_indexes)}" if task_indexes else "empty"
     return (
         f"Dataset worker batch {batch.batch_index} failed "
         f"(tasks={task_range}, size={len(batch.tasks)}): {exc}"
@@ -969,9 +967,7 @@ def run_task_batches_parallel(
                     pending_batches=len(pending) - running_batches,
                     previous_completed=last_printed_completed,
                     previous_elapsed=last_printed_elapsed,
-                    worker_cpu_seconds_total=sum(
-                        item.worker_cpu_seconds for item in batch_results
-                    ),
+                    worker_cpu_seconds_total=sum(item.worker_cpu_seconds for item in batch_results),
                     worker_elapsed_seconds_total=sum(
                         item.worker_elapsed_seconds for item in batch_results
                     ),
@@ -1012,8 +1008,9 @@ def _write_database_json_from_jsonl_parts(
     first = True
     with path.open("wb") as output:
         output.write(
-            f'{{"schema_version":{RECORDS_SCHEMA_VERSION},'
-            f'"next_record_id":1,"records":['.encode("ascii")
+            f'{{"schema_version":{RECORDS_SCHEMA_VERSION},"next_record_id":1,"records":['.encode(
+                "ascii"
+            )
         )
         for part_path in part_paths:
             with part_path.open("rb") as part_file:

@@ -440,6 +440,10 @@ def build_search_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataF
         "search_root_candidate_build_building_count",
         "search_root_candidate_research_tech_count",
         "search_root_candidate_skip_count",
+        "search_root_effective_city_candidate_count",
+        "search_root_redundant_road_candidate_count",
+        "search_root_high_roi_building_candidate_count",
+        "search_root_gated_candidate_count",
         "search_nodes_expanded",
         "search_candidates_considered",
         "search_leaf_count",
@@ -524,9 +528,7 @@ def build_search_mode_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.
                 "sequence_adjustment_mean": _metric_mean(group, "search_sequence_adjustment"),
                 "risk_pressure_mean": _metric_mean(group, "search_risk_pressure_total"),
                 "risk_dominated_pct": _metric_mean(group, "search_is_risk_dominated") * 100,
-                "sequence_adjusted_pct": (
-                    _metric_mean(group, "search_is_sequence_adjusted") * 100
-                ),
+                "sequence_adjusted_pct": (_metric_mean(group, "search_is_sequence_adjusted") * 100),
                 "best_value_mean": _metric_mean(group, "search_best_value"),
             }
         )
@@ -576,9 +578,7 @@ def build_search_pressure_summary_from_decision_df(decision_df: pd.DataFrame) ->
                 ),
                 "risk_pressure_total_mean": _metric_mean(group, "search_risk_pressure_total"),
                 "risk_dominated_pct": _metric_mean(group, "search_is_risk_dominated") * 100,
-                "sequence_adjusted_pct": (
-                    _metric_mean(group, "search_is_sequence_adjusted") * 100
-                ),
+                "sequence_adjusted_pct": (_metric_mean(group, "search_is_sequence_adjusted") * 100),
                 "sequence_adjustment_mean": _metric_mean(group, "search_sequence_adjustment"),
                 "best_value_mean": _metric_mean(group, "search_best_value"),
             }
@@ -606,6 +606,10 @@ def build_search_candidate_health_summary_from_decision_df(
         "search_root_safe_city_candidate_count",
         "search_root_effective_connection_road_candidate_count",
         "search_root_rescue_candidate_count",
+        "search_root_effective_city_candidate_count",
+        "search_root_redundant_road_candidate_count",
+        "search_root_high_roi_building_candidate_count",
+        "search_root_gated_candidate_count",
         "search_delta_starving_network_count",
         "search_delta_food_pressure",
         "search_delta_isolated_city_count",
@@ -624,8 +628,7 @@ def build_search_road_quality_summary_from_decision_df(decision_df: pd.DataFrame
     if decision_df.empty or "search_road_connected_city_delta" not in decision_df:
         return pd.DataFrame()
     road_df = decision_df[
-        decision_df.get("chosen_action_type", pd.Series(dtype=object)).fillna("")
-        == "build_road"
+        decision_df.get("chosen_action_type", pd.Series(dtype=object)).fillna("") == "build_road"
     ].copy()
     if road_df.empty:
         return pd.DataFrame()
@@ -687,15 +690,12 @@ def build_search_record_profile_summary_from_decision_df(decision_df: pd.DataFra
                 "food_rescue_depth_pct": reason_counts["food_rescue"] / total * 100,
                 "network_connect_depth_pct": reason_counts["network_connect"] / total * 100,
                 "risk_dominated_pct": _metric_mean(group, "search_is_risk_dominated") * 100,
-                "sequence_adjusted_pct": (
-                    _metric_mean(group, "search_is_sequence_adjusted") * 100
-                ),
+                "sequence_adjusted_pct": (_metric_mean(group, "search_is_sequence_adjusted") * 100),
                 "road_overbuild_pressure_pct": (
                     pressure_counts["road_overbuild_penalty"] / total * 100
                 ),
                 "starving_pressure_pct": (
-                    pressure_counts["starving_turn_penalty"]
-                    + pressure_counts["starving_penalty"]
+                    pressure_counts["starving_turn_penalty"] + pressure_counts["starving_penalty"]
                 )
                 / total
                 * 100,
@@ -829,15 +829,11 @@ def build_search_score_component_gap_summary_from_score_df(
     if not component_cols:
         return pd.DataFrame()
 
-    greedy_df = score_df[score_df["ai_type"] == GREEDY_LABEL][
-        [*key_cols, *component_cols]
-    ].copy()
+    greedy_df = score_df[score_df["ai_type"] == GREEDY_LABEL][[*key_cols, *component_cols]].copy()
     search_df = score_df[score_df["ai_type"] == SEARCH_LABEL].copy()
     if greedy_df.empty or search_df.empty:
         return pd.DataFrame()
-    greedy_df = greedy_df.rename(
-        columns={column: f"greedy_{column}" for column in component_cols}
-    )
+    greedy_df = greedy_df.rename(columns={column: f"greedy_{column}" for column in component_cols})
     merged = search_df.merge(greedy_df, on=key_cols, how="left")
     rows: list[dict[str, object]] = []
     for policy_variant, group in merged.groupby(["policy_variant"], dropna=False):
@@ -1617,8 +1613,7 @@ def render_search_decision_window_from_df(
     if not decision_df.empty and "record_id" in decision_df:
         decision_subset = decision_df[decision_df["record_id"] == record_id]
         decisions_by_turn = {
-            int(_number(item.get("turn"), 0)): item
-            for item in decision_subset.to_dict("records")
+            int(_number(item.get("turn"), 0)): item for item in decision_subset.to_dict("records")
         }
 
     lines = []

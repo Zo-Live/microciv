@@ -45,6 +45,11 @@ _SEARCH_PRESSURE_COMPONENT_KEYS: tuple[str, ...] = (
     "expansion_deficit_penalty",
     "early_fill_penalty",
     "road_overbuild_penalty",
+    "starving_delta_penalty",
+    "food_pressure_delta_penalty",
+    "isolated_delta_penalty",
+    "network_delta_penalty",
+    "road_delta_penalty",
 )
 
 _ACTION_TYPE_ORDER: dict[ActionType, int] = {
@@ -120,6 +125,11 @@ class DynamicSearchDepthStrategy:
                 depth=context.max_depth,
                 reason=SEARCH_DEPTH_REASON_GROWTH_STALL,
             )
+        if _has_food_watch_warning(state, profile):
+            return SearchDepthDecision(
+                depth=min(context.max_depth, context.base_depth + 2),
+                reason=SEARCH_DEPTH_REASON_FOOD_WATCH,
+            )
         if profile.is_healthy_steady:
             return SearchDepthDecision(depth=context.base_depth, reason=SEARCH_DEPTH_REASON_STEADY)
         if _max_food_pressure(state) >= FOOD_CONSUMPTION_PER_CITY:
@@ -168,6 +178,10 @@ class SearchTelemetry:
     root_safe_city_candidate_count: int = 0
     root_effective_connection_road_candidate_count: int = 0
     root_rescue_candidate_count: int = 0
+    root_effective_city_candidate_count: int = 0
+    root_redundant_road_candidate_count: int = 0
+    root_high_roi_building_candidate_count: int = 0
+    root_gated_candidate_count: int = 0
     root_candidate_diagnostics: list[RootCandidateDiagnostic] = field(default_factory=list)
 
 
@@ -226,7 +240,7 @@ class SearchPolicy(Policy):
 
         if best_node is None or not best_node.sequence:
             action = Action.skip()
-            best_evaluation = evaluate_search_leaf(state)
+            best_evaluation = evaluate_search_leaf(state, root_state=state)
             best_value = best_evaluation.value
             best_sequence_adjustment = 0
             best_sequence: list[dict[str, object]] = []
@@ -299,13 +313,21 @@ class SearchPolicy(Policy):
                 ],
                 "search_root_candidate_skip_count": root_candidate_counts[ActionType.SKIP],
                 "search_root_candidate_cut_ratio": candidate_cut_ratio,
-                "search_root_safe_city_candidate_count": (
-                    telemetry.root_safe_city_candidate_count
-                ),
+                "search_root_safe_city_candidate_count": (telemetry.root_safe_city_candidate_count),
                 "search_root_effective_connection_road_candidate_count": (
                     telemetry.root_effective_connection_road_candidate_count
                 ),
                 "search_root_rescue_candidate_count": telemetry.root_rescue_candidate_count,
+                "search_root_effective_city_candidate_count": (
+                    telemetry.root_effective_city_candidate_count
+                ),
+                "search_root_redundant_road_candidate_count": (
+                    telemetry.root_redundant_road_candidate_count
+                ),
+                "search_root_high_roi_building_candidate_count": (
+                    telemetry.root_high_roi_building_candidate_count
+                ),
+                "search_root_gated_candidate_count": telemetry.root_gated_candidate_count,
                 "search_nodes_expanded": telemetry.nodes_expanded,
                 "search_candidates_considered": telemetry.candidates_considered,
                 "search_leaf_count": telemetry.leaf_count,
@@ -362,7 +384,7 @@ class SearchPolicy(Policy):
         candidate_config: SearchCandidateConfig,
         telemetry: SearchTelemetry,
     ) -> SearchNode | None:
-        root_evaluation = evaluate_search_leaf(state)
+        root_evaluation = evaluate_search_leaf(state, root_state=state)
         beam = [
             SearchNode(
                 state=state,
@@ -394,6 +416,16 @@ class SearchPolicy(Policy):
                         candidate_set.effective_connection_road_candidate_count
                     )
                     telemetry.root_rescue_candidate_count = candidate_set.rescue_candidate_count
+                    telemetry.root_effective_city_candidate_count = (
+                        candidate_set.effective_city_candidate_count
+                    )
+                    telemetry.root_redundant_road_candidate_count = (
+                        candidate_set.redundant_road_candidate_count
+                    )
+                    telemetry.root_high_roi_building_candidate_count = (
+                        candidate_set.high_roi_building_candidate_count
+                    )
+                    telemetry.root_gated_candidate_count = candidate_set.gated_candidate_count
                 telemetry.nodes_expanded += 1
                 telemetry.candidates_considered += len(candidate_set.candidates)
 
@@ -403,7 +435,7 @@ class SearchPolicy(Policy):
 
                 for candidate in candidate_set.candidates:
                     simulated_state = simulate_action(node.state, candidate.action)
-                    leaf_evaluation = evaluate_search_leaf(simulated_state)
+                    leaf_evaluation = evaluate_search_leaf(simulated_state, root_state=state)
                     telemetry.leaf_count += 1
                     sequence = (*node.sequence, candidate.action)
                     sequence_adjustment = _sequence_adjustment(state, simulated_state, sequence)
@@ -587,6 +619,13 @@ def _sequence_adjustment(
         root_profile.starving_network_count - leaf_profile.starving_network_count,
     )
     pressure_reduction = max(0, root_profile.food_pressure - leaf_profile.food_pressure)
+    first_action = sequence[0] if sequence else None
+    first_delta = _first_action_delta(root_state, first_action) if first_action is not None else {}
+    first_food_delta = int(first_delta.get("food_pressure", 0))
+    first_starving_delta = int(first_delta.get("starving_network_count", 0))
+    first_network_delta = int(first_delta.get("network_count", 0))
+    first_connected_delta = int(first_delta.get("connected_city_count", 0))
+    first_road_overbuild_delta = int(first_delta.get("road_overbuild", 0))
 
     adjustment = 0
     if root_profile.turns_remaining > 3 and skip_actions:
@@ -594,30 +633,69 @@ def _sequence_adjustment(
         adjustment -= max(0, skip_actions - 1) * 2_500
 
     if root_profile.mode == SEARCH_MODE_EXPAND:
-        adjustment += min(city_actions, root_profile.expansion_deficit) * 12_000
+        adjustment += min(city_actions, root_profile.safe_expansion_deficit) * 14_000
         adjustment += connected_gain * 2_500
-        if root_profile.turns_remaining > 10 and root_profile.expansion_deficit > 0:
-            adjustment -= fill_actions * 2_800
+        if first_action is not None and first_action.action_type is not ActionType.BUILD_CITY:
+            adjustment -= 18_000
+        if root_profile.turns_remaining > 10 and root_profile.safe_expansion_deficit > 0:
+            adjustment -= fill_actions * 4_500
             if connected_gain == 0 and network_reduction == 0:
-                adjustment -= road_actions * 1_800
+                adjustment -= road_actions * 4_200
             adjustment -= skip_actions * 4_000
     elif root_profile.mode == SEARCH_MODE_CONNECT:
-        adjustment += connected_gain * 4_200
-        adjustment += network_reduction * 3_500
+        adjustment += connected_gain * 5_200
+        adjustment += network_reduction * 4_800
         if connected_gain > 0 or network_reduction > 0:
-            adjustment += road_actions * 800
+            adjustment += road_actions * 1_200
         else:
-            adjustment -= road_actions * 1_400
+            adjustment -= road_actions * 4_400
+        if (
+            first_action is not None
+            and root_profile.network_count > 1
+            and first_connected_delta <= 0
+            and first_network_delta >= 0
+        ):
+            adjustment -= 14_000
         adjustment -= skip_actions * 2_500
     elif root_profile.mode == SEARCH_MODE_RESCUE:
-        adjustment += starvation_reduction * 6_500
-        adjustment += pressure_reduction * 160
+        adjustment += starvation_reduction * 9_000
+        adjustment += pressure_reduction * 260
+        if (
+            first_action is not None
+            and first_starving_delta >= 0
+            and first_food_delta >= 0
+            and root_profile.food_pressure >= FOOD_CONSUMPTION_PER_CITY
+        ):
+            adjustment -= 18_000
         if root_profile.food_pressure >= FOOD_CONSUMPTION_PER_CITY * 2:
-            adjustment -= city_actions * 1_800
+            adjustment -= city_actions * 4_800
         adjustment -= skip_actions * 3_000
-    elif root_profile.turns_remaining > 10 and root_profile.expansion_deficit > 0:
-        adjustment += min(city_actions, root_profile.expansion_deficit) * 3_500
+    elif root_profile.turns_remaining > 10 and root_profile.safe_expansion_deficit > 0:
+        adjustment += min(city_actions, root_profile.safe_expansion_deficit) * 3_500
         adjustment -= skip_actions * 2_500
+
+    if first_action is not None:
+        if first_action.action_type is ActionType.BUILD_ROAD:
+            if (
+                first_road_overbuild_delta > 0
+                and first_connected_delta <= 0
+                and first_network_delta >= 0
+            ):
+                adjustment -= 45_000
+            if (
+                root_profile.connected_city_count >= root_profile.city_count
+                and root_profile.city_count >= 2
+                and first_connected_delta <= 0
+                and first_network_delta >= 0
+            ):
+                adjustment -= 24_000
+        if first_action.action_type is ActionType.BUILD_BUILDING and (
+            root_profile.mode in {SEARCH_MODE_EXPAND, SEARCH_MODE_CONNECT}
+        ):
+            if first_food_delta >= 0:
+                adjustment -= 9_000
+        if root_profile.food_pressure >= FOOD_CONSUMPTION_PER_CITY and first_food_delta > 0:
+            adjustment -= first_food_delta * 700
 
     return adjustment
 
@@ -652,6 +730,20 @@ def _search_pressure_diagnostics(
     )
 
 
+def _first_action_delta(state: GameState, action: Action) -> dict[str, int]:
+    before = build_search_position_profile(state)
+    after_state = simulate_action(state, action)
+    after = build_search_position_profile(after_state)
+    return {
+        "starving_network_count": after.starving_network_count - before.starving_network_count,
+        "food_pressure": after.food_pressure - before.food_pressure,
+        "isolated_city_count": after.isolated_city_count - before.isolated_city_count,
+        "network_count": after.network_count - before.network_count,
+        "connected_city_count": after.connected_city_count - before.connected_city_count,
+        "road_overbuild": _road_overbuild_metric(after_state) - _road_overbuild_metric(state),
+    }
+
+
 def _has_food_rescue_need(state: GameState) -> bool:
     return (
         any(network.resources.food <= 0 for network in state.networks.values())
@@ -677,6 +769,24 @@ def _has_growth_stall(state: GameState) -> bool:
     if len(recent_contexts) < 3:
         return False
     return sum(1 for context in recent_contexts if context.get("chosen_action_type") == "skip") >= 2
+
+
+def _has_food_watch_warning(state: GameState, profile: SearchPositionProfile) -> bool:
+    if profile.starving_network_count > 0:
+        return False
+    if profile.food_pressure > FOOD_CONSUMPTION_PER_CITY:
+        return True
+    if (
+        profile.is_small_long_map
+        and profile.safe_expansion_deficit <= 0
+        and profile.expansion_deficit > 0
+        and profile.turns_remaining > 20
+    ):
+        return True
+    if profile.city_count >= max(3, profile.safe_target_city_count - 1):
+        total_food = sum(network.resources.food for network in state.networks.values())
+        return total_food < max(1, profile.city_count) * FOOD_CONSUMPTION_PER_CITY * 3
+    return False
 
 
 def _max_food_pressure(state: GameState) -> int:

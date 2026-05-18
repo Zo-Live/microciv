@@ -10,9 +10,10 @@ from microciv.ai.search_support import (
     SearchCandidateConfig,
     evaluate_search_leaf,
     generate_search_candidates,
+    search_target_city_count,
 )
 from microciv.game.actions import Action, validate_action
-from microciv.game.enums import ActionType, OccupantType, TechType, TerrainType
+from microciv.game.enums import ActionType, MapDifficulty, OccupantType, TechType, TerrainType
 from microciv.game.models import City, GameConfig, GameState, Network, ResourcePool, Tile
 
 
@@ -31,13 +32,13 @@ def test_search_candidates_are_legal_stable_and_mixed() -> None:
     assert all(
         validate_action(state, candidate.action).is_valid for candidate in candidate_set.candidates
     )
-    assert {candidate.action_type for candidate in candidate_set.candidates} == {
-        ActionType.BUILD_CITY,
-        ActionType.BUILD_ROAD,
-        ActionType.BUILD_BUILDING,
-        ActionType.RESEARCH_TECH,
-        ActionType.SKIP,
-    }
+    action_types = {candidate.action_type for candidate in candidate_set.candidates}
+    assert ActionType.BUILD_CITY in action_types
+    assert ActionType.BUILD_BUILDING in action_types
+    assert ActionType.RESEARCH_TECH in action_types
+    assert ActionType.SKIP in action_types
+    assert ActionType.BUILD_ROAD not in action_types
+    assert candidate_set.gated_candidate_count > 0
     assert candidate_set.legal_action_count >= len(candidate_set.candidates)
     assert candidate_set.legal_counts_by_type[ActionType.SKIP] == 1
     assert candidate_set.candidate_counts_by_type[ActionType.SKIP] == 1
@@ -91,7 +92,8 @@ def test_search_city_candidates_prefer_food_safe_site_over_risky_resource_site()
         if candidate.action_type is ActionType.BUILD_CITY
     }
 
-    assert city_candidates[(4, 4)].rank_score > city_candidates[(0, 0)].rank_score
+    assert (4, 4) in city_candidates
+    assert (0, 0) not in city_candidates
 
 
 def test_search_expand_mode_preserves_safe_city_candidates() -> None:
@@ -102,11 +104,32 @@ def test_search_expand_mode_preserves_safe_city_candidates() -> None:
 
     assert candidate_set.profile.mode == "expand"
     assert candidate_set.profile.is_healthy_steady is True
-    assert counts[ActionType.BUILD_CITY] >= 3
-    assert counts[ActionType.BUILD_CITY] > counts[ActionType.BUILD_BUILDING]
-    assert counts[ActionType.BUILD_CITY] > counts[ActionType.RESEARCH_TECH]
+    assert counts[ActionType.BUILD_CITY] >= 1
+    assert counts[ActionType.BUILD_CITY] == candidate_set.safe_city_candidate_count
+    assert counts[ActionType.BUILD_CITY] >= counts[ActionType.BUILD_BUILDING]
+    assert counts[ActionType.BUILD_CITY] >= counts[ActionType.RESEARCH_TECH]
     assert counts[ActionType.BUILD_BUILDING] <= 1
     assert counts[ActionType.RESEARCH_TECH] <= 1
+
+
+def test_search_target_city_count_is_capped_on_small_long_maps() -> None:
+    normal = GameState.empty(GameConfig.for_play(map_size=12, turn_limit=150))
+    hard = GameState.empty(
+        GameConfig.for_play(
+            map_size=12,
+            turn_limit=150,
+            map_difficulty=MapDifficulty.HARD,
+        )
+    )
+    normal.board = {
+        (row, col): Tile(base_terrain=TerrainType.PLAIN) for row in range(12) for col in range(12)
+    }
+    hard.board = {
+        (row, col): Tile(base_terrain=TerrainType.PLAIN) for row in range(12) for col in range(12)
+    }
+
+    assert search_target_city_count(normal) == 11
+    assert search_target_city_count(hard) == 10
 
 
 def test_search_healthy_steady_limits_fill_candidates() -> None:

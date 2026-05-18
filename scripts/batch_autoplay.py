@@ -657,9 +657,7 @@ def run_batch_tasks_parallel(
                     pending_batches=len(pending) - running_batches,
                     previous_completed=last_printed_completed,
                     previous_elapsed=last_printed_elapsed,
-                    worker_cpu_seconds_total=sum(
-                        item.worker_cpu_seconds for item in batch_results
-                    ),
+                    worker_cpu_seconds_total=sum(item.worker_cpu_seconds for item in batch_results),
                     worker_elapsed_seconds_total=sum(
                         item.worker_elapsed_seconds for item in batch_results
                     ),
@@ -746,8 +744,9 @@ def _write_database_json_from_jsonl_parts(path: Path, part_paths: list[Path]) ->
     first = True
     with path.open("wb") as output:
         output.write(
-            f'{{"schema_version":{RECORDS_SCHEMA_VERSION},'
-            f'"next_record_id":1,"records":['.encode("ascii")
+            f'{{"schema_version":{RECORDS_SCHEMA_VERSION},"next_record_id":1,"records":['.encode(
+                "ascii"
+            )
         )
         for part_path in part_paths:
             with part_path.open("rb") as part_file:

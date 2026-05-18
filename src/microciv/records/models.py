@@ -627,6 +627,10 @@ class RecordDecisionContext:
     search_root_safe_city_candidate_count: int | None = None
     search_root_effective_connection_road_candidate_count: int | None = None
     search_root_rescue_candidate_count: int | None = None
+    search_root_effective_city_candidate_count: int | None = None
+    search_root_redundant_road_candidate_count: int | None = None
+    search_root_high_roi_building_candidate_count: int | None = None
+    search_root_gated_candidate_count: int | None = None
     search_delta_starving_network_count: int | None = None
     search_delta_food_pressure: int | None = None
     search_delta_isolated_city_count: int | None = None
@@ -724,9 +728,7 @@ class RecordDecisionContext:
             search_value_components=_mapping_of_ints(payload, "search_value_components"),
             search_sequence_adjustment=_optional_int(payload, "search_sequence_adjustment"),
             search_dominant_pressure=_optional_str(payload, "search_dominant_pressure"),
-            search_dominant_pressure_value=_optional_int(
-                payload, "search_dominant_pressure_value"
-            ),
+            search_dominant_pressure_value=_optional_int(payload, "search_dominant_pressure_value"),
             search_risk_pressure_total=_optional_int(payload, "search_risk_pressure_total"),
             search_is_risk_dominated=_optional_bool(payload, "search_is_risk_dominated"),
             search_is_sequence_adjusted=_optional_bool(payload, "search_is_sequence_adjusted"),
@@ -759,9 +761,7 @@ class RecordDecisionContext:
             search_root_best_value=_optional_int(payload, "search_root_best_value"),
             search_root_value_margin=_optional_int(payload, "search_root_value_margin"),
             search_root_best_action_type=_optional_str(payload, "search_root_best_action_type"),
-            search_root_chosen_action_type=_optional_str(
-                payload, "search_root_chosen_action_type"
-            ),
+            search_root_chosen_action_type=_optional_str(payload, "search_root_chosen_action_type"),
             search_root_best_build_city_value=_optional_int(
                 payload, "search_root_best_build_city_value"
             ),
@@ -786,6 +786,18 @@ class RecordDecisionContext:
             ),
             search_root_rescue_candidate_count=_optional_int(
                 payload, "search_root_rescue_candidate_count"
+            ),
+            search_root_effective_city_candidate_count=_optional_int(
+                payload, "search_root_effective_city_candidate_count"
+            ),
+            search_root_redundant_road_candidate_count=_optional_int(
+                payload, "search_root_redundant_road_candidate_count"
+            ),
+            search_root_high_roi_building_candidate_count=_optional_int(
+                payload, "search_root_high_roi_building_candidate_count"
+            ),
+            search_root_gated_candidate_count=_optional_int(
+                payload, "search_root_gated_candidate_count"
             ),
             search_delta_starving_network_count=_optional_int(
                 payload, "search_delta_starving_network_count"
@@ -1004,13 +1016,23 @@ class RecordDecisionContext:
                 self.search_root_effective_connection_road_candidate_count
             )
         if self.search_root_rescue_candidate_count is not None:
-            result["search_root_rescue_candidate_count"] = (
-                self.search_root_rescue_candidate_count
+            result["search_root_rescue_candidate_count"] = self.search_root_rescue_candidate_count
+        if self.search_root_effective_city_candidate_count is not None:
+            result["search_root_effective_city_candidate_count"] = (
+                self.search_root_effective_city_candidate_count
             )
+        if self.search_root_redundant_road_candidate_count is not None:
+            result["search_root_redundant_road_candidate_count"] = (
+                self.search_root_redundant_road_candidate_count
+            )
+        if self.search_root_high_roi_building_candidate_count is not None:
+            result["search_root_high_roi_building_candidate_count"] = (
+                self.search_root_high_roi_building_candidate_count
+            )
+        if self.search_root_gated_candidate_count is not None:
+            result["search_root_gated_candidate_count"] = self.search_root_gated_candidate_count
         if self.search_delta_starving_network_count is not None:
-            result["search_delta_starving_network_count"] = (
-                self.search_delta_starving_network_count
-            )
+            result["search_delta_starving_network_count"] = self.search_delta_starving_network_count
         if self.search_delta_food_pressure is not None:
             result["search_delta_food_pressure"] = self.search_delta_food_pressure
         if self.search_delta_isolated_city_count is not None:
@@ -1018,23 +1040,17 @@ class RecordDecisionContext:
         if self.search_delta_network_count is not None:
             result["search_delta_network_count"] = self.search_delta_network_count
         if self.search_delta_connected_city_count is not None:
-            result["search_delta_connected_city_count"] = (
-                self.search_delta_connected_city_count
-            )
+            result["search_delta_connected_city_count"] = self.search_delta_connected_city_count
         if self.search_delta_road_overbuild is not None:
             result["search_delta_road_overbuild"] = self.search_delta_road_overbuild
         if self.search_road_merges_networks is not None:
             result["search_road_merges_networks"] = self.search_road_merges_networks
         if self.search_road_connected_city_delta is not None:
-            result["search_road_connected_city_delta"] = (
-                self.search_road_connected_city_delta
-            )
+            result["search_road_connected_city_delta"] = self.search_road_connected_city_delta
         if self.search_road_is_redundant is not None:
             result["search_road_is_redundant"] = self.search_road_is_redundant
         if self.search_road_after_full_connectivity is not None:
-            result["search_road_after_full_connectivity"] = (
-                self.search_road_after_full_connectivity
-            )
+            result["search_road_after_full_connectivity"] = self.search_road_after_full_connectivity
         return result
 
 
