@@ -666,10 +666,51 @@ def test_policy_anomaly_summary_uses_mixed_baselines_and_starvation() -> None:
     assert rows["Search d2 b3 c5"]["is_search_under_greedy"] == 1
     assert set(summary["policy_variant"]) == {"Random", "Greedy", "Search d2 b3 c5"}
     assert int(matchup.iloc[0]["same_map_win_rate"]) == 0
+    assert int(matchup.iloc[0]["strict_wins_vs_greedy"]) == 0
+    assert int(matchup.iloc[0]["strict_ties_vs_greedy"]) == 0
+    assert int(matchup.iloc[0]["strict_losses_vs_greedy"]) == 1
+    assert int(matchup.iloc[0]["strict_win_or_tie_rate_vs_greedy"]) == 0
     assert "search_under_greedy_count" in report
     assert "### 7.6 Search Same-Map Matchup Summary" in report
     assert "task7_acceptance_candidate" in report
     assert "Search d2 b3 c5" in report
+
+
+def test_search_matchup_summary_buckets_strict_negative_gaps() -> None:
+    rows = []
+    gaps = [-50, -150, -400, -401]
+    for seed, gap in enumerate(gaps, start=1):
+        for ai_type, final_score, policy_variant in (
+            ("Greedy", 1000, "Greedy"),
+            ("Random", 900, "Random"),
+            ("Search", 1000 + gap, "Search d2-4 b2 c8"),
+        ):
+            rows.append(
+                {
+                    "seed": seed,
+                    "map_size": 12,
+                    "turn_limit": 30,
+                    "map_difficulty": "normal",
+                    "ai_type": ai_type,
+                    "policy_variant": policy_variant,
+                    "final_score": final_score,
+                    "decision_time_ms_total": 1.0,
+                }
+            )
+    macro_df = analyze_batch.pd.DataFrame(rows)
+
+    summary = analyze_batch.build_search_matchup_summary_from_macro_df(macro_df)
+    row = summary.iloc[0]
+
+    assert int(row["strict_losses_vs_greedy"]) == 4
+    assert int(row["strict_loss_gap_abs_le_50_count"]) == 1
+    assert int(row["strict_loss_gap_abs_51_150_count"]) == 1
+    assert int(row["strict_loss_gap_abs_151_400_count"]) == 1
+    assert int(row["strict_loss_gap_abs_gt_400_count"]) == 1
+    assert row["strict_loss_gap_abs_le_50_rate"] == 25
+    assert row["strict_loss_gap_abs_51_150_rate"] == 25
+    assert row["strict_loss_gap_abs_151_400_rate"] == 25
+    assert row["strict_loss_gap_abs_gt_400_rate"] == 25
 
 
 def test_analyze_batch_reports_greedy_anomalies_with_turn_diagnostics() -> None:

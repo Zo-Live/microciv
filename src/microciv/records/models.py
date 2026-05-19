@@ -17,7 +17,7 @@ from microciv.game.scoring import (
 )
 from microciv.utils.grid import Coord, coord_sort_key
 
-RECORDS_SCHEMA_VERSION = 11
+RECORDS_SCHEMA_VERSION = 12
 
 CSV_FIELD_ORDER: tuple[str, ...] = (
     "record_id",
@@ -586,6 +586,12 @@ class RecordDecisionContext:
     search_probe_accepted_reason: str | None = None
     search_probe_rejected_reason: str | None = None
     search_greedy_veto_reason: str | None = None
+    search_regret_guard_reason: str | None = None
+    search_hard_risk_improvement: bool | None = None
+    search_selected_score_gap_vs_greedy_after_action: int | None = None
+    search_selected_city_site_delta_vs_greedy: int | None = None
+    search_route_plain_cost: int | None = None
+    search_route_progress_delta: int | None = None
     search_beam_width: int | None = None
     search_candidate_limit: int | None = None
     search_root_legal_build_city_count: int | None = None
@@ -782,6 +788,16 @@ class RecordDecisionContext:
             search_probe_accepted_reason=_optional_str(payload, "search_probe_accepted_reason"),
             search_probe_rejected_reason=_optional_str(payload, "search_probe_rejected_reason"),
             search_greedy_veto_reason=_optional_str(payload, "search_greedy_veto_reason"),
+            search_regret_guard_reason=_optional_str(payload, "search_regret_guard_reason"),
+            search_hard_risk_improvement=_optional_bool(payload, "search_hard_risk_improvement"),
+            search_selected_score_gap_vs_greedy_after_action=_optional_int(
+                payload, "search_selected_score_gap_vs_greedy_after_action"
+            ),
+            search_selected_city_site_delta_vs_greedy=_optional_int(
+                payload, "search_selected_city_site_delta_vs_greedy"
+            ),
+            search_route_plain_cost=_optional_int(payload, "search_route_plain_cost"),
+            search_route_progress_delta=_optional_int(payload, "search_route_progress_delta"),
             search_beam_width=_optional_int(payload, "search_beam_width"),
             search_candidate_limit=_optional_int(payload, "search_candidate_limit"),
             search_root_legal_build_city_count=_optional_int(
@@ -895,9 +911,7 @@ class RecordDecisionContext:
             search_bridge_progress_after_first_step=_optional_int(
                 payload, "search_bridge_progress_after_first_step"
             ),
-            search_route_target_network_id=_optional_int(
-                payload, "search_route_target_network_id"
-            ),
+            search_route_target_network_id=_optional_int(payload, "search_route_target_network_id"),
             search_route_remaining_steps=_optional_int(payload, "search_route_remaining_steps"),
             search_route_committed=_optional_bool(payload, "search_route_committed"),
             search_delta_starving_network_count=_optional_int(
@@ -1179,6 +1193,22 @@ class RecordDecisionContext:
             result["search_probe_rejected_reason"] = self.search_probe_rejected_reason
         if self.search_greedy_veto_reason is not None:
             result["search_greedy_veto_reason"] = self.search_greedy_veto_reason
+        if self.search_regret_guard_reason is not None:
+            result["search_regret_guard_reason"] = self.search_regret_guard_reason
+        if self.search_hard_risk_improvement is not None:
+            result["search_hard_risk_improvement"] = self.search_hard_risk_improvement
+        if self.search_selected_score_gap_vs_greedy_after_action is not None:
+            result["search_selected_score_gap_vs_greedy_after_action"] = (
+                self.search_selected_score_gap_vs_greedy_after_action
+            )
+        if self.search_selected_city_site_delta_vs_greedy is not None:
+            result["search_selected_city_site_delta_vs_greedy"] = (
+                self.search_selected_city_site_delta_vs_greedy
+            )
+        if self.search_route_plain_cost is not None:
+            result["search_route_plain_cost"] = self.search_route_plain_cost
+        if self.search_route_progress_delta is not None:
+            result["search_route_progress_delta"] = self.search_route_progress_delta
         if self.search_beam_width is not None:
             result["search_beam_width"] = self.search_beam_width
         if self.search_candidate_limit is not None:

@@ -43,10 +43,10 @@ from microciv.constants import (
     FOOD_CONSUMPTION_PER_CITY,
 )
 from microciv.game.actions import Action
-from microciv.game.enums import ActionType, BuildingType, TechType
+from microciv.game.enums import ActionType, BuildingType, TechType, TerrainType
 from microciv.game.models import GameState, Network
 from microciv.game.scoring import score_breakdown
-from microciv.utils.grid import Coord, cardinal_neighbors
+from microciv.utils.grid import Coord, cardinal_neighbors, moore_neighbors
 
 SEARCH_DEPTH_REASON_FIXED = "fixed"
 SEARCH_DEPTH_REASON_FOOD_RESCUE = "food_rescue"
@@ -180,6 +180,7 @@ class BridgePath:
     source_network_id: int
     target_network_id: int
     progress_after_first_step: int
+    plain_cost: int = 0
 
     @property
     def min_steps(self) -> int:
@@ -240,6 +241,16 @@ class RiskProbeResult:
     accepted: bool
     accepted_reason: str | None
     rejected_reason: str | None
+
+
+@dataclass(slots=True, frozen=True)
+class SearchRegretGuardDecision:
+    reason: str | None = None
+    hard_risk_improvement: bool = False
+    selected_score_gap_vs_greedy_after_action: int | None = None
+    selected_city_site_delta_vs_greedy: int | None = None
+    route_plain_cost: int | None = None
+    route_progress_delta: int | None = None
 
 
 @dataclass(slots=True)
@@ -411,37 +422,50 @@ class SearchPolicy(Policy):
                 veto_reason=greedy_veto.reason,
                 simulation_cache=simulation_cache,
             )
+            fallback_regret_guard: SearchRegretGuardDecision | None = None
             if fallback is not None:
                 selected_after_state = simulation_cache.simulate(state, fallback)
                 selected_after_risk = _risk_profile(selected_after_state)
-                fallback_evaluation = evaluate_search_leaf(selected_after_state, root_state=state)
-                decision = self._build_planned_decision(
+                fallback_regret_guard = _veto_fallback_regret_guard(
                     state=state,
-                    action=fallback,
-                    root_profile=root_profile,
-                    depth_decision=depth_decision,
-                    actual_depth=probe_decision.depth,
-                    telemetry=telemetry,
-                    best_evaluation=fallback_evaluation,
-                    best_value=fallback_evaluation.value,
-                    best_sequence_adjustment=0,
-                    best_sequence=(fallback,),
-                    planning_mode=SEARCH_PLANNING_MODE_BEAM,
-                    planning_reason=SEARCH_PLANNING_REASON_RISK_SEARCH,
-                    greedy_plan=greedy_plan,
-                    root_risk=root_risk,
-                    greedy_after_risk=greedy_after_risk,
-                    selected_after_risk=selected_after_risk,
-                    simulation_cache=simulation_cache,
-                    overrode_greedy=True,
-                    intervention_trigger=probe_decision.trigger,
-                    accepted_reason="greedy_veto_fallback",
-                    rejected_reason=None,
-                    greedy_veto_reason=greedy_veto.reason,
+                    veto_reason=greedy_veto.reason,
+                    fallback_action=fallback,
+                    greedy_action=greedy_plan.action,
+                    greedy_after=greedy_after_risk,
+                    selected_after=selected_after_risk,
                 )
-                self._cache_key = cache_key
-                self._cached_decision = decision
-                return decision
+                if fallback_regret_guard is None:
+                    fallback_evaluation = evaluate_search_leaf(
+                        selected_after_state,
+                        root_state=state,
+                    )
+                    decision = self._build_planned_decision(
+                        state=state,
+                        action=fallback,
+                        root_profile=root_profile,
+                        depth_decision=depth_decision,
+                        actual_depth=probe_decision.depth,
+                        telemetry=telemetry,
+                        best_evaluation=fallback_evaluation,
+                        best_value=fallback_evaluation.value,
+                        best_sequence_adjustment=0,
+                        best_sequence=(fallback,),
+                        planning_mode=SEARCH_PLANNING_MODE_BEAM,
+                        planning_reason=SEARCH_PLANNING_REASON_RISK_SEARCH,
+                        greedy_plan=greedy_plan,
+                        root_risk=root_risk,
+                        greedy_after_risk=greedy_after_risk,
+                        selected_after_risk=selected_after_risk,
+                        simulation_cache=simulation_cache,
+                        overrode_greedy=True,
+                        intervention_trigger=probe_decision.trigger,
+                        accepted_reason="greedy_veto_fallback",
+                        rejected_reason=None,
+                        greedy_veto_reason=greedy_veto.reason,
+                    )
+                    self._cache_key = cache_key
+                    self._cached_decision = decision
+                    return decision
 
             greedy_evaluation = evaluate_search_leaf(greedy_after_state, root_state=state)
             decision = self._build_planned_decision(
@@ -465,8 +489,13 @@ class SearchPolicy(Policy):
                 overrode_greedy=False,
                 intervention_trigger=probe_decision.trigger,
                 accepted_reason=None,
-                rejected_reason="no_probe_candidate",
+                rejected_reason=(
+                    fallback_regret_guard.reason
+                    if fallback_regret_guard is not None
+                    else "no_probe_candidate"
+                ),
                 greedy_veto_reason=greedy_veto.reason,
+                regret_guard=fallback_regret_guard,
             )
             self._cache_key = cache_key
             self._cached_decision = decision
@@ -524,6 +553,24 @@ class SearchPolicy(Policy):
         if veto_probe_result is not None and not probe_result.accepted:
             probe_result = veto_probe_result
 
+        regret_guard = _regret_guard_decision(
+            state=state,
+            trigger=probe_decision.trigger,
+            root_risk=root_risk,
+            greedy_plan=greedy_plan,
+            selected_action=selected_action,
+            greedy_after=greedy_after_risk,
+            selected_after=selected_after_risk,
+            selected_sequence_after=_risk_profile(best_node.state),
+            probe_result=probe_result,
+        )
+        if regret_guard.reason is not None:
+            probe_result = RiskProbeResult(
+                accepted=False,
+                accepted_reason=None,
+                rejected_reason=regret_guard.reason,
+            )
+
         if selected_action != greedy_plan.action and probe_result.accepted:
             action = selected_action
             best_evaluation = best_node.leaf_evaluation
@@ -546,18 +593,39 @@ class SearchPolicy(Policy):
                 simulation_cache=simulation_cache,
             )
             if fallback is not None:
-                action = fallback
-                selected_after_state = simulation_cache.simulate(state, action)
-                selected_after_risk = _risk_profile(selected_after_state)
-                best_evaluation = evaluate_search_leaf(selected_after_state, root_state=state)
-                best_value = best_evaluation.value
-                best_sequence_adjustment = 0
-                best_sequence = (action,)
-                probe_result = RiskProbeResult(
-                    accepted=True,
-                    accepted_reason="greedy_veto_fallback",
-                    rejected_reason=None,
+                fallback_selected_after_risk = _risk_profile(
+                    simulation_cache.simulate(state, fallback)
                 )
+                fallback_regret_guard = _veto_fallback_regret_guard(
+                    state=state,
+                    veto_reason=greedy_veto.reason,
+                    fallback_action=fallback,
+                    greedy_action=greedy_plan.action,
+                    greedy_after=greedy_after_risk,
+                    selected_after=fallback_selected_after_risk,
+                )
+                if fallback_regret_guard is not None:
+                    regret_guard = fallback_regret_guard
+                else:
+                    action = fallback
+                    selected_after_state = simulation_cache.simulate(state, action)
+                    selected_after_risk = _risk_profile(selected_after_state)
+                    best_evaluation = evaluate_search_leaf(selected_after_state, root_state=state)
+                    best_value = best_evaluation.value
+                    best_sequence_adjustment = 0
+                    best_sequence = (action,)
+                    probe_result = RiskProbeResult(
+                        accepted=True,
+                        accepted_reason="greedy_veto_fallback",
+                        rejected_reason=None,
+                    )
+                    regret_guard = _regret_guard_default_diagnostics(
+                        state=state,
+                        action=action,
+                        greedy_action=greedy_plan.action,
+                        greedy_after=greedy_after_risk,
+                        selected_after=selected_after_risk,
+                    )
 
         decision = PlannedSearchDecision(
             action=action,
@@ -588,6 +656,7 @@ class SearchPolicy(Policy):
                 if action == greedy_plan.action
                 else None,
                 greedy_veto_reason=greedy_veto.reason,
+                regret_guard=regret_guard,
             ),
             root_candidate_diagnostics=tuple(telemetry.root_candidate_diagnostics),
         )
@@ -620,6 +689,7 @@ class SearchPolicy(Policy):
         accepted_reason: str | None,
         rejected_reason: str | None,
         greedy_veto_reason: str | None,
+        regret_guard: SearchRegretGuardDecision | None = None,
     ) -> PlannedSearchDecision:
         return PlannedSearchDecision(
             action=action,
@@ -646,6 +716,7 @@ class SearchPolicy(Policy):
                 accepted_reason=accepted_reason,
                 rejected_reason=rejected_reason,
                 greedy_veto_reason=greedy_veto_reason,
+                regret_guard=regret_guard,
             ),
             root_candidate_diagnostics=tuple(telemetry.root_candidate_diagnostics),
         )
@@ -675,6 +746,7 @@ class SearchPolicy(Policy):
         accepted_reason: str | None,
         rejected_reason: str | None,
         greedy_veto_reason: str | None,
+        regret_guard: SearchRegretGuardDecision | None = None,
     ) -> dict[str, object]:
         (
             dominant_pressure,
@@ -708,6 +780,13 @@ class SearchPolicy(Policy):
             simulation_cache=simulation_cache,
         )
         route_diagnostics = _route_diagnostics(state, action)
+        regret_guard = regret_guard or _regret_guard_default_diagnostics(
+            state=state,
+            action=action,
+            greedy_action=greedy_plan.action,
+            greedy_after=greedy_after_risk,
+            selected_after=selected_after_risk,
+        )
         return {
             **greedy_plan.context,
             "search_mode": root_profile.mode,
@@ -725,6 +804,16 @@ class SearchPolicy(Policy):
             "search_probe_accepted_reason": accepted_reason,
             "search_probe_rejected_reason": rejected_reason,
             "search_greedy_veto_reason": greedy_veto_reason,
+            "search_regret_guard_reason": regret_guard.reason,
+            "search_hard_risk_improvement": regret_guard.hard_risk_improvement,
+            "search_selected_score_gap_vs_greedy_after_action": (
+                regret_guard.selected_score_gap_vs_greedy_after_action
+            ),
+            "search_selected_city_site_delta_vs_greedy": (
+                regret_guard.selected_city_site_delta_vs_greedy
+            ),
+            "search_route_plain_cost": regret_guard.route_plain_cost,
+            "search_route_progress_delta": regret_guard.route_progress_delta,
             "search_beam_width": self.search_beam_width,
             "search_candidate_limit": self.search_candidate_limit,
             "search_root_legal_build_city_count": root_legal_counts[ActionType.BUILD_CITY],
@@ -1351,7 +1440,7 @@ def _recent_search_or_greedy_connection_gain(state: GameState) -> bool:
 
 def _recent_probe_rejected_without_worsening(
     state: GameState,
-    trigger: str,
+    trigger: str | None,
     root: RiskProfile,
 ) -> bool:
     if root.starving_isolated_network_count > 0:
@@ -1394,6 +1483,414 @@ def _context_int(context: dict[str, object], key: str) -> int | None:
     if isinstance(value, int):
         return value
     return None
+
+
+def _regret_guard_decision(
+    *,
+    state: GameState,
+    trigger: str,
+    root_risk: RiskProfile,
+    greedy_plan: GreedyPlanSnapshot,
+    selected_action: Action,
+    greedy_after: RiskProfile,
+    selected_after: RiskProfile,
+    selected_sequence_after: RiskProfile,
+    probe_result: RiskProbeResult,
+) -> SearchRegretGuardDecision:
+    hard_improvement = _has_hard_risk_improvement(
+        greedy_after=greedy_after,
+        selected_after=selected_after,
+        selected_sequence_after=selected_sequence_after,
+    )
+    score_gap = selected_after.score_total - greedy_after.score_total
+    city_site_delta = _selected_city_site_delta_vs_greedy(
+        state,
+        selected_action=selected_action,
+        greedy_action=greedy_plan.action,
+    )
+    route_plain_cost, route_progress_delta = _route_guard_metrics(state, selected_action)
+    base = SearchRegretGuardDecision(
+        hard_risk_improvement=hard_improvement,
+        selected_score_gap_vs_greedy_after_action=score_gap,
+        selected_city_site_delta_vs_greedy=city_site_delta,
+        route_plain_cost=route_plain_cost,
+        route_progress_delta=route_progress_delta,
+    )
+    if selected_action == greedy_plan.action or not probe_result.accepted:
+        return base
+
+    route_reason = _route_commitment_guard_reason(
+        state=state,
+        selected_action=selected_action,
+        selected_after=selected_after,
+        root_risk=root_risk,
+    )
+    if route_reason is not None:
+        return _regret_guard_with_reason(base, route_reason)
+
+    city_reason = _selected_city_guard_reason(
+        state=state,
+        root_risk=root_risk,
+        selected_action=selected_action,
+        selected_after=selected_after,
+        hard_improvement=hard_improvement,
+    )
+    if city_reason is not None:
+        return _regret_guard_with_reason(base, city_reason)
+
+    road_reason = _selected_road_guard_reason(
+        state=state,
+        selected_action=selected_action,
+        selected_after=selected_after,
+    )
+    if road_reason is not None:
+        return _regret_guard_with_reason(base, road_reason)
+
+    early_reason = _early_city_anchor_guard_reason(
+        state=state,
+        selected_action=selected_action,
+        greedy_action=greedy_plan.action,
+        city_site_delta=city_site_delta,
+        hard_improvement=hard_improvement,
+    )
+    if early_reason is not None:
+        return _regret_guard_with_reason(base, early_reason)
+
+    if (
+        trigger == SEARCH_INTERVENTION_CONNECT
+        and not hard_improvement
+        and _bridge_path_for_first_action(state, selected_action) is None
+    ):
+        return _regret_guard_with_reason(base, "connect_without_hard_improvement")
+
+    if not hard_improvement and score_gap < -50:
+        return _regret_guard_with_reason(base, "regret_score_gap")
+    return base
+
+
+def _regret_guard_default_diagnostics(
+    *,
+    state: GameState,
+    action: Action,
+    greedy_action: Action,
+    greedy_after: RiskProfile,
+    selected_after: RiskProfile,
+) -> SearchRegretGuardDecision:
+    route_plain_cost, route_progress_delta = _route_guard_metrics(state, action)
+    return SearchRegretGuardDecision(
+        hard_risk_improvement=_has_hard_risk_improvement(
+            greedy_after=greedy_after,
+            selected_after=selected_after,
+            selected_sequence_after=None,
+        ),
+        selected_score_gap_vs_greedy_after_action=(
+            selected_after.score_total - greedy_after.score_total
+        ),
+        selected_city_site_delta_vs_greedy=_selected_city_site_delta_vs_greedy(
+            state,
+            selected_action=action,
+            greedy_action=greedy_action,
+        ),
+        route_plain_cost=route_plain_cost,
+        route_progress_delta=route_progress_delta,
+    )
+
+
+def _veto_fallback_regret_guard(
+    *,
+    state: GameState,
+    veto_reason: str | None,
+    fallback_action: Action,
+    greedy_action: Action,
+    greedy_after: RiskProfile,
+    selected_after: RiskProfile,
+) -> SearchRegretGuardDecision | None:
+    if veto_reason is None:
+        return None
+    hard_improvement = _risk_profile_has_hard_improvement(greedy_after, selected_after)
+    score_gap = selected_after.score_total - greedy_after.score_total
+    route_plain_cost, route_progress_delta = _route_guard_metrics(state, fallback_action)
+    guard = SearchRegretGuardDecision(
+        hard_risk_improvement=hard_improvement,
+        selected_score_gap_vs_greedy_after_action=score_gap,
+        selected_city_site_delta_vs_greedy=_selected_city_site_delta_vs_greedy(
+            state,
+            selected_action=fallback_action,
+            greedy_action=greedy_action,
+        ),
+        route_plain_cost=route_plain_cost,
+        route_progress_delta=route_progress_delta,
+    )
+    if (
+        veto_reason.startswith("city_")
+        and fallback_action.action_type is ActionType.BUILD_CITY
+        and not hard_improvement
+        and score_gap < 0
+    ):
+        return _regret_guard_with_reason(guard, "city_veto_fallback_regret")
+    if not hard_improvement and score_gap < -50:
+        return _regret_guard_with_reason(guard, "greedy_veto_fallback_regret")
+    return None
+
+
+def _regret_guard_with_reason(
+    guard: SearchRegretGuardDecision,
+    reason: str,
+) -> SearchRegretGuardDecision:
+    return SearchRegretGuardDecision(
+        reason=reason,
+        hard_risk_improvement=guard.hard_risk_improvement,
+        selected_score_gap_vs_greedy_after_action=(guard.selected_score_gap_vs_greedy_after_action),
+        selected_city_site_delta_vs_greedy=guard.selected_city_site_delta_vs_greedy,
+        route_plain_cost=guard.route_plain_cost,
+        route_progress_delta=guard.route_progress_delta,
+    )
+
+
+def _has_hard_risk_improvement(
+    *,
+    greedy_after: RiskProfile,
+    selected_after: RiskProfile,
+    selected_sequence_after: RiskProfile | None,
+) -> bool:
+    return _risk_profile_has_hard_improvement(greedy_after, selected_after) or (
+        selected_sequence_after is not None
+        and _risk_profile_has_hard_improvement(greedy_after, selected_sequence_after)
+    )
+
+
+def _risk_profile_has_hard_improvement(
+    greedy_after: RiskProfile,
+    candidate_after: RiskProfile,
+) -> bool:
+    return (
+        candidate_after.starving_network_count < greedy_after.starving_network_count
+        or candidate_after.network_count < greedy_after.network_count
+        or candidate_after.isolated_city_count < greedy_after.isolated_city_count
+        or candidate_after.connected_city_count > greedy_after.connected_city_count
+        or greedy_after.food_pressure - candidate_after.food_pressure >= FOOD_CONSUMPTION_PER_CITY
+    )
+
+
+def _selected_city_site_delta_vs_greedy(
+    state: GameState,
+    *,
+    selected_action: Action,
+    greedy_action: Action,
+) -> int | None:
+    if (
+        selected_action.action_type is not ActionType.BUILD_CITY
+        or selected_action.coord is None
+        or greedy_action.action_type is not ActionType.BUILD_CITY
+        or greedy_action.coord is None
+    ):
+        return None
+    context = build_heuristic_context(state)
+    return city_site_score_for_context(
+        context, selected_action.coord
+    ) - city_site_score_for_context(context, greedy_action.coord)
+
+
+def _selected_city_ring_delta_vs_greedy(
+    state: GameState,
+    *,
+    selected_action: Action,
+    greedy_action: Action,
+) -> int | None:
+    if (
+        selected_action.action_type is not ActionType.BUILD_CITY
+        or selected_action.coord is None
+        or greedy_action.action_type is not ActionType.BUILD_CITY
+        or greedy_action.coord is None
+    ):
+        return None
+    context = build_heuristic_context(state)
+    return resource_ring_bonus_for_context(
+        context, selected_action.coord
+    ) - resource_ring_bonus_for_context(context, greedy_action.coord)
+
+
+def _early_city_anchor_guard_reason(
+    *,
+    state: GameState,
+    selected_action: Action,
+    greedy_action: Action,
+    city_site_delta: int | None,
+    hard_improvement: bool,
+) -> str | None:
+    if hard_improvement or not _is_early_stage(state):
+        return None
+    if greedy_action.action_type is not ActionType.BUILD_CITY or greedy_action.coord is None:
+        return None
+    context = build_heuristic_context(state)
+    greedy_budget = site_budget(state, greedy_action.coord, context)
+    greedy_site_score = city_site_score_for_context(context, greedy_action.coord)
+    greedy_ring_bonus = resource_ring_bonus_for_context(context, greedy_action.coord)
+    greedy_safe_high_quality = greedy_budget.food_balance >= 1 and (
+        greedy_site_score >= 220 or greedy_ring_bonus >= 220
+    )
+    if selected_action.action_type is not ActionType.BUILD_CITY:
+        return "early_greedy_city_anchor" if greedy_safe_high_quality else None
+    ring_delta = _selected_city_ring_delta_vs_greedy(
+        state,
+        selected_action=selected_action,
+        greedy_action=greedy_action,
+    )
+    if (city_site_delta is not None and city_site_delta < -120) or (
+        ring_delta is not None and ring_delta < -80
+    ):
+        return "early_low_city_quality"
+    if greedy_safe_high_quality and city_site_delta is not None and city_site_delta < 0:
+        return "early_greedy_city_anchor"
+    return None
+
+
+def _is_early_stage(state: GameState) -> bool:
+    return state.turn <= max(12, state.config.turn_limit // 4)
+
+
+def _selected_city_guard_reason(
+    *,
+    state: GameState,
+    root_risk: RiskProfile,
+    selected_action: Action,
+    selected_after: RiskProfile,
+    hard_improvement: bool,
+) -> str | None:
+    if selected_action.action_type is not ActionType.BUILD_CITY or selected_action.coord is None:
+        return None
+    context = build_heuristic_context(state)
+    coord = selected_action.coord
+    budget = site_budget(state, coord, context)
+    local_capacity = _local_food_capacity(state, coord, context)
+    distance = _distance_to_existing_network(state, coord)
+    connects_food_buffer = _city_connects_food_buffer_network(state, coord, context)
+    remote = distance is None or distance > 1
+    if remote and budget.food_balance < 1 and local_capacity < 2 and not connects_food_buffer:
+        return "city_remote_low_food_capacity"
+    if (
+        selected_after.food_pressure > root_risk.food_pressure
+        and not hard_improvement
+        and not connects_food_buffer
+    ):
+        return "city_food_pressure_worse_without_route"
+    return None
+
+
+def _local_food_capacity(
+    state: GameState,
+    coord: Coord,
+    context: HeuristicContext,
+) -> int:
+    _forest, _mountain, river, plain, _occupied = resource_ring_counts_for_context(
+        context,
+        coord,
+    )
+    center_plain = 1 if state.board[coord].base_terrain is TerrainType.PLAIN else 0
+    return center_plain + plain + river
+
+
+def _city_connects_food_buffer_network(
+    state: GameState,
+    coord: Coord,
+    context: HeuristicContext,
+) -> bool:
+    return any(
+        network_id in state.networks and _network_has_food_buffer(state.networks[network_id])
+        for network_id in _adjacent_network_ids_for_context(context, coord)
+    )
+
+
+def _selected_road_guard_reason(
+    *,
+    state: GameState,
+    selected_action: Action,
+    selected_after: RiskProfile,
+) -> str | None:
+    if selected_action.action_type is not ActionType.BUILD_ROAD or selected_action.coord is None:
+        return None
+    if not _road_consumes_low_capacity_last_plain(state, selected_action.coord):
+        return None
+    before = _risk_profile(state)
+    immediately_connects = (
+        selected_after.network_count < before.network_count
+        or selected_after.connected_city_count > before.connected_city_count
+    )
+    bridge_path = _bridge_path_for_first_action(state, selected_action)
+    if immediately_connects or (
+        bridge_path is not None and _is_committed_route_progress(state, bridge_path)
+    ):
+        return None
+    return "road_last_plain_low_capacity"
+
+
+def _road_consumes_low_capacity_last_plain(state: GameState, coord: Coord) -> bool:
+    tile = state.board.get(coord)
+    if tile is None or tile.base_terrain is not TerrainType.PLAIN:
+        return False
+    for city in state.cities.values():
+        if coord not in set(moore_neighbors(city.coord)):
+            continue
+        network = state.networks.get(city.network_id)
+        if network is None or not _network_has_low_food_capacity(network):
+            continue
+        if _available_plain_count_around_city(state, city.coord) <= 1:
+            return True
+    return False
+
+
+def _network_has_low_food_capacity(network: Network) -> bool:
+    city_count_value = max(1, len(network.city_ids))
+    return (
+        network.resources.food < city_count_value * FOOD_CONSUMPTION_PER_CITY * 3
+        or city_network_pressure(network) >= 0
+    )
+
+
+def _available_plain_count_around_city(state: GameState, coord: Coord) -> int:
+    return sum(
+        1
+        for neighbor in moore_neighbors(coord)
+        if (tile := state.board.get(neighbor)) is not None
+        and tile.occupant.value == "none"
+        and tile.base_terrain is TerrainType.PLAIN
+    )
+
+
+def _route_commitment_guard_reason(
+    *,
+    state: GameState,
+    selected_action: Action,
+    selected_after: RiskProfile,
+    root_risk: RiskProfile,
+) -> str | None:
+    previous_target_id, previous_remaining_steps = _previous_committed_route_context(state)
+    if previous_target_id is None:
+        return None
+    if selected_action.action_type is not ActionType.BUILD_ROAD:
+        return "route_commitment_deviation"
+    bridge_path = _bridge_path_for_first_action(state, selected_action)
+    if bridge_path is None:
+        return "route_commitment_deviation"
+    if bridge_path.target_network_id == previous_target_id:
+        progress_delta = _route_progress_delta(state, bridge_path)
+        if progress_delta is not None and progress_delta <= 0:
+            return "route_progress_not_monotonic"
+        return None
+    if (
+        previous_remaining_steps is not None
+        and bridge_path.min_steps < previous_remaining_steps
+        and selected_after.food_pressure <= root_risk.food_pressure
+    ):
+        return None
+    return "route_commitment_deviation"
+
+
+def _route_guard_metrics(state: GameState, action: Action) -> tuple[int | None, int | None]:
+    bridge_path = _bridge_path_for_first_action(state, action)
+    if bridge_path is None:
+        return None, None
+    return bridge_path.plain_cost, _route_progress_delta(state, bridge_path)
 
 
 def _evaluate_probe_result(
@@ -1900,7 +2397,7 @@ def _risk_search_candidate(
     bridge_path = _bridge_path_for_first_action(state, action)
     bridge_bonus = 0
     if bridge_path is not None:
-        bridge_bonus = 18 + bridge_path.progress_after_first_step * 6
+        bridge_bonus = 18 + bridge_path.progress_after_first_step * 6 - bridge_path.plain_cost * 3
     rank_score = improvement * 1_000
     if action.action_type is ActionType.BUILD_CITY and action.coord is not None:
         quality = _city_anchor_quality(state, action.coord, context)
@@ -1955,7 +2452,7 @@ def _risk_action_improvement_score(
 ) -> int:
     bridge_path = _bridge_path_for_first_action(state, action)
     if bridge_path is not None:
-        return 18 + bridge_path.progress_after_first_step * 6
+        return 18 + bridge_path.progress_after_first_step * 6 - bridge_path.plain_cost * 3
     before = _risk_profile(state)
     try:
         simulated = (
@@ -2054,6 +2551,25 @@ def _action_is_valid_veto_fallback(
         )
     if action.action_type is ActionType.BUILD_CITY and action.coord is not None:
         budget = site_budget(state, action.coord, context)
+        local_capacity = _local_food_capacity(state, action.coord, context)
+        if (
+            budget.food_balance < 1
+            and local_capacity < 2
+            and not _city_connects_food_buffer_network(state, action.coord, context)
+        ):
+            return False
+        try:
+            simulated = simulation_cache.simulate(state, action)
+        except ValueError:
+            return False
+        before = _risk_profile(state)
+        after = _risk_profile(simulated)
+        if (
+            after.food_pressure > before.food_pressure
+            and after.network_count >= before.network_count
+            and after.connected_city_count <= before.connected_city_count
+        ):
+            return False
         return budget.food_balance >= 1 or _city_can_stabilize_food(state, action.coord, context)
     if action.action_type is ActionType.BUILD_BUILDING:
         return _is_rescue_fill_action(state, action)
@@ -2110,8 +2626,7 @@ def _is_rescue_fill_action(state: GameState, action: Action) -> bool:
         )
     if action.action_type is ActionType.RESEARCH_TECH:
         return (
-            action.tech_type is TechType.AGRICULTURE
-            or _risk_action_score_delta(state, action) >= 0
+            action.tech_type is TechType.AGRICULTURE or _risk_action_score_delta(state, action) >= 0
         )
     return False
 
@@ -2268,6 +2783,7 @@ def _bridge_paths_for_state(
                 source_network_id=source_id,
                 target_network_id=target_id,
                 progress_after_first_step=progress,
+                plain_cost=_route_plain_cost(state, coord_path),
             )
             if progress <= 0 and path.min_steps > 1:
                 continue
@@ -2346,11 +2862,7 @@ def _bridge_target_network_ids(state: GameState, risk_network_ids: set[int]) -> 
 
 
 def _bridge_buildable_road_coords(state: GameState) -> set[Coord]:
-    return {
-        coord
-        for coord, tile in state.board.items()
-        if tile.occupant.value == "none"
-    }
+    return {coord for coord, tile in state.board.items() if tile.occupant.value == "none"}
 
 
 def _network_needs_food(network: Network) -> bool:
@@ -2388,15 +2900,14 @@ def _short_bridge_path(
     blocked_coords: set[Coord],
     max_steps: int,
 ) -> tuple[Coord, ...] | None:
-    del state
-    queue: list[tuple[int, Coord, tuple[Coord, ...]]] = []
-    best_seen: dict[Coord, int] = {}
+    queue: list[tuple[int, int, int, Coord, tuple[Coord, ...]]] = []
+    best_seen: dict[Coord, tuple[int, int]] = {}
     for coord in sorted(source_coords):
-        heappush(queue, (0, coord, ()))
-        best_seen[coord] = 0
+        heappush(queue, (0, 0, 0, coord, ()))
+        best_seen[coord] = (0, 0)
 
     while queue:
-        steps, coord, path = heappop(queue)
+        _cost, steps, plain_cost, coord, path = heappop(queue)
         if steps > max_steps:
             continue
         if coord in target_coords and path:
@@ -2417,11 +2928,16 @@ def _short_bridge_path(
             if neighbor not in buildable_road_coords:
                 continue
             next_steps = steps + 1
-            previous_steps = best_seen.get(neighbor)
-            if previous_steps is not None and previous_steps <= next_steps:
+            next_plain_cost = plain_cost + _bridge_coord_plain_cost(state, neighbor)
+            next_cost = (next_steps * 3) + next_plain_cost
+            previous_best = best_seen.get(neighbor)
+            if previous_best is not None and previous_best <= (next_cost, next_steps):
                 continue
-            best_seen[neighbor] = next_steps
-            heappush(queue, (next_steps, neighbor, (*path, neighbor)))
+            best_seen[neighbor] = (next_cost, next_steps)
+            heappush(
+                queue,
+                (next_cost, next_steps, next_plain_cost, neighbor, (*path, neighbor)),
+            )
     return None
 
 
@@ -2497,14 +3013,27 @@ def _bridge_path_for_first_action(state: GameState, action: Action) -> BridgePat
     return None
 
 
-def _bridge_path_sort_key(path: BridgePath) -> tuple[int, int, int, tuple[int, int]]:
+def _bridge_path_sort_key(path: BridgePath) -> tuple[int, int, int, int, int, tuple[int, int]]:
     first_coord = path.actions[0].coord if path.actions[0].coord is not None else (10**9, 10**9)
     return (
-        path.min_steps,
+        path.min_steps + min(path.plain_cost, 2),
+        path.plain_cost,
         -path.progress_after_first_step,
         path.source_network_id,
+        path.target_network_id,
         first_coord,
     )
+
+
+def _route_plain_cost(state: GameState, coords: tuple[Coord, ...]) -> int:
+    return sum(_bridge_coord_plain_cost(state, coord) for coord in coords)
+
+
+def _bridge_coord_plain_cost(state: GameState, coord: Coord) -> int:
+    tile = state.board.get(coord)
+    if tile is None or tile.base_terrain is not TerrainType.PLAIN:
+        return 0
+    return 4 if _road_consumes_low_capacity_last_plain(state, coord) else 1
 
 
 def _required_coord(action: Action) -> Coord:
@@ -2672,25 +3201,50 @@ def _route_diagnostics(state: GameState, action: Action) -> dict[str, object]:
 
 
 def _route_committed_from_history(state: GameState, bridge_path: BridgePath) -> bool:
-    for context in reversed(state.stats.decision_contexts[-6:]):
-        target_id = _context_int(context, "search_route_target_network_id")
-        remaining_steps = _context_int(context, "search_route_remaining_steps")
-        committed = context.get("search_route_committed")
-        if target_id != bridge_path.target_network_id or committed is not True:
-            continue
-        return remaining_steps is None or bridge_path.min_steps <= remaining_steps
-    return True
+    previous_target_id, previous_remaining_steps = _previous_committed_route_context(state)
+    if previous_target_id is None:
+        return True
+    if previous_target_id != bridge_path.target_network_id:
+        return False
+    return previous_remaining_steps is None or bridge_path.min_steps <= previous_remaining_steps
 
 
-def _preferred_committed_route_action(state: GameState) -> Action | None:
-    previous_target_id: int | None = None
-    previous_remaining_steps: int | None = None
+def _is_committed_route_progress(state: GameState, bridge_path: BridgePath) -> bool:
+    previous_target_id, previous_remaining_steps = _previous_committed_route_context(state)
+    if previous_target_id is None:
+        return False
+    if previous_target_id != bridge_path.target_network_id:
+        return False
+    if previous_remaining_steps is None:
+        return bridge_path.progress_after_first_step > 0
+    return bridge_path.min_steps <= previous_remaining_steps
+
+
+def _route_progress_delta(state: GameState, bridge_path: BridgePath) -> int | None:
+    previous_target_id, previous_remaining_steps = _previous_committed_route_context(state)
+    remaining_after_action = max(0, bridge_path.min_steps - 1)
+    if previous_target_id is None:
+        return bridge_path.progress_after_first_step
+    if previous_target_id != bridge_path.target_network_id:
+        return None
+    if previous_remaining_steps is None:
+        return bridge_path.progress_after_first_step
+    return previous_remaining_steps - remaining_after_action
+
+
+def _previous_committed_route_context(state: GameState) -> tuple[int | None, int | None]:
     for context in reversed(state.stats.decision_contexts[-6:]):
         if context.get("search_route_committed") is not True:
             continue
-        previous_target_id = _context_int(context, "search_route_target_network_id")
-        previous_remaining_steps = _context_int(context, "search_route_remaining_steps")
-        break
+        target_id = _context_int(context, "search_route_target_network_id")
+        if target_id is None or target_id not in state.networks:
+            continue
+        return target_id, _context_int(context, "search_route_remaining_steps")
+    return None, None
+
+
+def _preferred_committed_route_action(state: GameState) -> Action | None:
+    previous_target_id, previous_remaining_steps = _previous_committed_route_context(state)
     if previous_target_id is None:
         return None
 

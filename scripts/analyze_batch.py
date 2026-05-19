@@ -461,6 +461,11 @@ def build_search_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataF
         "search_route_target_network_id",
         "search_route_remaining_steps",
         "search_route_committed",
+        "search_hard_risk_improvement",
+        "search_selected_score_gap_vs_greedy_after_action",
+        "search_selected_city_site_delta_vs_greedy",
+        "search_route_plain_cost",
+        "search_route_progress_delta",
         "search_nodes_expanded",
         "search_candidates_considered",
         "search_leaf_count",
@@ -633,6 +638,11 @@ def build_search_candidate_health_summary_from_decision_df(
         "search_route_target_network_id",
         "search_route_remaining_steps",
         "search_route_committed",
+        "search_hard_risk_improvement",
+        "search_selected_score_gap_vs_greedy_after_action",
+        "search_selected_city_site_delta_vs_greedy",
+        "search_route_plain_cost",
+        "search_route_progress_delta",
         "search_delta_starving_network_count",
         "search_delta_food_pressure",
         "search_delta_isolated_city_count",
@@ -667,6 +677,8 @@ def build_search_road_quality_summary_from_decision_df(decision_df: pd.DataFrame
         "search_delta_network_count",
         "search_route_committed",
         "search_route_remaining_steps",
+        "search_route_plain_cost",
+        "search_route_progress_delta",
     ]:
         if column not in road_df:
             road_df[column] = 0
@@ -681,6 +693,8 @@ def build_search_road_quality_summary_from_decision_df(decision_df: pd.DataFrame
             network_delta_mean=("search_delta_network_count", "mean"),
             route_committed_rate=("search_route_committed", "mean"),
             route_remaining_steps_mean=("search_route_remaining_steps", "mean"),
+            route_plain_cost_mean=("search_route_plain_cost", "mean"),
+            route_progress_delta_mean=("search_route_progress_delta", "mean"),
         )
         .reset_index()
     )
@@ -853,12 +867,43 @@ def build_search_matchup_summary_from_macro_df(macro_df: pd.DataFrame) -> pd.Dat
     merged["meets_same_map_bar"] = (
         (merged["score_gap_vs_greedy"] >= 0) & (merged["score_gap_vs_random"] >= 0)
     ).astype(int)
+    merged["strict_win_vs_greedy"] = (merged["score_gap_vs_greedy"] > 0).astype(int)
+    merged["strict_tie_vs_greedy"] = (merged["score_gap_vs_greedy"] == 0).astype(int)
+    merged["strict_loss_vs_greedy"] = (merged["score_gap_vs_greedy"] < 0).astype(int)
+    merged["strict_win_or_tie_vs_greedy"] = (merged["score_gap_vs_greedy"] >= 0).astype(int)
+    loss_gap_abs = (-merged["score_gap_vs_greedy"]).clip(lower=0)
+    merged["strict_loss_gap_abs_le_50"] = (
+        (merged["score_gap_vs_greedy"] < 0) & (loss_gap_abs <= 50)
+    ).astype(int)
+    merged["strict_loss_gap_abs_51_150"] = (
+        (merged["score_gap_vs_greedy"] < 0) & (loss_gap_abs > 50) & (loss_gap_abs <= 150)
+    ).astype(int)
+    merged["strict_loss_gap_abs_151_400"] = (
+        (merged["score_gap_vs_greedy"] < 0) & (loss_gap_abs > 150) & (loss_gap_abs <= 400)
+    ).astype(int)
+    merged["strict_loss_gap_abs_gt_400"] = (
+        (merged["score_gap_vs_greedy"] < 0) & (loss_gap_abs > 400)
+    ).astype(int)
     summary = (
         merged.groupby(["policy_variant"], dropna=False)
         .agg(
             samples=("final_score", "size"),
             same_map_win_rate=("meets_same_map_bar", "mean"),
             same_map_wins=("meets_same_map_bar", "sum"),
+            strict_wins_vs_greedy=("strict_win_vs_greedy", "sum"),
+            strict_ties_vs_greedy=("strict_tie_vs_greedy", "sum"),
+            strict_losses_vs_greedy=("strict_loss_vs_greedy", "sum"),
+            strict_win_rate_vs_greedy=("strict_win_vs_greedy", "mean"),
+            strict_tie_rate_vs_greedy=("strict_tie_vs_greedy", "mean"),
+            strict_win_or_tie_rate_vs_greedy=("strict_win_or_tie_vs_greedy", "mean"),
+            strict_loss_gap_abs_le_50_count=("strict_loss_gap_abs_le_50", "sum"),
+            strict_loss_gap_abs_51_150_count=("strict_loss_gap_abs_51_150", "sum"),
+            strict_loss_gap_abs_151_400_count=("strict_loss_gap_abs_151_400", "sum"),
+            strict_loss_gap_abs_gt_400_count=("strict_loss_gap_abs_gt_400", "sum"),
+            strict_loss_gap_abs_le_50_rate=("strict_loss_gap_abs_le_50", "mean"),
+            strict_loss_gap_abs_51_150_rate=("strict_loss_gap_abs_51_150", "mean"),
+            strict_loss_gap_abs_151_400_rate=("strict_loss_gap_abs_151_400", "mean"),
+            strict_loss_gap_abs_gt_400_rate=("strict_loss_gap_abs_gt_400", "mean"),
             avg_score_gap_vs_greedy=("score_gap_vs_greedy", "mean"),
             median_score_gap_vs_greedy=("score_gap_vs_greedy", "median"),
             avg_score_gap_vs_random=("score_gap_vs_random", "mean"),
@@ -868,6 +913,16 @@ def build_search_matchup_summary_from_macro_df(macro_df: pd.DataFrame) -> pd.Dat
         .reset_index()
     )
     summary["same_map_win_rate"] = summary["same_map_win_rate"] * 100
+    for column in (
+        "strict_win_rate_vs_greedy",
+        "strict_tie_rate_vs_greedy",
+        "strict_win_or_tie_rate_vs_greedy",
+        "strict_loss_gap_abs_le_50_rate",
+        "strict_loss_gap_abs_51_150_rate",
+        "strict_loss_gap_abs_151_400_rate",
+        "strict_loss_gap_abs_gt_400_rate",
+    ):
+        summary[column] = summary[column] * 100
     summary["wins_per_cpu_hour"] = summary["same_map_wins"] / (
         summary["decision_time_ms_total"].clip(lower=0.000001) / 3_600_000
     )
@@ -2272,6 +2327,7 @@ def render_search_decision_window_from_df(
             f"pressure={decision.get('search_dominant_pressure', '-') or '-':24} | "
             f"rank={_fmt_optional(decision.get('search_root_chosen_rank')):>3} | "
             f"margin={_fmt_optional(decision.get('search_root_value_margin')):>6} | "
+            f"regret={decision.get('search_regret_guard_reason', '-') or '-':24} | "
             f"d_food={_fmt_optional(decision.get('search_delta_food_pressure')):>4} | "
             f"d_net_food={_fmt_optional(decision.get('search_delta_min_network_food')):>4} | "
             f"d_net_pressure="
