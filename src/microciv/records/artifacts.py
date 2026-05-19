@@ -29,6 +29,7 @@ from microciv.game.models import (
 )
 from microciv.game.scoring import score_breakdown
 from microciv.records.models import RecordEntry
+from microciv.utils.files import write_bytes_atomic
 
 ARTIFACT_SCHEMA_VERSION: Final[int] = 9
 ARTIFACT_MANIFEST_FILENAME: Final[str] = "artifact_manifest.json"
@@ -195,7 +196,7 @@ def write_artifact_manifest(
     if extra:
         manifest.update(extra)
     path = output_dir / ARTIFACT_MANIFEST_FILENAME
-    path.write_bytes(dumps_json_bytes(manifest, indent=True) + b"\n")
+    write_bytes_atomic(path, dumps_json_bytes(manifest, indent=True) + b"\n")
     return path
 
 

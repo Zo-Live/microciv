@@ -44,6 +44,11 @@ from microciv.records.models import (  # noqa: E402
     RecordEntry,
 )
 from microciv.session import create_game_session  # noqa: E402
+from microciv.utils.files import atomic_output_path, write_bytes_atomic  # noqa: E402
+from microciv.utils.process_pool import (  # noqa: E402
+    shutdown_process_pool_gracefully,
+    shutdown_process_pool_now,
+)
 
 GREEDY_LABEL: Final[str] = "Greedy"
 RANDOM_LABEL: Final[str] = "Random"
@@ -493,10 +498,14 @@ def _should_write_artifact_parts(effective_artifact_mode: str) -> bool:
 
 def _prepare_artifact_output_dir(artifact_dir: Path) -> None:
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    _remove_artifact_output_files(artifact_dir)
+
+
+def _remove_artifact_output_files(artifact_dir: Path) -> None:
     for table in ARTIFACT_TABLES:
         for suffix in ("parquet", "jsonl"):
             for path in artifact_dir.glob(f"{table}*.{suffix}"):
-                path.unlink()
+                path.unlink(missing_ok=True)
     (artifact_dir / ARTIFACT_MANIFEST_FILENAME).unlink(missing_ok=True)
 
 
@@ -643,15 +652,16 @@ def collect_greedy_anomalies(
 
 
 def _write_database_json(path: Path, database: RecordDatabase) -> None:
-    path.write_bytes(dumps_json_bytes(database.to_dict(), indent=True) + b"\n")
+    write_bytes_atomic(path, dumps_json_bytes(database.to_dict(), indent=True) + b"\n")
 
 
 def _write_database_csv(path: Path, records: list[RecordEntry]) -> None:
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(CSV_FIELD_ORDER))
-        writer.writeheader()
-        for record in records:
-            writer.writerow(record.to_csv_row())
+    with atomic_output_path(path) as temporary_path:
+        with temporary_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(CSV_FIELD_ORDER))
+            writer.writeheader()
+            for record in records:
+                writer.writerow(record.to_csv_row())
 
 
 def _effective_artifact_mode(raw_mode: str, *, total_games: int, threshold: int) -> str:
@@ -926,7 +936,10 @@ def run_task_batches_parallel(
     last_printed_completed = 0
     last_printed_elapsed = 0.0
     completed = 0
-    with ProcessPoolExecutor(max_workers=workers) as executor:
+    executor = ProcessPoolExecutor(max_workers=workers)
+    executor_stopped = False
+    future_to_batch: dict[Future[WorkerBatchResult], GameTaskBatch] = {}
+    try:
         future_to_batch = {executor.submit(run_game_batch, batch): batch for batch in batches}
         pending: set[Future[WorkerBatchResult]] = set(future_to_batch)
         while pending:
@@ -941,8 +954,8 @@ def run_task_batches_parallel(
                 try:
                     result = future.result()
                 except Exception as exc:
-                    for pending_future in pending:
-                        pending_future.cancel()
+                    shutdown_process_pool_now(executor, pending)
+                    executor_stopped = True
                     raise RuntimeError(_batch_failure_message(batch, exc)) from exc
                 batch_results.append(result)
                 completed += result.completed
@@ -976,6 +989,13 @@ def run_task_batches_parallel(
                 last_printed_at = now
                 last_printed_completed = completed
                 last_printed_elapsed = now - started_at
+    except KeyboardInterrupt:
+        shutdown_process_pool_now(executor, future_to_batch)
+        executor_stopped = True
+        raise
+    finally:
+        if not executor_stopped:
+            shutdown_process_pool_gracefully(executor)
     return _collect_batch_results(
         batch_results,
         run_elapsed_seconds=perf_counter() - started_at,
@@ -1006,30 +1026,31 @@ def _write_database_json_from_jsonl_parts(
 ) -> int:
     written = 0
     first = True
-    with path.open("wb") as output:
-        output.write(
-            f'{{"schema_version":{RECORDS_SCHEMA_VERSION},"next_record_id":1,"records":['.encode(
-                "ascii"
+    with atomic_output_path(path) as temporary_path:
+        with temporary_path.open("wb") as output:
+            output.write(
+                f'{{"schema_version":{RECORDS_SCHEMA_VERSION},"next_record_id":1,"records":['.encode(
+                    "ascii"
+                )
             )
-        )
-        for part_path in part_paths:
-            with part_path.open("rb") as part_file:
-                for line in part_file:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    if record_ids is not None:
-                        payload = loads_json_bytes(line)
-                        if not isinstance(payload, dict):
-                            raise ValueError("Record JSONL rows must be JSON objects.")
-                        if int(payload["record_id"]) not in record_ids:
+            for part_path in part_paths:
+                with part_path.open("rb") as part_file:
+                    for line in part_file:
+                        line = line.strip()
+                        if not line:
                             continue
-                    if not first:
-                        output.write(b",")
-                    output.write(line)
-                    first = False
-                    written += 1
-        output.write(b"]}\n")
+                        if record_ids is not None:
+                            payload = loads_json_bytes(line)
+                            if not isinstance(payload, dict):
+                                raise ValueError("Record JSONL rows must be JSON objects.")
+                            if int(payload["record_id"]) not in record_ids:
+                                continue
+                        if not first:
+                            output.write(b",")
+                        output.write(line)
+                        first = False
+                        written += 1
+            output.write(b"]}\n")
     return written
 
 
@@ -1040,17 +1061,18 @@ def _write_database_csv_from_csv_parts(
     record_ids: set[int] | None = None,
 ) -> int:
     written = 0
-    with path.open("w", newline="", encoding="utf-8") as output:
-        writer = csv.DictWriter(output, fieldnames=list(CSV_FIELD_ORDER))
-        writer.writeheader()
-        for part_path in part_paths:
-            with part_path.open(newline="", encoding="utf-8") as part_file:
-                reader = csv.DictReader(part_file)
-                for row in reader:
-                    if record_ids is not None and int(row["record_id"]) not in record_ids:
-                        continue
-                    writer.writerow(row)
-                    written += 1
+    with atomic_output_path(path) as temporary_path:
+        with temporary_path.open("w", newline="", encoding="utf-8") as output:
+            writer = csv.DictWriter(output, fieldnames=list(CSV_FIELD_ORDER))
+            writer.writeheader()
+            for part_path in part_paths:
+                with part_path.open(newline="", encoding="utf-8") as part_file:
+                    reader = csv.DictReader(part_file)
+                    for row in reader:
+                        if record_ids is not None and int(row["record_id"]) not in record_ids:
+                            continue
+                        writer.writerow(row)
+                        written += 1
     return written
 
 
@@ -1350,13 +1372,21 @@ def main() -> int:
             "anomaly_json_path": str(anomaly_json_path) if anomaly_json_path is not None else "",
             "anomaly_csv_path": str(anomaly_csv_path) if anomaly_csv_path is not None else "",
         }
-        manifest_path.write_bytes(dumps_json_bytes(manifest, indent=True) + b"\n")
+        write_bytes_atomic(manifest_path, dumps_json_bytes(manifest, indent=True) + b"\n")
         print(f"Dataset manifest exported: {manifest_path}", file=sys.stderr)
         print(
             f"Dataset complete: {total_games} games in {total_elapsed:.2f}s "
             f"({total_elapsed / total_games:.3f}s per game)",
             file=sys.stderr,
         )
+    except KeyboardInterrupt:
+        print(
+            "Interrupted by user; stopping workers and cleaning partial outputs.",
+            file=sys.stderr,
+        )
+        if artifact_dir is not None:
+            _remove_artifact_output_files(artifact_dir)
+        return 130
     finally:
         shutil.rmtree(part_dir, ignore_errors=True)
     return 0

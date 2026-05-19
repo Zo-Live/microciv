@@ -516,6 +516,119 @@ def test_run_task_batches_parallel_wraps_worker_failure(monkeypatch) -> None:
         )
 
 
+def test_run_task_batches_parallel_stops_executor_on_keyboard_interrupt(monkeypatch) -> None:
+    future: Future[object] = Future()
+    shutdown_calls: list[tuple[object, tuple[Future[object], ...]]] = []
+
+    class InterruptingProcessPoolExecutor:
+        def __init__(self, *, max_workers: int) -> None:
+            assert max_workers == 1
+            self.graceful_shutdown_called = False
+
+        def submit(self, fn: object, *args: object) -> Future[object]:
+            del fn, args
+            return future
+
+        def shutdown(self) -> None:
+            self.graceful_shutdown_called = True
+
+    executor_ref: InterruptingProcessPoolExecutor | None = None
+
+    def fake_executor_factory(*, max_workers: int) -> InterruptingProcessPoolExecutor:
+        nonlocal executor_ref
+        executor_ref = InterruptingProcessPoolExecutor(max_workers=max_workers)
+        return executor_ref
+
+    def fake_wait(
+        pending: set[Future[object]],
+        *,
+        timeout: float,
+        return_when: object,
+    ) -> tuple[set[Future[object]], set[Future[object]]]:
+        del pending, timeout, return_when
+        raise KeyboardInterrupt
+
+    def fake_shutdown_now(executor: object, futures: object) -> None:
+        shutdown_calls.append((executor, tuple(futures)))
+
+    monkeypatch.setattr(generate_dataset, "ProcessPoolExecutor", fake_executor_factory)
+    monkeypatch.setattr(generate_dataset, "wait", fake_wait)
+    monkeypatch.setattr(generate_dataset, "shutdown_process_pool_now", fake_shutdown_now)
+
+    with pytest.raises(KeyboardInterrupt):
+        generate_dataset.run_task_batches_parallel(
+            [_make_batch(0)],
+            total_tasks=1,
+            workers=1,
+            progress_interval_seconds=10.0,
+        )
+
+    assert executor_ref is not None
+    assert shutdown_calls == [(executor_ref, (future,))]
+    assert not executor_ref.graceful_shutdown_called
+
+
+def test_generate_dataset_main_returns_130_and_cleans_artifacts_on_interrupt(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    def fake_run_task_batches_parallel(
+        batches: list[generate_dataset.GameTaskBatch],
+        *,
+        total_tasks: int,
+        workers: int,
+        progress_interval_seconds: float,
+    ) -> generate_dataset.DatasetRunResult:
+        del total_tasks, workers, progress_interval_seconds
+        artifact_dir = batches[0].artifact_dir
+        assert artifact_dir is not None
+        (artifact_dir / "macro_part_000000.jsonl").write_text("{}\n", encoding="utf-8")
+        (artifact_dir / "artifact_manifest.json").write_text("{}\n", encoding="utf-8")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        generate_dataset, "run_task_batches_parallel", fake_run_task_batches_parallel
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_dataset.py",
+            "-n",
+            "1",
+            "--policies",
+            "greedy",
+            "--map-sizes",
+            "12",
+            "--turn-limits",
+            "30",
+            "--difficulties",
+            "normal",
+            "--output-dir",
+            str(tmp_path),
+            "--label",
+            "interrupt",
+            "--workers",
+            "2",
+            "--artifact-mode",
+            "fast",
+            "--artifact-format",
+            "jsonl",
+        ],
+    )
+
+    exit_code = generate_dataset.main()
+
+    captured = capsys.readouterr()
+    artifact_dir = tmp_path / "dataset_interrupt_artifacts"
+    assert exit_code == 130
+    assert "Interrupted by user" in captured.err
+    assert not (artifact_dir / "macro_part_000000.jsonl").exists()
+    assert not (artifact_dir / "artifact_manifest.json").exists()
+    assert not list(tmp_path.glob(".dataset_interrupt_parts_*"))
+
+
 def test_generate_dataset_parallel_path_uses_process_pool_and_keeps_order(
     monkeypatch,
     tmp_path,

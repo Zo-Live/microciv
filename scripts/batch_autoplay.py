@@ -42,6 +42,11 @@ from microciv.records.models import (  # noqa: E402
     RecordEntry,
 )
 from microciv.session import create_game_session  # noqa: E402
+from microciv.utils.files import atomic_output_path, write_bytes_atomic  # noqa: E402
+from microciv.utils.process_pool import (  # noqa: E402
+    shutdown_process_pool_gracefully,
+    shutdown_process_pool_now,
+)
 
 PROGRESS_STEPS: Final[int] = 20
 DEFAULT_FULL_JSON_THRESHOLD: Final[int] = 1000
@@ -464,10 +469,14 @@ def _should_write_artifact_parts(effective_artifact_mode: str) -> bool:
 
 def _prepare_artifact_output_dir(artifact_dir: Path) -> None:
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    _remove_artifact_output_files(artifact_dir)
+
+
+def _remove_artifact_output_files(artifact_dir: Path) -> None:
     for table in ARTIFACT_TABLES:
         for suffix in ("parquet", "jsonl"):
             for path in artifact_dir.glob(f"{table}*.{suffix}"):
-                path.unlink()
+                path.unlink(missing_ok=True)
     (artifact_dir / ARTIFACT_MANIFEST_FILENAME).unlink(missing_ok=True)
 
 
@@ -616,7 +625,10 @@ def run_batch_tasks_parallel(
     last_printed_completed = 0
     last_printed_elapsed = 0.0
     completed = 0
-    with ProcessPoolExecutor(max_workers=workers) as executor:
+    executor = ProcessPoolExecutor(max_workers=workers)
+    executor_stopped = False
+    future_to_batch: dict[Future[BatchWorkerResult], BatchGameTaskBatch] = {}
+    try:
         future_to_batch = {executor.submit(run_game_batch, batch): batch for batch in batches}
         pending: set[Future[BatchWorkerResult]] = set(future_to_batch)
         while pending:
@@ -631,8 +643,8 @@ def run_batch_tasks_parallel(
                 try:
                     result = future.result()
                 except Exception as exc:
-                    for pending_future in pending:
-                        pending_future.cancel()
+                    shutdown_process_pool_now(executor, pending)
+                    executor_stopped = True
                     raise RuntimeError(_batch_failure_message(batch, exc)) from exc
                 batch_results.append(result)
                 completed += result.completed
@@ -666,6 +678,13 @@ def run_batch_tasks_parallel(
                 last_printed_at = now
                 last_printed_completed = completed
                 last_printed_elapsed = now - started_at
+    except KeyboardInterrupt:
+        shutdown_process_pool_now(executor, future_to_batch)
+        executor_stopped = True
+        raise
+    finally:
+        if not executor_stopped:
+            shutdown_process_pool_gracefully(executor)
     return _collect_batch_results(
         batch_results,
         run_elapsed_seconds=perf_counter() - started_at,
@@ -673,15 +692,16 @@ def run_batch_tasks_parallel(
 
 
 def _write_database_json(path: Path, database: RecordDatabase) -> None:
-    path.write_bytes(dumps_json_bytes(database.to_dict(), indent=True) + b"\n")
+    write_bytes_atomic(path, dumps_json_bytes(database.to_dict(), indent=True) + b"\n")
 
 
 def _write_database_csv(path: Path, records: list[RecordEntry]) -> None:
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(CSV_FIELD_ORDER))
-        writer.writeheader()
-        for record in records:
-            writer.writerow(record.to_csv_row())
+    with atomic_output_path(path) as temporary_path:
+        with temporary_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(CSV_FIELD_ORDER))
+            writer.writeheader()
+            for record in records:
+                writer.writerow(record.to_csv_row())
 
 
 def _effective_chunksize(
@@ -742,38 +762,40 @@ def _record_csv_part_paths(batch_results: list[BatchWorkerResult]) -> list[Path]
 def _write_database_json_from_jsonl_parts(path: Path, part_paths: list[Path]) -> int:
     written = 0
     first = True
-    with path.open("wb") as output:
-        output.write(
-            f'{{"schema_version":{RECORDS_SCHEMA_VERSION},"next_record_id":1,"records":['.encode(
-                "ascii"
+    with atomic_output_path(path) as temporary_path:
+        with temporary_path.open("wb") as output:
+            output.write(
+                f'{{"schema_version":{RECORDS_SCHEMA_VERSION},"next_record_id":1,"records":['.encode(
+                    "ascii"
+                )
             )
-        )
-        for part_path in part_paths:
-            with part_path.open("rb") as part_file:
-                for line in part_file:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    if not first:
-                        output.write(b",")
-                    output.write(line)
-                    first = False
-                    written += 1
-        output.write(b"]}\n")
+            for part_path in part_paths:
+                with part_path.open("rb") as part_file:
+                    for line in part_file:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if not first:
+                            output.write(b",")
+                        output.write(line)
+                        first = False
+                        written += 1
+            output.write(b"]}\n")
     return written
 
 
 def _write_database_csv_from_csv_parts(path: Path, part_paths: list[Path]) -> int:
     written = 0
-    with path.open("w", newline="", encoding="utf-8") as output:
-        writer = csv.DictWriter(output, fieldnames=list(CSV_FIELD_ORDER))
-        writer.writeheader()
-        for part_path in part_paths:
-            with part_path.open(newline="", encoding="utf-8") as part_file:
-                reader = csv.DictReader(part_file)
-                for row in reader:
-                    writer.writerow(row)
-                    written += 1
+    with atomic_output_path(path) as temporary_path:
+        with temporary_path.open("w", newline="", encoding="utf-8") as output:
+            writer = csv.DictWriter(output, fieldnames=list(CSV_FIELD_ORDER))
+            writer.writeheader()
+            for part_path in part_paths:
+                with part_path.open(newline="", encoding="utf-8") as part_file:
+                    reader = csv.DictReader(part_file)
+                    for row in reader:
+                        writer.writerow(row)
+                        written += 1
     return written
 
 
@@ -1021,8 +1043,16 @@ def main() -> int:
                     sum(summary.network_count for summary in summaries) / len(summaries), 2
                 ),
             }
-            summary_path.write_bytes(dumps_json_bytes(summary, indent=True) + b"\n")
+            write_bytes_atomic(summary_path, dumps_json_bytes(summary, indent=True) + b"\n")
             print(f"Summary exported: {summary_path}", file=sys.stderr)
+    except KeyboardInterrupt:
+        print(
+            "Interrupted by user; stopping workers and cleaning partial outputs.",
+            file=sys.stderr,
+        )
+        if artifact_dir is not None:
+            _remove_artifact_output_files(artifact_dir)
+        return 130
     finally:
         shutil.rmtree(part_dir, ignore_errors=True)
 

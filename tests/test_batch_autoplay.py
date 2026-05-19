@@ -7,6 +7,8 @@ import sys
 from concurrent.futures import Future
 from pathlib import Path
 
+import pytest
+
 from microciv.game.enums import PolicyType
 from microciv.records.models import RecordDatabase, RecordEntry
 
@@ -309,6 +311,122 @@ def test_batch_autoplay_parallel_path_uses_process_pool(monkeypatch, tmp_path) -
     assert summary["chunksize"] == 4
     assert summary["effective_chunksize"] == 4
     assert summary["batch_count"] == 1
+
+
+def test_batch_autoplay_parallel_stops_executor_on_keyboard_interrupt(monkeypatch) -> None:
+    future: Future[object] = Future()
+    shutdown_calls: list[tuple[object, tuple[Future[object], ...]]] = []
+
+    class InterruptingProcessPoolExecutor:
+        def __init__(self, *, max_workers: int) -> None:
+            assert max_workers == 1
+            self.graceful_shutdown_called = False
+
+        def submit(self, fn: object, *args: object) -> Future[object]:
+            del fn, args
+            return future
+
+        def shutdown(self) -> None:
+            self.graceful_shutdown_called = True
+
+    executor_ref: InterruptingProcessPoolExecutor | None = None
+
+    def fake_executor_factory(*, max_workers: int) -> InterruptingProcessPoolExecutor:
+        nonlocal executor_ref
+        executor_ref = InterruptingProcessPoolExecutor(max_workers=max_workers)
+        return executor_ref
+
+    def fake_wait(
+        pending: set[Future[object]],
+        *,
+        timeout: float,
+        return_when: object,
+    ) -> tuple[set[Future[object]], set[Future[object]]]:
+        del pending, timeout, return_when
+        raise KeyboardInterrupt
+
+    def fake_shutdown_now(executor: object, futures: object) -> None:
+        shutdown_calls.append((executor, tuple(futures)))
+
+    monkeypatch.setattr(batch_autoplay, "ProcessPoolExecutor", fake_executor_factory)
+    monkeypatch.setattr(batch_autoplay, "wait", fake_wait)
+    monkeypatch.setattr(batch_autoplay, "shutdown_process_pool_now", fake_shutdown_now)
+
+    with pytest.raises(KeyboardInterrupt):
+        batch_autoplay.run_batch_tasks_parallel(
+            [
+                batch_autoplay.BatchGameTaskBatch(
+                    batch_index=0,
+                    tasks=(),
+                    part_dir=Path(),
+                    artifact_dir=None,
+                    artifact_format="jsonl",
+                    effective_artifact_mode="compat",
+                    write_json_part=True,
+                    write_csv_part=True,
+                )
+            ],
+            total_tasks=1,
+            workers=1,
+            progress_interval_seconds=10.0,
+        )
+
+    assert executor_ref is not None
+    assert shutdown_calls == [(executor_ref, (future,))]
+    assert not executor_ref.graceful_shutdown_called
+
+
+def test_batch_autoplay_main_returns_130_and_cleans_artifacts_on_interrupt(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    def fake_run_batch_tasks_parallel(
+        batches: list[batch_autoplay.BatchGameTaskBatch],
+        *,
+        total_tasks: int,
+        workers: int,
+        progress_interval_seconds: float,
+    ) -> batch_autoplay.BatchRunResult:
+        del total_tasks, workers, progress_interval_seconds
+        artifact_dir = batches[0].artifact_dir
+        assert artifact_dir is not None
+        (artifact_dir / "macro_part_000000.jsonl").write_text("{}\n", encoding="utf-8")
+        (artifact_dir / "artifact_manifest.json").write_text("{}\n", encoding="utf-8")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(batch_autoplay, "run_batch_tasks_parallel", fake_run_batch_tasks_parallel)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "batch_autoplay.py",
+            "-n",
+            "1",
+            "--policy",
+            "greedy",
+            "--output-dir",
+            str(tmp_path),
+            "--label",
+            "interrupt",
+            "--workers",
+            "2",
+            "--artifact-mode",
+            "fast",
+            "--artifact-format",
+            "jsonl",
+        ],
+    )
+
+    exit_code = batch_autoplay.main()
+
+    captured = capsys.readouterr()
+    artifact_dir = tmp_path / "greedy_16_80_normal_1_1_interrupt_artifacts"
+    assert exit_code == 130
+    assert "Interrupted by user" in captured.err
+    assert not (artifact_dir / "macro_part_000000.jsonl").exists()
+    assert not (artifact_dir / "artifact_manifest.json").exists()
+    assert not list(tmp_path.glob(".greedy_16_80_normal_1_1_interrupt_parts_*"))
 
 
 def test_batch_autoplay_exports_search_outputs_with_search_config(
