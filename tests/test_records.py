@@ -356,12 +356,6 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         search_intervention_trigger="stall_probe",
         search_probe_accepted_reason="stall_score_not_worse",
         search_greedy_veto_reason="road_redundant",
-        search_regret_guard_reason="regret_score_gap",
-        search_hard_risk_improvement=False,
-        search_selected_score_gap_vs_greedy_after_action=-60,
-        search_selected_city_site_delta_vs_greedy=-140,
-        search_route_plain_cost=2,
-        search_route_progress_delta=1,
         search_beam_width=3,
         search_candidate_limit=5,
         search_root_legal_build_city_count=4,
@@ -517,12 +511,6 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     assert restored.search_intervention_trigger == "stall_probe"
     assert restored.search_probe_accepted_reason == "stall_score_not_worse"
     assert restored.search_greedy_veto_reason == "road_redundant"
-    assert restored.search_regret_guard_reason == "regret_score_gap"
-    assert restored.search_hard_risk_improvement is False
-    assert restored.search_selected_score_gap_vs_greedy_after_action == -60
-    assert restored.search_selected_city_site_delta_vs_greedy == -140
-    assert restored.search_route_plain_cost == 2
-    assert restored.search_route_progress_delta == 1
     assert restored.search_depth_reason == "fixed"
     assert restored.search_root_candidate_build_city_count == 3
     assert restored.search_root_candidate_skip_count == 0
@@ -618,12 +606,6 @@ def test_record_decision_artifact_rows_preserve_search_planning_fields() -> None
             search_intervention_trigger="stall_probe",
             search_probe_accepted_reason="stall_score_not_worse",
             search_greedy_veto_reason="road_redundant",
-            search_regret_guard_reason="regret_score_gap",
-            search_hard_risk_improvement=False,
-            search_selected_score_gap_vs_greedy_after_action=-60,
-            search_selected_city_site_delta_vs_greedy=-140,
-            search_route_plain_cost=2,
-            search_route_progress_delta=1,
             search_delta_worst_network_food_pressure=-3,
             search_delta_min_network_food=4,
             search_greedy_after_score_total=320,
@@ -653,12 +635,6 @@ def test_record_decision_artifact_rows_preserve_search_planning_fields() -> None
     assert row["search_intervention_trigger"] == "stall_probe"
     assert row["search_probe_accepted_reason"] == "stall_score_not_worse"
     assert row["search_greedy_veto_reason"] == "road_redundant"
-    assert row["search_regret_guard_reason"] == "regret_score_gap"
-    assert row["search_hard_risk_improvement"] == 0
-    assert row["search_selected_score_gap_vs_greedy_after_action"] == -60
-    assert row["search_selected_city_site_delta_vs_greedy"] == -140
-    assert row["search_route_plain_cost"] == 2
-    assert row["search_route_progress_delta"] == 1
     assert row["search_delta_worst_network_food_pressure"] == -3
     assert row["search_delta_min_network_food"] == 4
     assert row["search_greedy_after_score_total"] == 320

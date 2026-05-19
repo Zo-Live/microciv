@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 import pytest
 
 import microciv.session as session_module
@@ -16,15 +14,12 @@ from microciv.ai.search import (
     SEARCH_DEPTH_REASON_NETWORK_CONNECT,
     SEARCH_DEPTH_REASON_STEADY,
     SEARCH_INTERVENTION_FOOD_RESCUE,
-    RiskProbeResult,
     RiskProfile,
     SearchDepthContext,
     SearchDepthDecision,
     SearchPolicy,
     _bridge_paths_for_state,
     _evaluate_probe_result,
-    _regret_guard_decision,
-    _route_commitment_guard_reason,
 )
 from microciv.game.actions import Action, validate_action
 from microciv.game.engine import GameEngine
@@ -92,18 +87,6 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     assert context["search_overrode_greedy"] is False
     assert context["search_probe_rejected_reason"] == "healthy_greedy_passthrough"
     assert context["search_greedy_veto_reason"] is None
-    assert context["search_regret_guard_reason"] is None
-    assert isinstance(context["search_hard_risk_improvement"], bool)
-    assert isinstance(context["search_selected_score_gap_vs_greedy_after_action"], int)
-    assert context["search_selected_city_site_delta_vs_greedy"] is None or isinstance(
-        context["search_selected_city_site_delta_vs_greedy"], int
-    )
-    assert context["search_route_plain_cost"] is None or isinstance(
-        context["search_route_plain_cost"], int
-    )
-    assert context["search_route_progress_delta"] is None or isinstance(
-        context["search_route_progress_delta"], int
-    )
     assert isinstance(context["search_best_value"], int)
     assert isinstance(context["search_value_components"], dict)
     assert isinstance(context["search_sequence_adjustment"], int)
@@ -327,221 +310,6 @@ def test_food_rescue_probe_rejects_tiny_pressure_improvement() -> None:
     assert clear_result.accepted_reason == "reduced_food_pressure"
 
 
-def test_regret_guard_rejects_low_score_non_risk_override() -> None:
-    state = _mixed_action_state()
-    state.turn = 20
-    greedy_plan = GreedyPolicy().plan_for_search(state)
-    root = _risk(
-        score_total=1000,
-        starving_network_count=0,
-        food_pressure=0,
-        min_network_food=20,
-        network_count=1,
-        connected_city_count=1,
-        isolated_city_count=0,
-    )
-    greedy_after = _risk(
-        score_total=1100,
-        starving_network_count=0,
-        food_pressure=0,
-        min_network_food=20,
-        network_count=1,
-        connected_city_count=1,
-        isolated_city_count=0,
-    )
-    selected_after = _risk(
-        score_total=1000,
-        starving_network_count=0,
-        food_pressure=0,
-        min_network_food=20,
-        network_count=1,
-        connected_city_count=1,
-        isolated_city_count=0,
-    )
-
-    guard = _regret_guard_decision(
-        state=state,
-        trigger="stall_probe",
-        root_risk=root,
-        greedy_plan=greedy_plan,
-        selected_action=Action.skip(),
-        greedy_after=greedy_after,
-        selected_after=selected_after,
-        selected_sequence_after=selected_after,
-        probe_result=RiskProbeResult(True, "test_accept", None),
-    )
-
-    assert guard.reason == "regret_score_gap"
-    assert guard.hard_risk_improvement is False
-    assert guard.selected_score_gap_vs_greedy_after_action == -100
-
-
-def test_regret_guard_rejects_early_low_quality_city_override() -> None:
-    state = _early_city_quality_gap_state()
-    greedy_plan = replace(
-        GreedyPolicy().plan_for_search(state),
-        action=Action.build_city((1, 0)),
-    )
-    selected_action = Action.build_city((3, 3))
-    root = _risk(
-        score_total=1000,
-        starving_network_count=0,
-        food_pressure=0,
-        min_network_food=30,
-        network_count=1,
-        connected_city_count=1,
-        isolated_city_count=0,
-    )
-    greedy_after = _risk(
-        score_total=1120,
-        starving_network_count=0,
-        food_pressure=0,
-        min_network_food=30,
-        network_count=1,
-        connected_city_count=1,
-        isolated_city_count=0,
-    )
-    selected_after = _risk(
-        score_total=1110,
-        starving_network_count=0,
-        food_pressure=0,
-        min_network_food=30,
-        network_count=1,
-        connected_city_count=1,
-        isolated_city_count=0,
-    )
-
-    guard = _regret_guard_decision(
-        state=state,
-        trigger="stall_probe",
-        root_risk=root,
-        greedy_plan=greedy_plan,
-        selected_action=selected_action,
-        greedy_after=greedy_after,
-        selected_after=selected_after,
-        selected_sequence_after=selected_after,
-        probe_result=RiskProbeResult(True, "test_accept", None),
-    )
-
-    assert greedy_plan.action == Action.build_city((1, 0))
-    assert guard.reason in {"early_low_city_quality", "city_remote_low_food_capacity"}
-    assert guard.hard_risk_improvement is False
-    assert guard.selected_city_site_delta_vs_greedy is not None
-
-
-def test_regret_guard_rejects_remote_low_food_capacity_city() -> None:
-    state = _remote_low_food_city_state()
-    state.turn = 20
-    greedy_plan = GreedyPolicy().plan_for_search(state)
-    root = _risk(
-        score_total=1000,
-        starving_network_count=0,
-        food_pressure=0,
-        min_network_food=30,
-        network_count=1,
-        connected_city_count=1,
-        isolated_city_count=0,
-    )
-    after = _risk(
-        score_total=1040,
-        starving_network_count=0,
-        food_pressure=0,
-        min_network_food=30,
-        network_count=1,
-        connected_city_count=1,
-        isolated_city_count=0,
-    )
-
-    guard = _regret_guard_decision(
-        state=state,
-        trigger="stall_probe",
-        root_risk=root,
-        greedy_plan=greedy_plan,
-        selected_action=Action.build_city((3, 3)),
-        greedy_after=after,
-        selected_after=after,
-        selected_sequence_after=after,
-        probe_result=RiskProbeResult(True, "test_accept", None),
-    )
-
-    assert guard.reason == "city_remote_low_food_capacity"
-
-
-def test_regret_guard_rejects_road_on_last_low_capacity_plain() -> None:
-    state = _last_plain_road_state()
-    greedy_plan = replace(GreedyPolicy().plan_for_search(state), action=Action.skip())
-    root = _risk(
-        score_total=1000,
-        starving_network_count=0,
-        food_pressure=8,
-        min_network_food=2,
-        network_count=1,
-        connected_city_count=0,
-        isolated_city_count=1,
-    )
-    after = _risk(
-        score_total=1010,
-        starving_network_count=0,
-        food_pressure=8,
-        min_network_food=2,
-        network_count=1,
-        connected_city_count=0,
-        isolated_city_count=1,
-    )
-
-    guard = _regret_guard_decision(
-        state=state,
-        trigger="stall_probe",
-        root_risk=root,
-        greedy_plan=greedy_plan,
-        selected_action=Action.build_road((0, 1)),
-        greedy_after=after,
-        selected_after=after,
-        selected_sequence_after=after,
-        probe_result=RiskProbeResult(True, "test_accept", None),
-    )
-
-    assert guard.reason == "road_last_plain_low_capacity"
-
-
-def test_route_commitment_guard_requires_monotonic_remaining_steps() -> None:
-    state = _long_route_bridge_state()
-    state.stats.decision_contexts = [
-        {
-            "search_route_target_network_id": 2,
-            "search_route_remaining_steps": 3,
-            "search_route_committed": True,
-        }
-    ]
-    root = _risk(
-        score_total=1000,
-        starving_network_count=1,
-        food_pressure=8,
-        min_network_food=-8,
-        network_count=2,
-        connected_city_count=0,
-        isolated_city_count=2,
-    )
-    after = _risk(
-        score_total=1010,
-        starving_network_count=1,
-        food_pressure=8,
-        min_network_food=-8,
-        network_count=2,
-        connected_city_count=0,
-        isolated_city_count=2,
-    )
-
-    reason = _route_commitment_guard_reason(
-        state=state,
-        selected_action=Action.build_road((0, 1)),
-        selected_after=after,
-        root_risk=root,
-    )
-
-    assert reason == "route_progress_not_monotonic"
-
-
 def test_search_policy_stall_probe_rejects_when_gate_fails() -> None:
     state = _mixed_action_state()
     state.stats.decision_contexts = [
@@ -588,8 +356,6 @@ def test_search_policy_keeps_multistep_bridge_first_road_candidate() -> None:
     assert context["search_route_target_network_id"] == 2
     assert context["search_route_remaining_steps"] == 1
     assert context["search_route_committed"] is True
-    assert context["search_route_plain_cost"] == 2
-    assert context["search_route_progress_delta"] == 1
     assert context["search_probe_accepted_reason"] in {
         "bridge_sequence_reduced_starving_networks",
         "bridge_sequence_reduced_networks",
@@ -649,7 +415,6 @@ def test_search_policy_commits_long_bridge_route_after_veto() -> None:
     assert second_context["search_route_target_network_id"] == 2
     assert second_context["search_route_remaining_steps"] == 3
     assert second_context["search_route_committed"] is True
-    assert second_context["search_route_progress_delta"] == 1
 
 
 def test_search_policy_recent_food_probe_rejection_does_not_block_worsening_bridge() -> None:
@@ -865,27 +630,6 @@ def test_step_autoplay_counts_select_action_time_before_recording_context(
     assert state.stats.decision_contexts[0]["search_nodes_expanded"] == 99
 
 
-def _risk(
-    *,
-    score_total: int,
-    starving_network_count: int,
-    food_pressure: int,
-    min_network_food: int,
-    network_count: int,
-    connected_city_count: int,
-    isolated_city_count: int,
-) -> RiskProfile:
-    return RiskProfile(
-        score_total=score_total,
-        starving_network_count=starving_network_count,
-        food_pressure=food_pressure,
-        min_network_food=min_network_food,
-        network_count=network_count,
-        connected_city_count=connected_city_count,
-        isolated_city_count=isolated_city_count,
-    )
-
-
 def _mixed_action_state() -> GameState:
     state = GameState.empty(GameConfig.for_play())
     state.board = {
@@ -909,65 +653,6 @@ def _mixed_action_state() -> GameState:
         )
     }
     state.next_city_id = 2
-    state.next_network_id = 2
-    return state
-
-
-def _early_city_quality_gap_state() -> GameState:
-    state = GameState.empty(GameConfig.for_play(turn_limit=60, map_size=12))
-    state.turn = 4
-    state.board = {
-        (row, col): Tile(base_terrain=TerrainType.MOUNTAIN) for row in range(6) for col in range(6)
-    }
-    state.board[(0, 0)] = Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY)
-    state.board[(0, 1)] = Tile(base_terrain=TerrainType.PLAIN)
-    state.board[(1, 0)] = Tile(base_terrain=TerrainType.PLAIN)
-    state.board[(1, 1)] = Tile(base_terrain=TerrainType.RIVER)
-    state.board[(0, 2)] = Tile(base_terrain=TerrainType.FOREST)
-    state.board[(2, 0)] = Tile(base_terrain=TerrainType.FOREST)
-    state.cities = {1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1)}
-    state.networks = {
-        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=80, wood=80, ore=80))
-    }
-    state.next_city_id = 2
-    state.next_network_id = 2
-    return state
-
-
-def _remote_low_food_city_state() -> GameState:
-    state = GameState.empty(GameConfig.for_play(turn_limit=60, map_size=12))
-    state.board = {
-        (row, col): Tile(base_terrain=TerrainType.FOREST) for row in range(5) for col in range(5)
-    }
-    state.board[(0, 0)] = Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY)
-    state.board[(0, 1)] = Tile(base_terrain=TerrainType.PLAIN)
-    state.board[(1, 0)] = Tile(base_terrain=TerrainType.PLAIN)
-    state.board[(1, 1)] = Tile(base_terrain=TerrainType.PLAIN)
-    state.board[(3, 3)] = Tile(base_terrain=TerrainType.MOUNTAIN)
-    state.cities = {1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1)}
-    state.networks = {
-        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=80, wood=80, ore=80))
-    }
-    state.next_city_id = 2
-    state.next_network_id = 2
-    return state
-
-
-def _last_plain_road_state() -> GameState:
-    state = GameState.empty(GameConfig.for_play(turn_limit=40, map_size=12))
-    state.turn = 10
-    state.board = {
-        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
-        (0, 1): Tile(base_terrain=TerrainType.PLAIN),
-        (1, 0): Tile(base_terrain=TerrainType.FOREST),
-        (1, 1): Tile(base_terrain=TerrainType.MOUNTAIN),
-        (2, 0): Tile(base_terrain=TerrainType.FOREST),
-        (2, 1): Tile(base_terrain=TerrainType.MOUNTAIN),
-    }
-    state.cities = {1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1)}
-    state.networks = {1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=2))}
-    state.next_city_id = 2
-    state.next_road_id = 1
     state.next_network_id = 2
     return state
 
@@ -1106,7 +791,9 @@ def _long_route_bridge_state() -> GameState:
     state = GameState.empty(GameConfig.for_play(turn_limit=40, map_size=18))
     state.turn = 6
     state.board = {
-        (row, col): Tile(base_terrain=TerrainType.PLAIN) for row in range(2) for col in range(7)
+        (row, col): Tile(base_terrain=TerrainType.PLAIN)
+        for row in range(2)
+        for col in range(7)
     }
     state.board[(0, 0)].occupant = OccupantType.CITY
     state.board[(0, 6)].occupant = OccupantType.CITY

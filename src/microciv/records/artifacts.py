@@ -30,7 +30,7 @@ from microciv.game.models import (
 from microciv.game.scoring import score_breakdown
 from microciv.records.models import RecordEntry
 
-ARTIFACT_SCHEMA_VERSION: Final[int] = 10
+ARTIFACT_SCHEMA_VERSION: Final[int] = 9
 ARTIFACT_MANIFEST_FILENAME: Final[str] = "artifact_manifest.json"
 ARTIFACT_TABLES: Final[tuple[str, ...]] = (
     "macro",
@@ -425,20 +425,6 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             "search_probe_accepted_reason": context.search_probe_accepted_reason or "",
             "search_probe_rejected_reason": context.search_probe_rejected_reason or "",
             "search_greedy_veto_reason": context.search_greedy_veto_reason or "",
-            "search_regret_guard_reason": context.search_regret_guard_reason or "",
-            "search_hard_risk_improvement": (
-                int(context.search_hard_risk_improvement)
-                if context.search_hard_risk_improvement is not None
-                else None
-            ),
-            "search_selected_score_gap_vs_greedy_after_action": (
-                context.search_selected_score_gap_vs_greedy_after_action
-            ),
-            "search_selected_city_site_delta_vs_greedy": (
-                context.search_selected_city_site_delta_vs_greedy
-            ),
-            "search_route_plain_cost": context.search_route_plain_cost,
-            "search_route_progress_delta": context.search_route_progress_delta,
             "search_beam_width": context.search_beam_width,
             "search_candidate_limit": context.search_candidate_limit,
             "search_root_legal_build_city_count": context.search_root_legal_build_city_count,

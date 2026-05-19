@@ -291,7 +291,7 @@ def test_generate_dataset_fast_mode_exports_artifacts_without_full_json(
     artifact_manifest = json.loads(
         (artifact_dir / "artifact_manifest.json").read_text(encoding="utf-8")
     )
-    assert artifact_manifest["artifact_schema_version"] == 10
+    assert artifact_manifest["artifact_schema_version"] == 9
     assert artifact_manifest["mode"] == "partitioned"
     assert artifact_manifest["part_count"] == 2
     assert len(artifact_manifest["tables"]["macro"]["paths"]) == 2
