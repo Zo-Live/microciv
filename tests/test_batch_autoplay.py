@@ -192,7 +192,7 @@ def test_batch_autoplay_fast_mode_exports_artifacts(monkeypatch, tmp_path) -> No
     artifact_manifest = json.loads(
         (artifact_dir / "artifact_manifest.json").read_text(encoding="utf-8")
     )
-    assert artifact_manifest["artifact_schema_version"] == 6
+    assert artifact_manifest["artifact_schema_version"] == 7
 
 
 def test_build_batch_tasks_preserves_seed_order() -> None:
@@ -319,7 +319,7 @@ def test_batch_autoplay_exports_search_outputs_with_search_config(
         assert isinstance(task, batch_autoplay.BatchGameTask)
         assert task.policy_type is PolicyType.SEARCH
         assert task.search_depth == 2
-        assert task.search_max_depth == 6
+        assert task.search_max_depth == 4
         assert task.search_beam_width == 3
         assert task.search_candidate_limit == 5
         return _make_record(seed=task.seed, policy_type=task.policy_type, final_score=50)
@@ -354,7 +354,7 @@ def test_batch_autoplay_exports_search_outputs_with_search_config(
     exit_code = batch_autoplay.main()
 
     assert exit_code == 0
-    base_name = "search_d2-6_b3_c5_16_80_normal_12_12_search"
+    base_name = "search_d2-4_b3_c5_16_80_normal_12_12_search"
     database = RecordDatabase.from_dict(
         json.loads((tmp_path / f"{base_name}.json").read_text(encoding="utf-8"))
     )
@@ -363,6 +363,6 @@ def test_batch_autoplay_exports_search_outputs_with_search_config(
     assert database.records[0].ai_type == "Search"
     assert summary["policy"] == "search"
     assert summary["search_depth"] == 2
-    assert summary["search_max_depth"] == 6
+    assert summary["search_max_depth"] == 4
     assert summary["search_beam_width"] == 3
     assert summary["search_candidate_limit"] == 5

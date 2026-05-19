@@ -291,7 +291,7 @@ def test_generate_dataset_fast_mode_exports_artifacts_without_full_json(
     artifact_manifest = json.loads(
         (artifact_dir / "artifact_manifest.json").read_text(encoding="utf-8")
     )
-    assert artifact_manifest["artifact_schema_version"] == 6
+    assert artifact_manifest["artifact_schema_version"] == 7
     assert artifact_manifest["mode"] == "partitioned"
     assert artifact_manifest["part_count"] == 2
     assert len(artifact_manifest["tables"]["macro"]["paths"]) == 2
@@ -670,8 +670,8 @@ def test_generate_dataset_parallel_path_includes_search_grid_tasks(
         )
         for task in tasks
     ] == [
-        (PolicyType.GREEDY, 3, 6, 4, 16),
-        (PolicyType.RANDOM, 3, 6, 4, 16),
+        (PolicyType.GREEDY, 2, 4, 2, 8),
+        (PolicyType.RANDOM, 2, 4, 2, 8),
         (PolicyType.SEARCH, 1, 6, 3, 4),
         (PolicyType.SEARCH, 1, 6, 3, 5),
         (PolicyType.SEARCH, 2, 6, 3, 4),

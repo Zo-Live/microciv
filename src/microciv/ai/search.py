@@ -5,28 +5,32 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from microciv.ai.greedy import GreedyPlanSnapshot, GreedyPolicy
 from microciv.ai.heuristics import (
     HeuristicContext,
     build_heuristic_context,
+    building_action_score,
     city_network_pressure,
     city_site_score_for_context,
     context_is_river_adjacent_site,
+    partition_actions,
+    research_action_score,
     resource_ring_bonus_for_context,
     resource_ring_counts_for_context,
+    road_site_score_for_context,
     site_budget,
 )
-from microciv.ai.policy import Policy, simulate_action
+from microciv.ai.policy import Policy, get_legal_actions, simulate_action
 from microciv.ai.search_support import (
     SEARCH_MODE_CONNECT,
     SEARCH_MODE_EXPAND,
     SEARCH_MODE_RESCUE,
-    SearchCandidateConfig,
+    SearchCandidate,
     SearchCandidateSet,
     SearchLeafEvaluation,
     SearchPositionProfile,
     build_search_position_profile,
     evaluate_search_leaf,
-    generate_search_candidates,
 )
 from microciv.constants import (
     DEFAULT_SEARCH_BEAM_WIDTH,
@@ -38,6 +42,7 @@ from microciv.constants import (
 from microciv.game.actions import Action
 from microciv.game.enums import ActionType, BuildingType, TechType
 from microciv.game.models import GameState
+from microciv.game.scoring import score_breakdown
 from microciv.utils.grid import Coord
 
 SEARCH_DEPTH_REASON_FIXED = "fixed"
@@ -48,10 +53,14 @@ SEARCH_DEPTH_REASON_FOOD_WATCH = "food_watch"
 SEARCH_DEPTH_REASON_ENDGAME_PUSH = "endgame_push"
 SEARCH_DEPTH_REASON_STEADY = "steady"
 SEARCH_PLANNING_MODE_BEAM = "beam_search"
-SEARCH_PLANNING_MODE_GREEDY_ANCHOR = "greedy_anchor"
+SEARCH_PLANNING_MODE_GREEDY_PASSTHROUGH = "greedy_passthrough"
 SEARCH_PLANNING_REASON_RISK_SEARCH = "risk_search"
-SEARCH_PLANNING_REASON_HEALTHY_GREEDY_CITY = "healthy_greedy_city"
-SEARCH_PLANNING_REASON_HEALTHY_SHALLOW = "healthy_shallow"
+SEARCH_PLANNING_REASON_GREEDY_DIRECT = "greedy_direct"
+
+SEARCH_INTERVENTION_NONE = "none"
+SEARCH_INTERVENTION_FOOD_RESCUE = "food_rescue_probe"
+SEARCH_INTERVENTION_CONNECT = "connect_probe"
+SEARCH_INTERVENTION_STALL = "stall_probe"
 
 _SEARCH_PRESSURE_COMPONENT_KEYS: tuple[str, ...] = (
     "isolated_penalty",
@@ -185,11 +194,46 @@ class RootCandidateDiagnostic:
 
 
 @dataclass(slots=True, frozen=True)
-class GreedyAnchorPlan:
-    action: Action
-    direct: bool
-    force_candidate: bool
+class RiskProfile:
+    score_total: int
+    starving_network_count: int
+    food_pressure: int
+    min_network_food: int
+    network_count: int
+    connected_city_count: int
+    isolated_city_count: int
+
+
+@dataclass(slots=True, frozen=True)
+class RiskProbeDecision:
+    trigger: str | None
+    depth: int
     reason: str
+
+
+@dataclass(slots=True, frozen=True)
+class RiskProbeResult:
+    accepted: bool
+    accepted_reason: str | None
+    rejected_reason: str | None
+
+
+@dataclass(slots=True)
+class SimulationCache:
+    entries: dict[tuple[int, Action], GameState] = field(default_factory=dict)
+    hits: int = 0
+    misses: int = 0
+
+    def simulate(self, state: GameState, action: Action) -> GameState:
+        key = (id(state), action)
+        cached = self.entries.get(key)
+        if cached is not None:
+            self.hits += 1
+            return cached
+        simulated = simulate_action(state, action)
+        self.entries[key] = simulated
+        self.misses += 1
+        return simulated
 
 
 @dataclass(slots=True)
@@ -242,6 +286,7 @@ class SearchPolicy(Policy):
 
         self._cache_key: tuple[object, ...] | None = None
         self._cached_decision: PlannedSearchDecision | None = None
+        self._greedy_policy = GreedyPolicy()
 
     def select_action(self, state: GameState) -> Action:
         return self._plan_action(state).action
@@ -257,62 +302,226 @@ class SearchPolicy(Policy):
         if self._cache_key == cache_key and self._cached_decision is not None:
             return self._cached_decision
 
+        simulation_cache = SimulationCache()
         depth_decision = self._choose_depth(state)
         root_profile = build_search_position_profile(state)
-        greedy_anchor = _greedy_anchor_plan(
-            state,
-            root_profile,
-            allow_direct=depth_decision.reason
-            in {SEARCH_DEPTH_REASON_STEADY, SEARCH_DEPTH_REASON_FIXED},
+        root_risk = _risk_profile(state)
+        greedy_plan = self._greedy_policy.plan_for_search(state)
+        greedy_after_state = simulation_cache.simulate(state, greedy_plan.action)
+        greedy_after_risk = _risk_profile(greedy_after_state)
+        probe_decision = _risk_probe_decision(
+            state=state,
+            root_profile=root_profile,
+            root_risk=root_risk,
+            greedy_after=greedy_after_risk,
+            greedy_plan=greedy_plan,
+            depth_decision=depth_decision,
         )
-        forced_actions = (greedy_anchor.action,) if greedy_anchor.force_candidate else ()
-        candidate_config = SearchCandidateConfig(
-            candidate_limit=self.search_candidate_limit,
-            forced_actions=forced_actions,
-        )
+
+        if probe_decision.trigger is None:
+            greedy_evaluation = evaluate_search_leaf(greedy_after_state, root_state=state)
+            decision = self._build_planned_decision(
+                state=state,
+                action=greedy_plan.action,
+                root_profile=root_profile,
+                depth_decision=depth_decision,
+                actual_depth=0,
+                telemetry=SearchTelemetry(),
+                best_evaluation=greedy_evaluation,
+                best_value=greedy_evaluation.value,
+                best_sequence_adjustment=0,
+                best_sequence=(greedy_plan.action,),
+                planning_mode=SEARCH_PLANNING_MODE_GREEDY_PASSTHROUGH,
+                planning_reason=SEARCH_PLANNING_REASON_GREEDY_DIRECT,
+                greedy_plan=greedy_plan,
+                root_risk=root_risk,
+                greedy_after_risk=greedy_after_risk,
+                selected_after_risk=greedy_after_risk,
+                simulation_cache=simulation_cache,
+                overrode_greedy=False,
+                intervention_trigger=SEARCH_INTERVENTION_NONE,
+                accepted_reason=None,
+                rejected_reason=probe_decision.reason,
+            )
+            self._cache_key = cache_key
+            self._cached_decision = decision
+            return decision
+
         telemetry = SearchTelemetry()
-        planning_mode = SEARCH_PLANNING_MODE_BEAM
-        planning_reason = SEARCH_PLANNING_REASON_RISK_SEARCH
-        effective_depth = depth_decision.depth
-        actual_depth = depth_decision.depth
-        best_node: SearchNode | None = None
-        if greedy_anchor.direct:
-            best_node = self._run_anchor_plan(
-                state=state,
-                action=greedy_anchor.action,
-                candidate_config=candidate_config,
-                telemetry=telemetry,
-            )
-            if best_node is not None:
-                planning_mode = SEARCH_PLANNING_MODE_GREEDY_ANCHOR
-                planning_reason = greedy_anchor.reason
-                actual_depth = 1
-
-        if best_node is None:
-            beam_depth = depth_decision.depth
-            if _should_use_healthy_shallow_search(root_profile, depth_decision):
-                beam_depth = 1
-                planning_reason = SEARCH_PLANNING_REASON_HEALTHY_SHALLOW
-            actual_depth = beam_depth
-            best_node = self._run_beam_search(
-                state=state,
-                depth=beam_depth,
-                candidate_config=candidate_config,
-                telemetry=telemetry,
-            )
-
+        best_node = self._run_risk_beam_search(
+            state=state,
+            trigger=probe_decision.trigger,
+            depth=probe_decision.depth,
+            telemetry=telemetry,
+            simulation_cache=simulation_cache,
+        )
         if best_node is None or not best_node.sequence:
-            action = Action.skip()
-            best_evaluation = evaluate_search_leaf(state, root_state=state)
+            greedy_evaluation = evaluate_search_leaf(greedy_after_state, root_state=state)
+            decision = self._build_planned_decision(
+                state=state,
+                action=greedy_plan.action,
+                root_profile=root_profile,
+                depth_decision=depth_decision,
+                actual_depth=probe_decision.depth,
+                telemetry=telemetry,
+                best_evaluation=greedy_evaluation,
+                best_value=greedy_evaluation.value,
+                best_sequence_adjustment=0,
+                best_sequence=(greedy_plan.action,),
+                planning_mode=SEARCH_PLANNING_MODE_BEAM,
+                planning_reason=SEARCH_PLANNING_REASON_RISK_SEARCH,
+                greedy_plan=greedy_plan,
+                root_risk=root_risk,
+                greedy_after_risk=greedy_after_risk,
+                selected_after_risk=greedy_after_risk,
+                simulation_cache=simulation_cache,
+                overrode_greedy=False,
+                intervention_trigger=probe_decision.trigger,
+                accepted_reason=None,
+                rejected_reason="no_probe_candidate",
+            )
+            self._cache_key = cache_key
+            self._cached_decision = decision
+            return decision
+
+        selected_action = best_node.sequence[0]
+        selected_after_state = simulation_cache.simulate(state, selected_action)
+        selected_after_risk = _risk_profile(selected_after_state)
+        probe_result = _evaluate_probe_result(
+            trigger=probe_decision.trigger,
+            root_risk=root_risk,
+            greedy_action=greedy_plan.action,
+            selected_action=selected_action,
+            greedy_after=greedy_after_risk,
+            selected_after=selected_after_risk,
+        )
+        if selected_action == greedy_plan.action or not probe_result.accepted:
+            action = greedy_plan.action
+            best_evaluation = evaluate_search_leaf(greedy_after_state, root_state=state)
             best_value = best_evaluation.value
             best_sequence_adjustment = 0
-            best_sequence: list[dict[str, object]] = []
+            best_sequence: tuple[Action, ...] = (greedy_plan.action,)
+            selected_after_risk = greedy_after_risk
         else:
-            action = best_node.sequence[0]
+            action = selected_action
             best_evaluation = best_node.leaf_evaluation
             best_value = best_node.value
             best_sequence_adjustment = best_node.sequence_adjustment
-            best_sequence = [_action_to_dict(item) for item in best_node.sequence]
+            best_sequence = best_node.sequence
+
+        decision = PlannedSearchDecision(
+            action=action,
+            context=self._build_context(
+                state=state,
+                action=action,
+                root_profile=root_profile,
+                depth_decision=depth_decision,
+                actual_depth=probe_decision.depth,
+                telemetry=telemetry,
+                best_evaluation=best_evaluation,
+                best_value=best_value,
+                best_sequence_adjustment=best_sequence_adjustment,
+                best_sequence=best_sequence,
+                planning_mode=SEARCH_PLANNING_MODE_BEAM,
+                planning_reason=SEARCH_PLANNING_REASON_RISK_SEARCH,
+                greedy_plan=greedy_plan,
+                root_risk=root_risk,
+                greedy_after_risk=greedy_after_risk,
+                selected_after_risk=selected_after_risk,
+                simulation_cache=simulation_cache,
+                overrode_greedy=action != greedy_plan.action,
+                intervention_trigger=probe_decision.trigger,
+                accepted_reason=probe_result.accepted_reason
+                if action != greedy_plan.action
+                else None,
+                rejected_reason=probe_result.rejected_reason
+                if action == greedy_plan.action
+                else None,
+            ),
+            root_candidate_diagnostics=tuple(telemetry.root_candidate_diagnostics),
+        )
+        self._cache_key = cache_key
+        self._cached_decision = decision
+        return decision
+
+    def _build_planned_decision(
+        self,
+        *,
+        state: GameState,
+        action: Action,
+        root_profile: SearchPositionProfile,
+        depth_decision: SearchDepthDecision,
+        actual_depth: int,
+        telemetry: SearchTelemetry,
+        best_evaluation: SearchLeafEvaluation,
+        best_value: int,
+        best_sequence_adjustment: int,
+        best_sequence: tuple[Action, ...],
+        planning_mode: str,
+        planning_reason: str,
+        greedy_plan: GreedyPlanSnapshot,
+        root_risk: RiskProfile,
+        greedy_after_risk: RiskProfile,
+        selected_after_risk: RiskProfile,
+        simulation_cache: SimulationCache,
+        overrode_greedy: bool,
+        intervention_trigger: str,
+        accepted_reason: str | None,
+        rejected_reason: str | None,
+    ) -> PlannedSearchDecision:
+        return PlannedSearchDecision(
+            action=action,
+            context=self._build_context(
+                state=state,
+                action=action,
+                root_profile=root_profile,
+                depth_decision=depth_decision,
+                actual_depth=actual_depth,
+                telemetry=telemetry,
+                best_evaluation=best_evaluation,
+                best_value=best_value,
+                best_sequence_adjustment=best_sequence_adjustment,
+                best_sequence=best_sequence,
+                planning_mode=planning_mode,
+                planning_reason=planning_reason,
+                greedy_plan=greedy_plan,
+                root_risk=root_risk,
+                greedy_after_risk=greedy_after_risk,
+                selected_after_risk=selected_after_risk,
+                simulation_cache=simulation_cache,
+                overrode_greedy=overrode_greedy,
+                intervention_trigger=intervention_trigger,
+                accepted_reason=accepted_reason,
+                rejected_reason=rejected_reason,
+            ),
+            root_candidate_diagnostics=tuple(telemetry.root_candidate_diagnostics),
+        )
+
+    def _build_context(
+        self,
+        *,
+        state: GameState,
+        action: Action,
+        root_profile: SearchPositionProfile,
+        depth_decision: SearchDepthDecision,
+        actual_depth: int,
+        telemetry: SearchTelemetry,
+        best_evaluation: SearchLeafEvaluation,
+        best_value: int,
+        best_sequence_adjustment: int,
+        best_sequence: tuple[Action, ...],
+        planning_mode: str,
+        planning_reason: str,
+        greedy_plan: GreedyPlanSnapshot,
+        root_risk: RiskProfile,
+        greedy_after_risk: RiskProfile,
+        selected_after_risk: RiskProfile,
+        simulation_cache: SimulationCache,
+        overrode_greedy: bool,
+        intervention_trigger: str,
+        accepted_reason: str | None,
+        rejected_reason: str | None,
+    ) -> dict[str, object]:
         (
             dominant_pressure,
             dominant_pressure_value,
@@ -323,167 +532,133 @@ class SearchPolicy(Policy):
             best_evaluation.value_components,
             best_sequence_adjustment,
         )
-        root_profile = telemetry.root_profile or build_search_position_profile(state)
-        root_legal_counts = telemetry.root_legal_counts_by_type or {
-            action_type: 0 for action_type in ActionType
-        }
+        root_profile = telemetry.root_profile or root_profile
+        root_legal_counts = telemetry.root_legal_counts_by_type or greedy_plan.legal_counts_by_type
         root_candidate_counts = telemetry.root_candidate_counts_by_type or {
             action_type: 0 for action_type in ActionType
         }
-        root_candidate_diagnostics = _root_candidate_diagnostics(
-            telemetry.root_candidate_diagnostics,
-            chosen_action=action,
-        )
-        action_delta_diagnostics = _action_delta_diagnostics(state, action)
-        legal_action_count = telemetry.root_legal_action_count
+        legal_action_count = telemetry.root_legal_action_count or sum(root_legal_counts.values())
         root_candidate_total = sum(root_candidate_counts.values())
         candidate_cut_ratio = (
             (legal_action_count - root_candidate_total) / legal_action_count
             if legal_action_count
             else 0.0
         )
-
-        decision = PlannedSearchDecision(
-            action=action,
-            context={
-                "search_mode": root_profile.mode,
-                "search_depth": effective_depth,
-                "search_actual_depth": actual_depth,
-                "search_base_depth": self.search_depth,
-                "search_max_depth": self.search_max_depth,
-                "search_depth_reason": depth_decision.reason,
-                "search_deep_search_enabled": planning_mode == SEARCH_PLANNING_MODE_BEAM
-                and actual_depth > 1,
-                "search_planning_mode": planning_mode,
-                "search_planning_reason": planning_reason,
-                "search_beam_width": self.search_beam_width,
-                "search_candidate_limit": self.search_candidate_limit,
-                "search_root_legal_build_city_count": root_legal_counts[ActionType.BUILD_CITY],
-                "search_root_legal_build_road_count": root_legal_counts[ActionType.BUILD_ROAD],
-                "search_root_legal_build_building_count": root_legal_counts[
-                    ActionType.BUILD_BUILDING
-                ],
-                "search_root_legal_research_tech_count": root_legal_counts[
-                    ActionType.RESEARCH_TECH
-                ],
-                "search_root_legal_skip_count": root_legal_counts[ActionType.SKIP],
-                "search_root_candidate_build_city_count": root_candidate_counts[
-                    ActionType.BUILD_CITY
-                ],
-                "search_root_candidate_build_road_count": root_candidate_counts[
-                    ActionType.BUILD_ROAD
-                ],
-                "search_root_candidate_build_building_count": root_candidate_counts[
-                    ActionType.BUILD_BUILDING
-                ],
-                "search_root_candidate_research_tech_count": root_candidate_counts[
-                    ActionType.RESEARCH_TECH
-                ],
-                "search_root_candidate_skip_count": root_candidate_counts[ActionType.SKIP],
-                "search_root_candidate_cut_ratio": candidate_cut_ratio,
-                "search_root_safe_city_candidate_count": (telemetry.root_safe_city_candidate_count),
-                "search_root_effective_connection_road_candidate_count": (
-                    telemetry.root_effective_connection_road_candidate_count
-                ),
-                "search_root_rescue_candidate_count": telemetry.root_rescue_candidate_count,
-                "search_root_effective_city_candidate_count": (
-                    telemetry.root_effective_city_candidate_count
-                ),
-                "search_root_redundant_road_candidate_count": (
-                    telemetry.root_redundant_road_candidate_count
-                ),
-                "search_root_high_roi_building_candidate_count": (
-                    telemetry.root_high_roi_building_candidate_count
-                ),
-                "search_root_gated_candidate_count": telemetry.root_gated_candidate_count,
-                "search_profile_city_count": root_profile.city_count,
-                "search_profile_target_city_count": root_profile.target_city_count,
-                "search_profile_expansion_deficit": root_profile.expansion_deficit,
-                "search_profile_safe_expansion_deficit": root_profile.safe_expansion_deficit,
-                "search_profile_network_count": root_profile.network_count,
-                "search_profile_connected_city_count": root_profile.connected_city_count,
-                "search_profile_isolated_city_count": root_profile.isolated_city_count,
-                "search_profile_starving_network_count": root_profile.starving_network_count,
-                "search_profile_food_pressure": root_profile.food_pressure,
-                "search_profile_road_overbuild": root_profile.road_overbuild,
-                "search_profile_fill_count": root_profile.fill_count,
-                "search_nodes_expanded": telemetry.nodes_expanded,
-                "search_candidates_considered": telemetry.candidates_considered,
-                "search_leaf_count": telemetry.leaf_count,
-                "search_best_value": best_value,
-                "search_value_components": best_evaluation.value_components,
-                "search_sequence_adjustment": best_sequence_adjustment,
-                "search_dominant_pressure": dominant_pressure,
-                "search_dominant_pressure_value": dominant_pressure_value,
-                "search_risk_pressure_total": risk_pressure_total,
-                "search_is_risk_dominated": is_risk_dominated,
-                "search_is_sequence_adjusted": is_sequence_adjusted,
-                "search_best_score_total": best_evaluation.score_total,
-                "search_best_connected_city_count": best_evaluation.connected_city_count,
-                "search_best_isolated_city_count": best_evaluation.isolated_city_count,
-                "search_best_starving_network_count": best_evaluation.starving_network_count,
-                "search_best_network_count": best_evaluation.network_count,
-                "search_best_largest_network_size": best_evaluation.largest_network_size,
-                "search_best_total_food": best_evaluation.total_food,
-                "search_best_total_wood": best_evaluation.total_wood,
-                "search_best_total_ore": best_evaluation.total_ore,
-                "search_best_total_science": best_evaluation.total_science,
-                "search_best_food_pressure": best_evaluation.food_pressure,
-                "search_best_starving_turns": best_evaluation.starving_turns,
-                "search_best_sequence": best_sequence,
-                **root_candidate_diagnostics,
-                **action_delta_diagnostics,
-            },
-            root_candidate_diagnostics=tuple(telemetry.root_candidate_diagnostics),
+        root_candidate_diagnostics = _root_candidate_diagnostics(
+            telemetry.root_candidate_diagnostics,
+            chosen_action=action,
         )
-        self._cache_key = cache_key
-        self._cached_decision = decision
-        return decision
-
-    def _run_anchor_plan(
-        self,
-        *,
-        state: GameState,
-        action: Action,
-        candidate_config: SearchCandidateConfig,
-        telemetry: SearchTelemetry,
-    ) -> SearchNode | None:
-        root_evaluation = evaluate_search_leaf(state, root_state=state)
-        candidate_set = generate_search_candidates(state, candidate_config)
-        self._record_root_candidate_set(candidate_set, telemetry)
-        telemetry.nodes_expanded += 1
-        telemetry.candidates_considered += len(candidate_set.candidates)
-        selected_node: SearchNode | None = None
-        for candidate in candidate_set.candidates:
-            simulated_state = simulate_action(state, candidate.action)
-            leaf_evaluation = evaluate_search_leaf(simulated_state, root_state=state)
-            telemetry.leaf_count += 1
-            sequence = (candidate.action,)
-            sequence_adjustment = _sequence_adjustment(state, simulated_state, sequence)
-            child = SearchNode(
-                state=simulated_state,
-                sequence=sequence,
-                value=leaf_evaluation.value + sequence_adjustment,
-                sequence_adjustment=sequence_adjustment,
-                leaf_evaluation=leaf_evaluation,
-            )
-            telemetry.root_candidate_diagnostics.append(
-                RootCandidateDiagnostic(
-                    action=candidate.action,
-                    value=child.value,
-                )
-            )
-            if candidate.action == action:
-                selected_node = child
-        if selected_node is not None:
-            return selected_node
-        return SearchNode(
-            state=state,
-            sequence=(),
-            value=root_evaluation.value,
-            sequence_adjustment=0,
-            leaf_evaluation=root_evaluation,
+        action_delta_diagnostics = _action_delta_diagnostics(
+            state,
+            action,
+            simulation_cache=simulation_cache,
         )
+        return {
+            **greedy_plan.context,
+            "search_mode": root_profile.mode,
+            "search_depth": depth_decision.depth,
+            "search_actual_depth": actual_depth,
+            "search_base_depth": self.search_depth,
+            "search_max_depth": self.search_max_depth,
+            "search_depth_reason": depth_decision.reason,
+            "search_deep_search_enabled": planning_mode == SEARCH_PLANNING_MODE_BEAM
+            and actual_depth > 1,
+            "search_planning_mode": planning_mode,
+            "search_planning_reason": planning_reason,
+            "search_overrode_greedy": overrode_greedy,
+            "search_intervention_trigger": intervention_trigger,
+            "search_probe_accepted_reason": accepted_reason,
+            "search_probe_rejected_reason": rejected_reason,
+            "search_beam_width": self.search_beam_width,
+            "search_candidate_limit": self.search_candidate_limit,
+            "search_root_legal_build_city_count": root_legal_counts[ActionType.BUILD_CITY],
+            "search_root_legal_build_road_count": root_legal_counts[ActionType.BUILD_ROAD],
+            "search_root_legal_build_building_count": root_legal_counts[ActionType.BUILD_BUILDING],
+            "search_root_legal_research_tech_count": root_legal_counts[ActionType.RESEARCH_TECH],
+            "search_root_legal_skip_count": root_legal_counts[ActionType.SKIP],
+            "search_root_candidate_build_city_count": root_candidate_counts[ActionType.BUILD_CITY],
+            "search_root_candidate_build_road_count": root_candidate_counts[ActionType.BUILD_ROAD],
+            "search_root_candidate_build_building_count": root_candidate_counts[
+                ActionType.BUILD_BUILDING
+            ],
+            "search_root_candidate_research_tech_count": root_candidate_counts[
+                ActionType.RESEARCH_TECH
+            ],
+            "search_root_candidate_skip_count": root_candidate_counts[ActionType.SKIP],
+            "search_root_candidate_cut_ratio": candidate_cut_ratio,
+            "search_root_safe_city_candidate_count": telemetry.root_safe_city_candidate_count,
+            "search_root_effective_connection_road_candidate_count": (
+                telemetry.root_effective_connection_road_candidate_count
+            ),
+            "search_root_rescue_candidate_count": telemetry.root_rescue_candidate_count,
+            "search_root_effective_city_candidate_count": (
+                telemetry.root_effective_city_candidate_count
+            ),
+            "search_root_redundant_road_candidate_count": (
+                telemetry.root_redundant_road_candidate_count
+            ),
+            "search_root_high_roi_building_candidate_count": (
+                telemetry.root_high_roi_building_candidate_count
+            ),
+            "search_root_gated_candidate_count": telemetry.root_gated_candidate_count,
+            "search_profile_city_count": root_profile.city_count,
+            "search_profile_target_city_count": root_profile.target_city_count,
+            "search_profile_expansion_deficit": root_profile.expansion_deficit,
+            "search_profile_safe_expansion_deficit": root_profile.safe_expansion_deficit,
+            "search_profile_network_count": root_profile.network_count,
+            "search_profile_connected_city_count": root_profile.connected_city_count,
+            "search_profile_isolated_city_count": root_profile.isolated_city_count,
+            "search_profile_starving_network_count": root_profile.starving_network_count,
+            "search_profile_food_pressure": root_profile.food_pressure,
+            "search_profile_road_overbuild": root_profile.road_overbuild,
+            "search_profile_fill_count": root_profile.fill_count,
+            "search_nodes_expanded": telemetry.nodes_expanded,
+            "search_candidates_considered": telemetry.candidates_considered,
+            "search_leaf_count": telemetry.leaf_count,
+            "search_best_value": best_value,
+            "search_value_components": best_evaluation.value_components,
+            "search_sequence_adjustment": best_sequence_adjustment,
+            "search_dominant_pressure": dominant_pressure,
+            "search_dominant_pressure_value": dominant_pressure_value,
+            "search_risk_pressure_total": risk_pressure_total,
+            "search_is_risk_dominated": is_risk_dominated,
+            "search_is_sequence_adjusted": is_sequence_adjusted,
+            "search_best_score_total": best_evaluation.score_total,
+            "search_best_connected_city_count": best_evaluation.connected_city_count,
+            "search_best_isolated_city_count": best_evaluation.isolated_city_count,
+            "search_best_starving_network_count": best_evaluation.starving_network_count,
+            "search_best_network_count": best_evaluation.network_count,
+            "search_best_largest_network_size": best_evaluation.largest_network_size,
+            "search_best_total_food": best_evaluation.total_food,
+            "search_best_total_wood": best_evaluation.total_wood,
+            "search_best_total_ore": best_evaluation.total_ore,
+            "search_best_total_science": best_evaluation.total_science,
+            "search_best_food_pressure": best_evaluation.food_pressure,
+            "search_best_starving_turns": best_evaluation.starving_turns,
+            "search_best_sequence": [_action_to_dict(item) for item in best_sequence],
+            "search_greedy_after_score_total": greedy_after_risk.score_total,
+            "search_greedy_after_starving_network_count": (
+                greedy_after_risk.starving_network_count
+            ),
+            "search_greedy_after_food_pressure": greedy_after_risk.food_pressure,
+            "search_greedy_after_min_network_food": greedy_after_risk.min_network_food,
+            "search_greedy_after_network_count": greedy_after_risk.network_count,
+            "search_greedy_after_connected_city_count": greedy_after_risk.connected_city_count,
+            "search_greedy_after_isolated_city_count": greedy_after_risk.isolated_city_count,
+            "search_selected_after_score_total": selected_after_risk.score_total,
+            "search_selected_after_starving_network_count": (
+                selected_after_risk.starving_network_count
+            ),
+            "search_selected_after_food_pressure": selected_after_risk.food_pressure,
+            "search_selected_after_min_network_food": selected_after_risk.min_network_food,
+            "search_selected_after_network_count": selected_after_risk.network_count,
+            "search_selected_after_connected_city_count": selected_after_risk.connected_city_count,
+            "search_selected_after_isolated_city_count": selected_after_risk.isolated_city_count,
+            "search_simulation_cache_hits": simulation_cache.hits,
+            "search_simulation_cache_misses": simulation_cache.misses,
+            **root_candidate_diagnostics,
+            **action_delta_diagnostics,
+        }
 
     def _choose_depth(self, state: GameState) -> SearchDepthDecision:
         context = SearchDepthContext(
@@ -501,13 +676,14 @@ class SearchPolicy(Policy):
         reason = decision.reason or "custom"
         return SearchDepthDecision(depth=decision.depth, reason=reason)
 
-    def _run_beam_search(
+    def _run_risk_beam_search(
         self,
         *,
         state: GameState,
+        trigger: str,
         depth: int,
-        candidate_config: SearchCandidateConfig,
         telemetry: SearchTelemetry,
+        simulation_cache: SimulationCache,
     ) -> SearchNode | None:
         root_evaluation = evaluate_search_leaf(state, root_state=state)
         beam = [
@@ -528,7 +704,13 @@ class SearchPolicy(Policy):
                     best_node = _better_node(best_node, node)
                     continue
 
-                candidate_set = generate_search_candidates(node.state, candidate_config)
+                candidate_set = _generate_risk_search_candidates(
+                    self._greedy_policy,
+                    node.state,
+                    trigger,
+                    self.search_candidate_limit,
+                    simulation_cache,
+                )
                 if not node.sequence and telemetry.root_profile is None:
                     self._record_root_candidate_set(candidate_set, telemetry)
                 telemetry.nodes_expanded += 1
@@ -539,11 +721,16 @@ class SearchPolicy(Policy):
                     continue
 
                 for candidate in candidate_set.candidates:
-                    simulated_state = simulate_action(node.state, candidate.action)
+                    simulated_state = simulation_cache.simulate(node.state, candidate.action)
                     leaf_evaluation = evaluate_search_leaf(simulated_state, root_state=state)
                     telemetry.leaf_count += 1
                     sequence = (*node.sequence, candidate.action)
-                    sequence_adjustment = _sequence_adjustment(state, simulated_state, sequence)
+                    sequence_adjustment = _sequence_adjustment(
+                        state,
+                        simulated_state,
+                        sequence,
+                        simulation_cache=simulation_cache,
+                    )
                     child = SearchNode(
                         state=simulated_state,
                         sequence=sequence,
@@ -628,74 +815,695 @@ def _require_positive(value: int, field_name: str) -> int:
     return value
 
 
-def _greedy_anchor_plan(
-    state: GameState,
-    profile: SearchPositionProfile,
+def _risk_profile(state: GameState) -> RiskProfile:
+    profile = build_search_position_profile(state)
+    network_risk = _network_food_risk_profile(state)
+    return RiskProfile(
+        score_total=score_breakdown(state).total,
+        starving_network_count=profile.starving_network_count,
+        food_pressure=profile.food_pressure,
+        min_network_food=network_risk["min_food"],
+        network_count=profile.network_count,
+        connected_city_count=profile.connected_city_count,
+        isolated_city_count=profile.isolated_city_count,
+    )
+
+
+def _risk_probe_decision(
     *,
-    allow_direct: bool,
-) -> GreedyAnchorPlan:
-    from microciv.ai.greedy import GreedyPolicy
-
-    greedy_action = GreedyPolicy().select_action(state)
-    if greedy_action.action_type is not ActionType.BUILD_CITY or greedy_action.coord is None:
-        return GreedyAnchorPlan(
-            action=greedy_action,
-            direct=False,
-            force_candidate=False,
-            reason="greedy_non_city",
-        )
-    if not allow_direct or not _is_healthy_expansion_anchor_state(profile):
-        return GreedyAnchorPlan(
-            action=greedy_action,
-            direct=False,
-            force_candidate=True,
-            reason="risk_search_with_greedy_city",
-        )
-
-    context = build_heuristic_context(state)
-    quality = _city_anchor_quality(state, greedy_action.coord, context)
-    if quality["food_balance"] < 0:
-        return GreedyAnchorPlan(
-            action=greedy_action,
-            direct=False,
-            force_candidate=True,
-            reason="greedy_city_food_risk",
-        )
-    if quality["ring_bonus"] >= 180 or quality["site_score"] >= 260 or profile.city_count < 3:
-        return GreedyAnchorPlan(
-            action=greedy_action,
-            direct=True,
-            force_candidate=True,
-            reason=SEARCH_PLANNING_REASON_HEALTHY_GREEDY_CITY,
-        )
-    return GreedyAnchorPlan(
-        action=greedy_action,
-        direct=False,
-        force_candidate=True,
-        reason="greedy_city_low_quality",
-    )
-
-
-def _is_healthy_expansion_anchor_state(profile: SearchPositionProfile) -> bool:
-    return (
-        profile.mode == SEARCH_MODE_EXPAND
-        and profile.is_healthy_steady
-        and profile.safe_expansion_deficit > 0
-        and profile.turns_remaining > 10
-        and profile.starving_network_count == 0
-        and profile.food_pressure <= FOOD_CONSUMPTION_PER_CITY
-    )
-
-
-def _should_use_healthy_shallow_search(
-    profile: SearchPositionProfile,
+    state: GameState,
+    root_profile: SearchPositionProfile,
+    root_risk: RiskProfile,
+    greedy_after: RiskProfile,
+    greedy_plan: GreedyPlanSnapshot,
     depth_decision: SearchDepthDecision,
-) -> bool:
-    return (
-        depth_decision.reason == SEARCH_DEPTH_REASON_STEADY
-        and _is_healthy_expansion_anchor_state(profile)
-        and depth_decision.depth > 1
+) -> RiskProbeDecision:
+    if _food_rescue_probe_needed(root_risk, greedy_after):
+        if _recent_probe_rejected_without_worsening(
+            state,
+            SEARCH_INTERVENTION_FOOD_RESCUE,
+            root_risk,
+        ):
+            return RiskProbeDecision(
+                trigger=None,
+                depth=0,
+                reason="recent_food_rescue_probe_rejected",
+            )
+        return RiskProbeDecision(
+            trigger=SEARCH_INTERVENTION_FOOD_RESCUE,
+            depth=min(depth_decision.depth, 2),
+            reason="greedy_food_risk_not_improved",
+        )
+    if _connect_probe_needed(state, root_risk, greedy_after, greedy_plan):
+        if _recent_probe_rejected_without_worsening(
+            state,
+            SEARCH_INTERVENTION_CONNECT,
+            root_risk,
+        ):
+            return RiskProbeDecision(
+                trigger=None,
+                depth=0,
+                reason="recent_connect_probe_rejected",
+            )
+        return RiskProbeDecision(
+            trigger=SEARCH_INTERVENTION_CONNECT,
+            depth=min(depth_decision.depth, 2),
+            reason="greedy_connect_risk_not_improved",
+        )
+    if _stall_probe_needed(state, root_profile, root_risk, greedy_after, greedy_plan):
+        if _recent_probe_rejected_without_worsening(
+            state,
+            SEARCH_INTERVENTION_STALL,
+            root_risk,
+        ):
+            return RiskProbeDecision(
+                trigger=None,
+                depth=0,
+                reason="recent_stall_probe_rejected",
+            )
+        return RiskProbeDecision(
+            trigger=SEARCH_INTERVENTION_STALL,
+            depth=min(depth_decision.depth, 2),
+            reason="greedy_stall_signal",
+        )
+    return RiskProbeDecision(trigger=None, depth=0, reason="healthy_greedy_passthrough")
+
+
+def _food_rescue_probe_needed(root: RiskProfile, greedy_after: RiskProfile) -> bool:
+    has_food_risk = (
+        root.starving_network_count > 0
+        or root.min_network_food < 0
+        or root.food_pressure >= FOOD_CONSUMPTION_PER_CITY * 3
     )
+    if not has_food_risk:
+        return False
+    return (
+        greedy_after.starving_network_count >= root.starving_network_count
+        and greedy_after.food_pressure >= root.food_pressure
+    )
+
+
+def _connect_probe_needed(
+    state: GameState,
+    root: RiskProfile,
+    greedy_after: RiskProfile,
+    greedy_plan: GreedyPlanSnapshot,
+) -> bool:
+    if len(state.cities) < 2:
+        return False
+    has_connect_risk = root.isolated_city_count > 0 or root.network_count > max(
+        1,
+        len(state.cities) // 4,
+    )
+    if not has_connect_risk:
+        return False
+    recent_connection_gain = _recent_search_or_greedy_connection_gain(state)
+    if recent_connection_gain:
+        return False
+    if greedy_plan.stage == SEARCH_MODE_EXPAND and root.starving_network_count == 0:
+        return False
+    return (
+        greedy_after.network_count >= root.network_count
+        and greedy_after.isolated_city_count >= root.isolated_city_count
+        and greedy_after.connected_city_count <= root.connected_city_count
+    )
+
+
+def _stall_probe_needed(
+    state: GameState,
+    root_profile: SearchPositionProfile,
+    root: RiskProfile,
+    greedy_after: RiskProfile,
+    greedy_plan: GreedyPlanSnapshot,
+) -> bool:
+    if greedy_plan.action.action_type is ActionType.SKIP:
+        return True
+    if (
+        sum(
+            1
+            for context in state.stats.decision_contexts[-3:]
+            if context.get("chosen_action_type") == "skip"
+        )
+        >= 2
+    ):
+        return True
+    if greedy_plan.history.food_rescue_stalled and (
+        root.starving_network_count > 0 or root.food_pressure >= FOOD_CONSUMPTION_PER_CITY
+    ):
+        return True
+    greedy_delta = greedy_after.score_total - root.score_total
+    if greedy_plan.stage == SEARCH_MODE_RESCUE and greedy_delta < 0:
+        return True
+    return (
+        root_profile.turns_remaining > 12
+        and greedy_plan.history.negative_delta_stall
+        and greedy_delta <= 0
+    )
+
+
+def _recent_search_or_greedy_connection_gain(state: GameState) -> bool:
+    for context in state.stats.decision_contexts[-3:]:
+        connected_delta = context.get("search_delta_connected_city_count")
+        network_delta = context.get("search_delta_network_count")
+        greedy_network_delta = context.get("greedy_global_network_delta")
+        if isinstance(connected_delta, int) and connected_delta > 0:
+            return True
+        if isinstance(network_delta, int) and network_delta < 0:
+            return True
+        if isinstance(greedy_network_delta, int) and greedy_network_delta > 0:
+            return True
+    return False
+
+
+def _recent_probe_rejected_without_worsening(
+    state: GameState,
+    trigger: str,
+    root: RiskProfile,
+) -> bool:
+    for context in reversed(state.stats.decision_contexts[-8:]):
+        if context.get("search_intervention_trigger") != trigger:
+            continue
+        rejected_reason = context.get("search_probe_rejected_reason")
+        if rejected_reason not in {
+            "selected_matches_greedy",
+            "food_rescue_gate_failed",
+            "connect_gate_failed",
+            "stall_gate_failed",
+        }:
+            return False
+        previous_starving = _context_int(context, "search_selected_after_starving_network_count")
+        previous_pressure = _context_int(context, "search_selected_after_food_pressure")
+        previous_networks = _context_int(context, "search_selected_after_network_count")
+        previous_isolated = _context_int(context, "search_selected_after_isolated_city_count")
+        if previous_starving is not None and root.starving_network_count > previous_starving:
+            return False
+        pressure_tolerance = FOOD_CONSUMPTION_PER_CITY * 2
+        if (
+            previous_pressure is not None
+            and root.food_pressure > previous_pressure + pressure_tolerance
+        ):
+            return False
+        if previous_networks is not None and root.network_count > previous_networks:
+            return False
+        if previous_isolated is not None and root.isolated_city_count > previous_isolated:
+            return False
+        return True
+    return False
+
+
+def _context_int(context: dict[str, object], key: str) -> int | None:
+    value = context.get(key)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _evaluate_probe_result(
+    *,
+    trigger: str,
+    root_risk: RiskProfile,
+    greedy_action: Action,
+    selected_action: Action,
+    greedy_after: RiskProfile,
+    selected_after: RiskProfile,
+) -> RiskProbeResult:
+    if selected_action == greedy_action:
+        return RiskProbeResult(
+            accepted=False,
+            accepted_reason=None,
+            rejected_reason="selected_matches_greedy",
+        )
+    if trigger == SEARCH_INTERVENTION_FOOD_RESCUE:
+        if selected_after.starving_network_count < greedy_after.starving_network_count:
+            return RiskProbeResult(True, "reduced_starving_networks", None)
+        pressure_improvement = greedy_after.food_pressure - selected_after.food_pressure
+        if pressure_improvement >= FOOD_CONSUMPTION_PER_CITY:
+            return RiskProbeResult(True, "reduced_food_pressure", None)
+        if (
+            greedy_action.action_type is ActionType.SKIP
+            and selected_action.action_type is not ActionType.SKIP
+            and selected_after.food_pressure <= greedy_after.food_pressure
+        ):
+            return RiskProbeResult(True, "escaped_skip_stall", None)
+        return RiskProbeResult(False, None, "food_rescue_gate_failed")
+    if trigger == SEARCH_INTERVENTION_CONNECT:
+        if selected_after.network_count < greedy_after.network_count:
+            return RiskProbeResult(True, "reduced_network_count", None)
+        if selected_after.isolated_city_count < greedy_after.isolated_city_count:
+            return RiskProbeResult(True, "reduced_isolated_city_count", None)
+        if selected_after.connected_city_count > greedy_after.connected_city_count:
+            return RiskProbeResult(True, "increased_connected_city_count", None)
+        return RiskProbeResult(False, None, "connect_gate_failed")
+    if trigger == SEARCH_INTERVENTION_STALL:
+        risk_not_worse = (
+            selected_after.starving_network_count <= greedy_after.starving_network_count
+            and selected_after.food_pressure <= greedy_after.food_pressure
+            and selected_after.network_count
+            <= max(greedy_after.network_count, root_risk.network_count)
+            and selected_after.isolated_city_count
+            <= max(greedy_after.isolated_city_count, root_risk.isolated_city_count)
+        )
+        if selected_after.score_total >= greedy_after.score_total and risk_not_worse:
+            return RiskProbeResult(True, "stall_score_not_worse", None)
+        return RiskProbeResult(False, None, "stall_gate_failed")
+    return RiskProbeResult(False, None, "unknown_probe")
+
+
+def _generate_risk_search_candidates(
+    greedy_policy: GreedyPolicy,
+    state: GameState,
+    trigger: str,
+    candidate_limit: int,
+    simulation_cache: SimulationCache,
+) -> SearchCandidateSet:
+    greedy_plan = greedy_policy.plan_for_search(state)
+    profile = build_search_position_profile(state)
+    context = build_heuristic_context(state)
+    legal_actions = get_legal_actions(state)
+    legal_set = set(legal_actions)
+    legal_counts = {
+        action_type: sum(1 for action in legal_actions if action.action_type is action_type)
+        for action_type in ActionType
+    }
+
+    candidate_actions = _risk_candidate_actions(
+        state=state,
+        trigger=trigger,
+        candidate_limit=candidate_limit,
+        greedy_plan=greedy_plan,
+        legal_actions=legal_actions,
+        context=context,
+        profile=profile,
+        simulation_cache=simulation_cache,
+    )
+    candidates = [
+        _risk_search_candidate(
+            state,
+            action,
+            trigger,
+            context,
+            simulation_cache=simulation_cache,
+        )
+        for action in candidate_actions
+        if action in legal_set
+    ][:candidate_limit]
+    candidate_counts = {
+        action_type: sum(1 for candidate in candidates if candidate.action_type is action_type)
+        for action_type in ActionType
+    }
+    safe_city_count = sum(
+        1
+        for candidate in candidates
+        if candidate.action.action_type is ActionType.BUILD_CITY
+        and candidate.action.coord is not None
+        and _risk_action_improves_food(state, candidate.action, simulation_cache=simulation_cache)
+    )
+    connection_road_count = sum(
+        1
+        for candidate in candidates
+        if candidate.action.action_type is ActionType.BUILD_ROAD
+        and _risk_action_improves_connection(
+            state,
+            candidate.action,
+            simulation_cache=simulation_cache,
+        )
+    )
+    rescue_count = sum(
+        1
+        for candidate in candidates
+        if _risk_action_improves_food(
+            state,
+            candidate.action,
+            simulation_cache=simulation_cache,
+        )
+    )
+    return SearchCandidateSet(
+        candidates=candidates,
+        legal_action_count=len(legal_actions),
+        legal_counts_by_type=legal_counts,
+        candidate_counts_by_type=candidate_counts,
+        profile=profile,
+        safe_city_candidate_count=safe_city_count,
+        effective_connection_road_candidate_count=connection_road_count,
+        rescue_candidate_count=rescue_count,
+        effective_city_candidate_count=safe_city_count,
+        redundant_road_candidate_count=0,
+        high_roi_building_candidate_count=sum(
+            1
+            for candidate in candidates
+            if candidate.action.action_type is ActionType.BUILD_BUILDING
+        ),
+        gated_candidate_count=max(0, len(legal_actions) - len(candidates)),
+    )
+
+
+def _risk_candidate_actions(
+    *,
+    state: GameState,
+    trigger: str,
+    candidate_limit: int,
+    greedy_plan: GreedyPlanSnapshot,
+    legal_actions: list[Action],
+    context: HeuristicContext,
+    profile: SearchPositionProfile,
+    simulation_cache: SimulationCache,
+) -> list[Action]:
+    candidates: list[Action] = [greedy_plan.action]
+    greedy_quota = max(2, candidate_limit // 3)
+    candidates.extend(greedy_plan.selected_candidates[:greedy_quota])
+    candidates.extend(greedy_plan.escape_candidates[:greedy_quota])
+    candidates.extend(greedy_plan.candidates[:greedy_quota])
+    groups = partition_actions(legal_actions)
+    supplemental_actions = _supplemental_risk_actions(
+        state,
+        groups,
+        context,
+        trigger=trigger,
+        limit=max(candidate_limit, 4),
+    )
+
+    if trigger == SEARCH_INTERVENTION_FOOD_RESCUE:
+        candidates.extend(
+            sorted(
+                (
+                    action
+                    for action in supplemental_actions
+                    if _risk_action_improves_food(
+                        state,
+                        action,
+                        simulation_cache=simulation_cache,
+                    )
+                    or _risk_action_improves_connection(
+                        state,
+                        action,
+                        simulation_cache=simulation_cache,
+                    )
+                ),
+                key=lambda action: _risk_action_sort_key(
+                    state,
+                    action,
+                    trigger,
+                    context,
+                    profile,
+                    simulation_cache,
+                ),
+            )[:candidate_limit]
+        )
+    elif trigger == SEARCH_INTERVENTION_CONNECT:
+        candidates.extend(
+            sorted(
+                (
+                    action
+                    for action in supplemental_actions
+                    if _risk_action_improves_connection(
+                        state,
+                        action,
+                        simulation_cache=simulation_cache,
+                    )
+                ),
+                key=lambda action: _risk_action_sort_key(
+                    state,
+                    action,
+                    trigger,
+                    context,
+                    profile,
+                    simulation_cache,
+                ),
+            )[:candidate_limit]
+        )
+    elif trigger == SEARCH_INTERVENTION_STALL:
+        candidates.extend(
+            sorted(
+                (
+                    action
+                    for action in supplemental_actions
+                    if action.action_type is not ActionType.SKIP
+                    and (
+                        _risk_action_score_delta(
+                            state,
+                            action,
+                            simulation_cache=simulation_cache,
+                        )
+                        >= 0
+                        or _risk_action_improves_food(
+                            state,
+                            action,
+                            simulation_cache=simulation_cache,
+                        )
+                        or _risk_action_improves_connection(
+                            state,
+                            action,
+                            simulation_cache=simulation_cache,
+                        )
+                    )
+                ),
+                key=lambda action: _risk_action_sort_key(
+                    state,
+                    action,
+                    trigger,
+                    context,
+                    profile,
+                    simulation_cache,
+                ),
+            )[:candidate_limit]
+        )
+
+    return _dedupe_ordered_actions(candidates)[:candidate_limit]
+
+
+def _supplemental_risk_actions(
+    state: GameState,
+    groups: dict[ActionType, list[Action]],
+    context: HeuristicContext,
+    *,
+    trigger: str,
+    limit: int,
+) -> list[Action]:
+    actions: list[Action] = []
+    if trigger in {SEARCH_INTERVENTION_FOOD_RESCUE, SEARCH_INTERVENTION_STALL}:
+        food_cities = [
+            action
+            for action in groups.get(ActionType.BUILD_CITY, [])
+            if action.coord is not None
+            and _city_anchor_quality(state, action.coord, context)["food_balance"] >= 1
+        ]
+        actions.extend(
+            sorted(
+                food_cities,
+                key=lambda action: (
+                    -_city_anchor_quality(state, _required_coord(action), context)["food_balance"],
+                    -resource_ring_bonus_for_context(context, _required_coord(action)),
+                    _action_sort_key(action),
+                ),
+            )[:3]
+        )
+        farm_actions = [
+            action
+            for action in groups.get(ActionType.BUILD_BUILDING, [])
+            if action.building_type is BuildingType.FARM
+        ]
+        actions.extend(
+            sorted(farm_actions, key=lambda action: -building_action_score(state, action))[:3]
+        )
+        agriculture_actions = [
+            action
+            for action in groups.get(ActionType.RESEARCH_TECH, [])
+            if action.tech_type is TechType.AGRICULTURE
+        ]
+        actions.extend(
+            sorted(
+                agriculture_actions,
+                key=lambda action: -research_action_score(state, action),
+            )[:2]
+        )
+
+    if trigger in {
+        SEARCH_INTERVENTION_FOOD_RESCUE,
+        SEARCH_INTERVENTION_CONNECT,
+        SEARCH_INTERVENTION_STALL,
+    }:
+        road_actions = [
+            action for action in groups.get(ActionType.BUILD_ROAD, []) if action.coord is not None
+        ]
+        actions.extend(
+            sorted(
+                road_actions,
+                key=lambda action: (
+                    -road_site_score_for_context(context, _required_coord(action)),
+                    _action_sort_key(action),
+                ),
+            )[:4]
+        )
+
+    return _dedupe_ordered_actions(actions)[:limit]
+
+
+def _risk_search_candidate(
+    state: GameState,
+    action: Action,
+    trigger: str,
+    context: HeuristicContext,
+    *,
+    simulation_cache: SimulationCache | None = None,
+) -> SearchCandidate:
+    improvement = _risk_action_improvement_score(
+        state,
+        action,
+        simulation_cache=simulation_cache,
+    )
+    rank_score = improvement * 1_000
+    if action.action_type is ActionType.BUILD_CITY and action.coord is not None:
+        quality = _city_anchor_quality(state, action.coord, context)
+        rank_score += quality["ring_bonus"] * 3 + quality["site_score"]
+    elif (
+        action.action_type is ActionType.BUILD_BUILDING
+        and action.building_type is BuildingType.FARM
+    ):
+        rank_score += 900
+    elif (
+        action.action_type is ActionType.RESEARCH_TECH and action.tech_type is TechType.AGRICULTURE
+    ):
+        rank_score += 700
+    elif action.action_type is ActionType.BUILD_ROAD:
+        rank_score += 800
+    if action.action_type is ActionType.SKIP:
+        rank_score -= 10_000
+    return SearchCandidate(
+        action=action,
+        action_type=action.action_type,
+        rank_score=rank_score,
+        reason=trigger,
+        effective=improvement > 0,
+        risk=False,
+    )
+
+
+def _risk_action_sort_key(
+    state: GameState,
+    action: Action,
+    trigger: str,
+    context: HeuristicContext,
+    profile: SearchPositionProfile,
+    simulation_cache: SimulationCache,
+) -> tuple[int, tuple[int, tuple[int, int], int, int, int]]:
+    del trigger, profile
+    rank = _risk_search_candidate(
+        state,
+        action,
+        SEARCH_INTERVENTION_NONE,
+        context,
+        simulation_cache=simulation_cache,
+    ).rank_score
+    return (-rank, _action_sort_key(action))
+
+
+def _risk_action_improvement_score(
+    state: GameState,
+    action: Action,
+    *,
+    simulation_cache: SimulationCache | None = None,
+) -> int:
+    before = _risk_profile(state)
+    try:
+        simulated = (
+            simulation_cache.simulate(state, action)
+            if simulation_cache is not None
+            else simulate_action(state, action)
+        )
+        after = _risk_profile(simulated)
+    except ValueError:
+        return -10_000
+    return (
+        max(0, before.starving_network_count - after.starving_network_count) * 12
+        + max(0, before.food_pressure - after.food_pressure)
+        + max(0, before.network_count - after.network_count) * 8
+        + max(0, before.isolated_city_count - after.isolated_city_count) * 8
+        + max(0, after.connected_city_count - before.connected_city_count) * 6
+        + max(0, after.score_total - before.score_total) // 20
+    )
+
+
+def _risk_action_score_delta(
+    state: GameState,
+    action: Action,
+    *,
+    simulation_cache: SimulationCache | None = None,
+) -> int:
+    before = _risk_profile(state)
+    try:
+        simulated = (
+            simulation_cache.simulate(state, action)
+            if simulation_cache is not None
+            else simulate_action(state, action)
+        )
+        after = _risk_profile(simulated)
+    except ValueError:
+        return -10_000
+    return after.score_total - before.score_total
+
+
+def _risk_action_improves_food(
+    state: GameState,
+    action: Action,
+    *,
+    simulation_cache: SimulationCache | None = None,
+) -> bool:
+    before = _risk_profile(state)
+    try:
+        simulated = (
+            simulation_cache.simulate(state, action)
+            if simulation_cache is not None
+            else simulate_action(state, action)
+        )
+        after = _risk_profile(simulated)
+    except ValueError:
+        return False
+    return (
+        after.starving_network_count < before.starving_network_count
+        or after.food_pressure < before.food_pressure
+        or after.min_network_food > before.min_network_food
+    )
+
+
+def _risk_action_improves_connection(
+    state: GameState,
+    action: Action,
+    *,
+    simulation_cache: SimulationCache | None = None,
+) -> bool:
+    before = _risk_profile(state)
+    try:
+        simulated = (
+            simulation_cache.simulate(state, action)
+            if simulation_cache is not None
+            else simulate_action(state, action)
+        )
+        after = _risk_profile(simulated)
+    except ValueError:
+        return False
+    return (
+        after.network_count < before.network_count
+        or after.isolated_city_count < before.isolated_city_count
+        or after.connected_city_count > before.connected_city_count
+    )
+
+
+def _dedupe_ordered_actions(actions: list[Action]) -> list[Action]:
+    result: list[Action] = []
+    seen: set[Action] = set()
+    for action in actions:
+        if action in seen:
+            continue
+        result.append(action)
+        seen.add(action)
+    return result
+
+
+def _required_coord(action: Action) -> Coord:
+    assert action.coord is not None
+    return action.coord
 
 
 def _city_anchor_quality(
@@ -718,6 +1526,11 @@ def _root_candidate_diagnostics(
 ) -> dict[str, object]:
     result: dict[str, object] = {
         "search_root_chosen_action_type": chosen_action.action_type.value,
+        "search_root_chosen_rank": None,
+        "search_root_chosen_value": None,
+        "search_root_best_value": None,
+        "search_root_value_margin": None,
+        "search_root_best_action_type": None,
     }
     for action_type in ActionType:
         values = [
@@ -757,10 +1570,19 @@ def _root_candidate_diagnostics(
     return result
 
 
-def _action_delta_diagnostics(state: GameState, action: Action) -> dict[str, object]:
+def _action_delta_diagnostics(
+    state: GameState,
+    action: Action,
+    *,
+    simulation_cache: SimulationCache | None = None,
+) -> dict[str, object]:
     before = build_search_position_profile(state)
     before_risk = _network_food_risk_profile(state)
-    after_state = simulate_action(state, action)
+    after_state = (
+        simulation_cache.simulate(state, action)
+        if simulation_cache is not None
+        else simulate_action(state, action)
+    )
     after = build_search_position_profile(after_state)
     after_risk = _network_food_risk_profile(after_state)
     road_connected_city_delta = after.connected_city_count - before.connected_city_count
@@ -807,8 +1629,6 @@ def _post_decision_diagnostics(
     state: GameState,
     decision: PlannedSearchDecision,
 ) -> dict[str, object]:
-    from microciv.ai.greedy import GreedyPolicy
-
     greedy_action = GreedyPolicy().select_action(state)
     diagnostics = _greedy_anchor_diagnostics(
         root_candidates=decision.root_candidate_diagnostics,
@@ -972,6 +1792,8 @@ def _sequence_adjustment(
     root_state: GameState,
     leaf_state: GameState,
     sequence: tuple[Action, ...],
+    *,
+    simulation_cache: SimulationCache | None = None,
 ) -> int:
     root_profile = build_search_position_profile(root_state)
     leaf_profile = build_search_position_profile(leaf_state)
@@ -993,7 +1815,11 @@ def _sequence_adjustment(
     )
     pressure_reduction = max(0, root_profile.food_pressure - leaf_profile.food_pressure)
     first_action = sequence[0] if sequence else None
-    first_delta = _first_action_delta(root_state, first_action) if first_action is not None else {}
+    first_delta = (
+        _first_action_delta(root_state, first_action, simulation_cache=simulation_cache)
+        if first_action is not None
+        else {}
+    )
     first_food_delta = int(first_delta.get("food_pressure", 0))
     first_starving_delta = int(first_delta.get("starving_network_count", 0))
     first_network_delta = int(first_delta.get("network_count", 0))
@@ -1103,9 +1929,18 @@ def _search_pressure_diagnostics(
     )
 
 
-def _first_action_delta(state: GameState, action: Action) -> dict[str, int]:
+def _first_action_delta(
+    state: GameState,
+    action: Action,
+    *,
+    simulation_cache: SimulationCache | None = None,
+) -> dict[str, int]:
     before = build_search_position_profile(state)
-    after_state = simulate_action(state, action)
+    after_state = (
+        simulation_cache.simulate(state, action)
+        if simulation_cache is not None
+        else simulate_action(state, action)
+    )
     after = build_search_position_profile(after_state)
     return {
         "starving_network_count": after.starving_network_count - before.starving_network_count,

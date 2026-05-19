@@ -352,6 +352,9 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         search_deep_search_enabled=False,
         search_planning_mode="greedy_anchor",
         search_planning_reason="healthy_greedy_city",
+        search_overrode_greedy=True,
+        search_intervention_trigger="stall_probe",
+        search_probe_accepted_reason="stall_score_not_worse",
         search_beam_width=3,
         search_candidate_limit=5,
         search_root_legal_build_city_count=4,
@@ -449,6 +452,22 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         search_worst_network_food_pressure_after_action=0,
         search_food_surplus_network_count_after_action=1,
         search_food_deficit_network_count_after_action=0,
+        search_greedy_after_score_total=320,
+        search_greedy_after_starving_network_count=0,
+        search_greedy_after_food_pressure=2,
+        search_greedy_after_min_network_food=18,
+        search_greedy_after_network_count=2,
+        search_greedy_after_connected_city_count=1,
+        search_greedy_after_isolated_city_count=1,
+        search_selected_after_score_total=321,
+        search_selected_after_starving_network_count=0,
+        search_selected_after_food_pressure=0,
+        search_selected_after_min_network_food=20,
+        search_selected_after_network_count=1,
+        search_selected_after_connected_city_count=2,
+        search_selected_after_isolated_city_count=0,
+        search_simulation_cache_hits=8,
+        search_simulation_cache_misses=5,
         search_profile_city_count=1,
         search_profile_target_city_count=5,
         search_profile_expansion_deficit=4,
@@ -479,6 +498,9 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     assert restored.search_deep_search_enabled is False
     assert restored.search_planning_mode == "greedy_anchor"
     assert restored.search_planning_reason == "healthy_greedy_city"
+    assert restored.search_overrode_greedy is True
+    assert restored.search_intervention_trigger == "stall_probe"
+    assert restored.search_probe_accepted_reason == "stall_score_not_worse"
     assert restored.search_depth_reason == "fixed"
     assert restored.search_root_candidate_build_city_count == 3
     assert restored.search_root_candidate_skip_count == 0
@@ -523,6 +545,11 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     assert restored.search_greedy_city_resource_ring_bonus == 180
     assert restored.search_min_network_food_after_action == 20
     assert restored.search_food_surplus_network_count_after_action == 1
+    assert restored.search_greedy_after_score_total == 320
+    assert restored.search_selected_after_score_total == 321
+    assert restored.search_selected_after_connected_city_count == 2
+    assert restored.search_simulation_cache_hits == 8
+    assert restored.search_simulation_cache_misses == 5
     assert restored.search_profile_safe_expansion_deficit == 3
     assert [action.action_type for action in restored.search_best_sequence] == [
         "build_city",
@@ -557,8 +584,15 @@ def test_record_decision_artifact_rows_preserve_search_planning_fields() -> None
             search_deep_search_enabled=False,
             search_planning_mode="greedy_anchor",
             search_planning_reason="healthy_greedy_city",
+            search_overrode_greedy=True,
+            search_intervention_trigger="stall_probe",
+            search_probe_accepted_reason="stall_score_not_worse",
             search_delta_worst_network_food_pressure=-3,
             search_delta_min_network_food=4,
+            search_greedy_after_score_total=320,
+            search_selected_after_score_total=321,
+            search_simulation_cache_hits=8,
+            search_simulation_cache_misses=5,
             search_chosen_city_resource_ring_bonus=180,
             search_greedy_city_resource_ring_bonus=180,
         )
@@ -570,8 +604,15 @@ def test_record_decision_artifact_rows_preserve_search_planning_fields() -> None
     assert row["search_deep_search_enabled"] == 0
     assert row["search_planning_mode"] == "greedy_anchor"
     assert row["search_planning_reason"] == "healthy_greedy_city"
+    assert row["search_overrode_greedy"] == 1
+    assert row["search_intervention_trigger"] == "stall_probe"
+    assert row["search_probe_accepted_reason"] == "stall_score_not_worse"
     assert row["search_delta_worst_network_food_pressure"] == -3
     assert row["search_delta_min_network_food"] == 4
+    assert row["search_greedy_after_score_total"] == 320
+    assert row["search_selected_after_score_total"] == 321
+    assert row["search_simulation_cache_hits"] == 8
+    assert row["search_simulation_cache_misses"] == 5
     assert row["search_chosen_city_resource_ring_bonus"] == 180
     assert row["search_greedy_city_resource_ring_bonus"] == 180
 

@@ -17,7 +17,7 @@ from microciv.game.scoring import (
 )
 from microciv.utils.grid import Coord, coord_sort_key
 
-RECORDS_SCHEMA_VERSION = 8
+RECORDS_SCHEMA_VERSION = 9
 
 CSV_FIELD_ORDER: tuple[str, ...] = (
     "record_id",
@@ -581,6 +581,10 @@ class RecordDecisionContext:
     search_deep_search_enabled: bool | None = None
     search_planning_mode: str | None = None
     search_planning_reason: str | None = None
+    search_overrode_greedy: bool | None = None
+    search_intervention_trigger: str | None = None
+    search_probe_accepted_reason: str | None = None
+    search_probe_rejected_reason: str | None = None
     search_beam_width: int | None = None
     search_candidate_limit: int | None = None
     search_root_legal_build_city_count: int | None = None
@@ -682,6 +686,22 @@ class RecordDecisionContext:
     search_worst_network_food_pressure_after_action: int | None = None
     search_food_surplus_network_count_after_action: int | None = None
     search_food_deficit_network_count_after_action: int | None = None
+    search_greedy_after_score_total: int | None = None
+    search_greedy_after_starving_network_count: int | None = None
+    search_greedy_after_food_pressure: int | None = None
+    search_greedy_after_min_network_food: int | None = None
+    search_greedy_after_network_count: int | None = None
+    search_greedy_after_connected_city_count: int | None = None
+    search_greedy_after_isolated_city_count: int | None = None
+    search_selected_after_score_total: int | None = None
+    search_selected_after_starving_network_count: int | None = None
+    search_selected_after_food_pressure: int | None = None
+    search_selected_after_min_network_food: int | None = None
+    search_selected_after_network_count: int | None = None
+    search_selected_after_connected_city_count: int | None = None
+    search_selected_after_isolated_city_count: int | None = None
+    search_simulation_cache_hits: int | None = None
+    search_simulation_cache_misses: int | None = None
     search_profile_city_count: int | None = None
     search_profile_target_city_count: int | None = None
     search_profile_expansion_deficit: int | None = None
@@ -748,6 +768,10 @@ class RecordDecisionContext:
             search_deep_search_enabled=_optional_bool(payload, "search_deep_search_enabled"),
             search_planning_mode=_optional_str(payload, "search_planning_mode"),
             search_planning_reason=_optional_str(payload, "search_planning_reason"),
+            search_overrode_greedy=_optional_bool(payload, "search_overrode_greedy"),
+            search_intervention_trigger=_optional_str(payload, "search_intervention_trigger"),
+            search_probe_accepted_reason=_optional_str(payload, "search_probe_accepted_reason"),
+            search_probe_rejected_reason=_optional_str(payload, "search_probe_rejected_reason"),
             search_beam_width=_optional_int(payload, "search_beam_width"),
             search_candidate_limit=_optional_int(payload, "search_candidate_limit"),
             search_root_legal_build_city_count=_optional_int(
@@ -968,6 +992,50 @@ class RecordDecisionContext:
             search_food_deficit_network_count_after_action=_optional_int(
                 payload, "search_food_deficit_network_count_after_action"
             ),
+            search_greedy_after_score_total=_optional_int(
+                payload, "search_greedy_after_score_total"
+            ),
+            search_greedy_after_starving_network_count=_optional_int(
+                payload, "search_greedy_after_starving_network_count"
+            ),
+            search_greedy_after_food_pressure=_optional_int(
+                payload, "search_greedy_after_food_pressure"
+            ),
+            search_greedy_after_min_network_food=_optional_int(
+                payload, "search_greedy_after_min_network_food"
+            ),
+            search_greedy_after_network_count=_optional_int(
+                payload, "search_greedy_after_network_count"
+            ),
+            search_greedy_after_connected_city_count=_optional_int(
+                payload, "search_greedy_after_connected_city_count"
+            ),
+            search_greedy_after_isolated_city_count=_optional_int(
+                payload, "search_greedy_after_isolated_city_count"
+            ),
+            search_selected_after_score_total=_optional_int(
+                payload, "search_selected_after_score_total"
+            ),
+            search_selected_after_starving_network_count=_optional_int(
+                payload, "search_selected_after_starving_network_count"
+            ),
+            search_selected_after_food_pressure=_optional_int(
+                payload, "search_selected_after_food_pressure"
+            ),
+            search_selected_after_min_network_food=_optional_int(
+                payload, "search_selected_after_min_network_food"
+            ),
+            search_selected_after_network_count=_optional_int(
+                payload, "search_selected_after_network_count"
+            ),
+            search_selected_after_connected_city_count=_optional_int(
+                payload, "search_selected_after_connected_city_count"
+            ),
+            search_selected_after_isolated_city_count=_optional_int(
+                payload, "search_selected_after_isolated_city_count"
+            ),
+            search_simulation_cache_hits=_optional_int(payload, "search_simulation_cache_hits"),
+            search_simulation_cache_misses=_optional_int(payload, "search_simulation_cache_misses"),
             search_profile_city_count=_optional_int(payload, "search_profile_city_count"),
             search_profile_target_city_count=_optional_int(
                 payload, "search_profile_target_city_count"
@@ -1075,6 +1143,14 @@ class RecordDecisionContext:
             result["search_planning_mode"] = self.search_planning_mode
         if self.search_planning_reason is not None:
             result["search_planning_reason"] = self.search_planning_reason
+        if self.search_overrode_greedy is not None:
+            result["search_overrode_greedy"] = self.search_overrode_greedy
+        if self.search_intervention_trigger is not None:
+            result["search_intervention_trigger"] = self.search_intervention_trigger
+        if self.search_probe_accepted_reason is not None:
+            result["search_probe_accepted_reason"] = self.search_probe_accepted_reason
+        if self.search_probe_rejected_reason is not None:
+            result["search_probe_rejected_reason"] = self.search_probe_rejected_reason
         if self.search_beam_width is not None:
             result["search_beam_width"] = self.search_beam_width
         if self.search_candidate_limit is not None:
@@ -1339,6 +1415,54 @@ class RecordDecisionContext:
             result["search_food_deficit_network_count_after_action"] = (
                 self.search_food_deficit_network_count_after_action
             )
+        if self.search_greedy_after_score_total is not None:
+            result["search_greedy_after_score_total"] = self.search_greedy_after_score_total
+        if self.search_greedy_after_starving_network_count is not None:
+            result["search_greedy_after_starving_network_count"] = (
+                self.search_greedy_after_starving_network_count
+            )
+        if self.search_greedy_after_food_pressure is not None:
+            result["search_greedy_after_food_pressure"] = self.search_greedy_after_food_pressure
+        if self.search_greedy_after_min_network_food is not None:
+            result["search_greedy_after_min_network_food"] = (
+                self.search_greedy_after_min_network_food
+            )
+        if self.search_greedy_after_network_count is not None:
+            result["search_greedy_after_network_count"] = self.search_greedy_after_network_count
+        if self.search_greedy_after_connected_city_count is not None:
+            result["search_greedy_after_connected_city_count"] = (
+                self.search_greedy_after_connected_city_count
+            )
+        if self.search_greedy_after_isolated_city_count is not None:
+            result["search_greedy_after_isolated_city_count"] = (
+                self.search_greedy_after_isolated_city_count
+            )
+        if self.search_selected_after_score_total is not None:
+            result["search_selected_after_score_total"] = self.search_selected_after_score_total
+        if self.search_selected_after_starving_network_count is not None:
+            result["search_selected_after_starving_network_count"] = (
+                self.search_selected_after_starving_network_count
+            )
+        if self.search_selected_after_food_pressure is not None:
+            result["search_selected_after_food_pressure"] = self.search_selected_after_food_pressure
+        if self.search_selected_after_min_network_food is not None:
+            result["search_selected_after_min_network_food"] = (
+                self.search_selected_after_min_network_food
+            )
+        if self.search_selected_after_network_count is not None:
+            result["search_selected_after_network_count"] = self.search_selected_after_network_count
+        if self.search_selected_after_connected_city_count is not None:
+            result["search_selected_after_connected_city_count"] = (
+                self.search_selected_after_connected_city_count
+            )
+        if self.search_selected_after_isolated_city_count is not None:
+            result["search_selected_after_isolated_city_count"] = (
+                self.search_selected_after_isolated_city_count
+            )
+        if self.search_simulation_cache_hits is not None:
+            result["search_simulation_cache_hits"] = self.search_simulation_cache_hits
+        if self.search_simulation_cache_misses is not None:
+            result["search_simulation_cache_misses"] = self.search_simulation_cache_misses
         if self.search_profile_city_count is not None:
             result["search_profile_city_count"] = self.search_profile_city_count
         if self.search_profile_target_city_count is not None:

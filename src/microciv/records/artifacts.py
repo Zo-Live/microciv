@@ -30,7 +30,7 @@ from microciv.game.models import (
 from microciv.game.scoring import score_breakdown
 from microciv.records.models import RecordEntry
 
-ARTIFACT_SCHEMA_VERSION: Final[int] = 6
+ARTIFACT_SCHEMA_VERSION: Final[int] = 7
 ARTIFACT_MANIFEST_FILENAME: Final[str] = "artifact_manifest.json"
 ARTIFACT_TABLES: Final[tuple[str, ...]] = (
     "macro",
@@ -416,6 +416,14 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             ),
             "search_planning_mode": context.search_planning_mode or "",
             "search_planning_reason": context.search_planning_reason or "",
+            "search_overrode_greedy": (
+                int(context.search_overrode_greedy)
+                if context.search_overrode_greedy is not None
+                else None
+            ),
+            "search_intervention_trigger": context.search_intervention_trigger or "",
+            "search_probe_accepted_reason": context.search_probe_accepted_reason or "",
+            "search_probe_rejected_reason": context.search_probe_rejected_reason or "",
             "search_beam_width": context.search_beam_width,
             "search_candidate_limit": context.search_candidate_limit,
             "search_root_legal_build_city_count": context.search_root_legal_build_city_count,
@@ -609,6 +617,36 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             "search_food_deficit_network_count_after_action": (
                 context.search_food_deficit_network_count_after_action
             ),
+            "search_greedy_after_score_total": context.search_greedy_after_score_total,
+            "search_greedy_after_starving_network_count": (
+                context.search_greedy_after_starving_network_count
+            ),
+            "search_greedy_after_food_pressure": context.search_greedy_after_food_pressure,
+            "search_greedy_after_min_network_food": context.search_greedy_after_min_network_food,
+            "search_greedy_after_network_count": context.search_greedy_after_network_count,
+            "search_greedy_after_connected_city_count": (
+                context.search_greedy_after_connected_city_count
+            ),
+            "search_greedy_after_isolated_city_count": (
+                context.search_greedy_after_isolated_city_count
+            ),
+            "search_selected_after_score_total": context.search_selected_after_score_total,
+            "search_selected_after_starving_network_count": (
+                context.search_selected_after_starving_network_count
+            ),
+            "search_selected_after_food_pressure": context.search_selected_after_food_pressure,
+            "search_selected_after_min_network_food": (
+                context.search_selected_after_min_network_food
+            ),
+            "search_selected_after_network_count": context.search_selected_after_network_count,
+            "search_selected_after_connected_city_count": (
+                context.search_selected_after_connected_city_count
+            ),
+            "search_selected_after_isolated_city_count": (
+                context.search_selected_after_isolated_city_count
+            ),
+            "search_simulation_cache_hits": context.search_simulation_cache_hits,
+            "search_simulation_cache_misses": context.search_simulation_cache_misses,
             "search_profile_city_count": context.search_profile_city_count,
             "search_profile_target_city_count": context.search_profile_target_city_count,
             "search_profile_expansion_deficit": context.search_profile_expansion_deficit,

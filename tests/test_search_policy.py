@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 import microciv.session as session_module
+from microciv.ai.greedy import GreedyPolicy
 from microciv.ai.search import (
     DEFAULT_SEARCH_BEAM_WIDTH,
     DEFAULT_SEARCH_CANDIDATE_LIMIT,
@@ -12,14 +13,18 @@ from microciv.ai.search import (
     SEARCH_DEPTH_REASON_GROWTH_STALL,
     SEARCH_DEPTH_REASON_NETWORK_CONNECT,
     SEARCH_DEPTH_REASON_STEADY,
+    SEARCH_INTERVENTION_FOOD_RESCUE,
+    RiskProfile,
     SearchDepthContext,
     SearchDepthDecision,
     SearchPolicy,
+    _evaluate_probe_result,
 )
 from microciv.game.actions import Action, validate_action
 from microciv.game.engine import GameEngine
 from microciv.game.enums import (
     ActionType,
+    BuildingType,
     OccupantType,
     PlaybackMode,
     PolicyType,
@@ -72,10 +77,14 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     assert context["search_candidate_limit"] == DEFAULT_SEARCH_CANDIDATE_LIMIT
     assert context["search_root_legal_skip_count"] == 1
     assert context["search_root_candidate_skip_count"] == 0
-    assert context["search_root_candidate_build_city_count"] > 0
-    assert context["search_nodes_expanded"] > 0
+    assert context["search_root_candidate_build_city_count"] == 0
+    assert context["search_nodes_expanded"] == 0
     assert context["search_candidates_considered"] >= context["search_leaf_count"]
-    assert context["search_leaf_count"] > 0
+    assert context["search_leaf_count"] == 0
+    assert context["search_planning_mode"] == "greedy_passthrough"
+    assert context["search_intervention_trigger"] == "none"
+    assert context["search_overrode_greedy"] is False
+    assert context["search_probe_rejected_reason"] == "healthy_greedy_passthrough"
     assert isinstance(context["search_best_value"], int)
     assert isinstance(context["search_value_components"], dict)
     assert isinstance(context["search_sequence_adjustment"], int)
@@ -93,11 +102,11 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     assert isinstance(context["search_root_safe_city_candidate_count"], int)
     assert isinstance(context["search_root_effective_connection_road_candidate_count"], int)
     assert isinstance(context["search_root_rescue_candidate_count"], int)
-    assert isinstance(context["search_root_chosen_rank"], int)
-    assert isinstance(context["search_root_chosen_value"], int)
-    assert isinstance(context["search_root_best_value"], int)
-    assert isinstance(context["search_root_value_margin"], int)
-    assert isinstance(context["search_root_best_action_type"], str)
+    assert context["search_root_chosen_rank"] is None
+    assert context["search_root_chosen_value"] is None
+    assert context["search_root_best_value"] is None
+    assert context["search_root_value_margin"] is None
+    assert context["search_root_best_action_type"] is None
     assert isinstance(context["search_root_chosen_action_type"], str)
     assert isinstance(context["search_delta_food_pressure"], int)
     assert isinstance(context["search_delta_worst_network_food_pressure"], int)
@@ -113,6 +122,10 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     assert isinstance(context["search_worst_network_food_pressure_after_action"], int)
     assert isinstance(context["search_profile_city_count"], int)
     assert isinstance(context["search_profile_safe_expansion_deficit"], int)
+    assert isinstance(context["search_greedy_after_score_total"], int)
+    assert isinstance(context["search_selected_after_score_total"], int)
+    assert isinstance(context["search_simulation_cache_hits"], int)
+    assert isinstance(context["search_simulation_cache_misses"], int)
     if action.action_type is ActionType.BUILD_CITY:
         assert isinstance(context["search_chosen_city_site_score"], int)
         assert isinstance(context["search_chosen_city_resource_ring_bonus"], int)
@@ -156,8 +169,10 @@ def test_search_policy_keeps_healthy_expand_state_at_steady_depth() -> None:
 
     assert context["search_mode"] == "expand"
     assert context["search_depth"] == 2
-    assert context["search_planning_mode"] == "greedy_anchor"
-    assert context["search_actual_depth"] == 1
+    assert context["search_planning_mode"] == "greedy_passthrough"
+    assert context["search_actual_depth"] == 0
+    assert context["search_leaf_count"] == 0
+    assert context["search_overrode_greedy"] is False
     assert context["search_deep_search_enabled"] is False
     assert context["search_depth_reason"] == SEARCH_DEPTH_REASON_STEADY
 
@@ -175,11 +190,134 @@ def test_search_policy_healthy_expand_uses_greedy_city_anchor() -> None:
     context = policy.explain_decision(state)
 
     assert action.action_type is ActionType.BUILD_CITY
-    assert context["search_planning_mode"] == "greedy_anchor"
-    assert context["search_planning_reason"] == "healthy_greedy_city"
+    assert action == GreedyPolicy().select_action(state)
+    assert context["search_planning_mode"] == "greedy_passthrough"
+    assert context["search_planning_reason"] == "greedy_direct"
     assert context["search_matches_greedy_action"] is True
-    assert context["search_greedy_action_in_root_candidates"] is True
+    assert context["search_greedy_action_in_root_candidates"] is False
     assert context["search_chosen_city_site_score_delta_vs_greedy"] == 0
+
+
+def test_greedy_plan_snapshot_best_action_matches_select_action() -> None:
+    state = _mixed_action_state()
+    policy = GreedyPolicy()
+
+    snapshot = policy.plan_for_search(state)
+
+    assert snapshot.action == policy.select_action(state)
+    assert snapshot.context == policy.explain_decision(state)
+    assert snapshot.selected_candidates
+    assert snapshot.action in snapshot.selected_candidates
+
+
+def test_search_policy_food_rescue_probe_rejects_tiny_integrated_improvement() -> None:
+    state = _food_rescue_override_state()
+    greedy_action = GreedyPolicy().select_action(state)
+    policy = SearchPolicy()
+
+    action = policy.select_action(state)
+    context = policy.explain_decision(state)
+
+    assert action == greedy_action
+    assert context["search_planning_mode"] == "beam_search"
+    assert context["search_intervention_trigger"] == "food_rescue_probe"
+    assert context["search_overrode_greedy"] is False
+    assert context["search_probe_accepted_reason"] is None
+    assert context["search_probe_rejected_reason"] in {
+        "food_rescue_gate_failed",
+        "selected_matches_greedy",
+    }
+    assert context["search_leaf_count"] > 0
+    assert (
+        context["search_greedy_after_food_pressure"]
+        == context["search_selected_after_food_pressure"]
+    )
+
+
+def test_food_rescue_probe_rejects_tiny_pressure_improvement() -> None:
+    root = RiskProfile(
+        score_total=1000,
+        starving_network_count=1,
+        food_pressure=44,
+        min_network_food=-2,
+        network_count=2,
+        connected_city_count=3,
+        isolated_city_count=1,
+    )
+    greedy_after = RiskProfile(
+        score_total=1116,
+        starving_network_count=1,
+        food_pressure=43,
+        min_network_food=-1,
+        network_count=2,
+        connected_city_count=3,
+        isolated_city_count=1,
+    )
+    tiny_improvement_after = RiskProfile(
+        score_total=1116,
+        starving_network_count=1,
+        food_pressure=42,
+        min_network_food=0,
+        network_count=2,
+        connected_city_count=3,
+        isolated_city_count=1,
+    )
+    clear_improvement_after = RiskProfile(
+        score_total=1116,
+        starving_network_count=1,
+        food_pressure=39,
+        min_network_food=2,
+        network_count=2,
+        connected_city_count=3,
+        isolated_city_count=1,
+    )
+
+    tiny_result = _evaluate_probe_result(
+        trigger=SEARCH_INTERVENTION_FOOD_RESCUE,
+        root_risk=root,
+        greedy_action=Action.build_building(1, BuildingType.FARM),
+        selected_action=Action.build_building(2, BuildingType.FARM),
+        greedy_after=greedy_after,
+        selected_after=tiny_improvement_after,
+    )
+    clear_result = _evaluate_probe_result(
+        trigger=SEARCH_INTERVENTION_FOOD_RESCUE,
+        root_risk=root,
+        greedy_action=Action.build_building(1, BuildingType.FARM),
+        selected_action=Action.build_building(2, BuildingType.FARM),
+        greedy_after=greedy_after,
+        selected_after=clear_improvement_after,
+    )
+
+    assert tiny_result.accepted is False
+    assert tiny_result.rejected_reason == "food_rescue_gate_failed"
+    assert clear_result.accepted is True
+    assert clear_result.accepted_reason == "reduced_food_pressure"
+
+
+def test_search_policy_stall_probe_rejects_when_gate_fails() -> None:
+    state = _mixed_action_state()
+    state.stats.decision_contexts = [
+        {"turn": 1, "chosen_action_type": "skip"},
+        {"turn": 2, "chosen_action_type": "skip"},
+        {"turn": 3, "chosen_action_type": "skip"},
+    ]
+    greedy_action = GreedyPolicy().select_action(state)
+    policy = SearchPolicy()
+
+    action = policy.select_action(state)
+    context = policy.explain_decision(state)
+
+    assert action == greedy_action
+    assert context["search_planning_mode"] == "beam_search"
+    assert context["search_intervention_trigger"] == "stall_probe"
+    assert context["search_overrode_greedy"] is False
+    assert context["search_probe_rejected_reason"] in {
+        "stall_gate_failed",
+        "selected_matches_greedy",
+    }
+    assert context["search_leaf_count"] > 0
+    assert context["search_simulation_cache_hits"] > 0
 
 
 def test_search_policy_uses_custom_depth_strategy() -> None:
@@ -465,6 +603,35 @@ def _healthy_mild_pressure_expand_state() -> GameState:
     state.next_city_id = 3
     state.next_road_id = 2
     state.next_network_id = 2
+    return state
+
+
+def _food_rescue_override_state() -> GameState:
+    state = GameState.empty(GameConfig.for_play(turn_limit=30))
+    state.turn = 6
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 0): Tile(base_terrain=TerrainType.FOREST),
+        (1, 1): Tile(base_terrain=TerrainType.MOUNTAIN),
+    }
+    state.cities = {
+        1: City(
+            city_id=1,
+            coord=(0, 0),
+            founded_turn=1,
+            network_id=1,
+            buildings=BuildingCounts(),
+        )
+    }
+    state.networks = {
+        1: Network(
+            network_id=1,
+            city_ids={1},
+            resources=ResourcePool(food=-2, wood=50, ore=50, science=50),
+            unlocked_techs={TechType.AGRICULTURE},
+        )
+    }
     return state
 
 

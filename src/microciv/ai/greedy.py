@@ -89,6 +89,21 @@ class PlannedDecision:
 
 
 @dataclass(slots=True, frozen=True)
+class GreedyPlanSnapshot:
+    """Internal Greedy plan details explicitly shared with SearchPolicy."""
+
+    action: Action
+    context: dict[str, object]
+    stage: str
+    profile: GreedyStateProfile
+    history: HistorySignals
+    candidates: tuple[Action, ...]
+    escape_candidates: tuple[Action, ...]
+    selected_candidates: tuple[Action, ...]
+    legal_counts_by_type: dict[ActionType, int]
+
+
+@dataclass(slots=True, frozen=True)
 class SimulatedEvaluation:
     future_context: HeuristicContext
     future_profile: GreedyStateProfile
@@ -195,6 +210,56 @@ class GreedyPolicy(Policy):
 
     def explain_decision(self, state: GameState) -> dict[str, object]:
         return dict(self._plan_action(state).context)
+
+    def plan_for_search(self, state: GameState) -> GreedyPlanSnapshot:
+        """Return a stable snapshot of the Greedy plan for Search risk probes.
+
+        This helper is intentionally internal to the AI package. It keeps Search anchored to the
+        same Greedy action/candidate path without changing Greedy's public behavior.
+        """
+        decision = self._plan_action(state)
+        legal_actions = get_legal_actions(state)
+        groups = partition_actions(legal_actions)
+        current_context = build_heuristic_context(state)
+        profile = _build_state_profile(state, current_context)
+        history = _history_signals(state, profile)
+        catalog = _build_candidate_catalog(state, groups, current_context)
+        stage_value = decision.context.get("greedy_stage")
+        stage = stage_value if isinstance(stage_value, str) else _select_stage(profile)
+        candidates = self._candidate_actions(
+            state,
+            groups,
+            profile,
+            catalog,
+            stage,
+            current_context,
+        )
+        escape_candidates = self._escape_candidate_actions(
+            state,
+            groups,
+            profile,
+            catalog,
+            current_context,
+        )
+        selected_candidates = (
+            escape_candidates if decision.context.get("greedy_escape_mode") else candidates
+        )
+        if decision.action not in selected_candidates:
+            selected_candidates = [decision.action, *selected_candidates]
+
+        return GreedyPlanSnapshot(
+            action=decision.action,
+            context=dict(decision.context),
+            stage=stage,
+            profile=profile,
+            history=history,
+            candidates=tuple(candidates),
+            escape_candidates=tuple(escape_candidates),
+            selected_candidates=tuple(_dedupe_actions(list(selected_candidates))),
+            legal_counts_by_type={
+                action_type: len(groups.get(action_type, [])) for action_type in ActionType
+            },
+        )
 
     def _plan_action(self, state: GameState) -> PlannedDecision:
         cache_key = (
