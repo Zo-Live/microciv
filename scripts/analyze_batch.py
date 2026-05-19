@@ -458,6 +458,9 @@ def build_search_summary_from_decision_df(decision_df: pd.DataFrame) -> pd.DataF
         "search_bridge_candidate_count",
         "search_bridge_min_steps",
         "search_bridge_progress_after_first_step",
+        "search_route_target_network_id",
+        "search_route_remaining_steps",
+        "search_route_committed",
         "search_nodes_expanded",
         "search_candidates_considered",
         "search_leaf_count",
@@ -627,6 +630,9 @@ def build_search_candidate_health_summary_from_decision_df(
         "search_bridge_candidate_count",
         "search_bridge_min_steps",
         "search_bridge_progress_after_first_step",
+        "search_route_target_network_id",
+        "search_route_remaining_steps",
+        "search_route_committed",
         "search_delta_starving_network_count",
         "search_delta_food_pressure",
         "search_delta_isolated_city_count",
@@ -635,6 +641,8 @@ def build_search_candidate_health_summary_from_decision_df(
         "search_delta_road_overbuild",
         "search_delta_worst_network_food_pressure",
         "search_delta_min_network_food",
+        "search_city_food_capacity_after_action",
+        "search_city_local_plain_capacity",
     ]
     return _summary_table(
         search_df,
@@ -657,6 +665,8 @@ def build_search_road_quality_summary_from_decision_df(decision_df: pd.DataFrame
         "search_road_after_full_connectivity",
         "search_road_connected_city_delta",
         "search_delta_network_count",
+        "search_route_committed",
+        "search_route_remaining_steps",
     ]:
         if column not in road_df:
             road_df[column] = 0
@@ -669,10 +679,17 @@ def build_search_road_quality_summary_from_decision_df(decision_df: pd.DataFrame
             after_full_connectivity_rate=("search_road_after_full_connectivity", "mean"),
             connected_city_delta_mean=("search_road_connected_city_delta", "mean"),
             network_delta_mean=("search_delta_network_count", "mean"),
+            route_committed_rate=("search_route_committed", "mean"),
+            route_remaining_steps_mean=("search_route_remaining_steps", "mean"),
         )
         .reset_index()
     )
-    for column in ["merge_rate", "redundant_rate", "after_full_connectivity_rate"]:
+    for column in [
+        "merge_rate",
+        "redundant_rate",
+        "after_full_connectivity_rate",
+        "route_committed_rate",
+    ]:
         grouped[column] = grouped[column] * 100
     return grouped.sort_values(["policy_variant"])
 
@@ -1214,6 +1231,8 @@ def build_search_city_site_summary_from_decision_df(decision_df: pd.DataFrame) -
         "search_chosen_city_river_neighbors",
         "search_chosen_city_plain_neighbors",
         "search_chosen_city_distance_to_network",
+        "search_city_food_capacity_after_action",
+        "search_city_local_plain_capacity",
     ]
     value_cols = [column for column in value_cols if column in search_df]
     rows: list[dict[str, object]] = []

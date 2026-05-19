@@ -30,7 +30,7 @@ from microciv.game.models import (
 from microciv.game.scoring import score_breakdown
 from microciv.records.models import RecordEntry
 
-ARTIFACT_SCHEMA_VERSION: Final[int] = 8
+ARTIFACT_SCHEMA_VERSION: Final[int] = 9
 ARTIFACT_MANIFEST_FILENAME: Final[str] = "artifact_manifest.json"
 ARTIFACT_TABLES: Final[tuple[str, ...]] = (
     "macro",
@@ -424,6 +424,7 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             "search_intervention_trigger": context.search_intervention_trigger or "",
             "search_probe_accepted_reason": context.search_probe_accepted_reason or "",
             "search_probe_rejected_reason": context.search_probe_rejected_reason or "",
+            "search_greedy_veto_reason": context.search_greedy_veto_reason or "",
             "search_beam_width": context.search_beam_width,
             "search_candidate_limit": context.search_candidate_limit,
             "search_root_legal_build_city_count": context.search_root_legal_build_city_count,
@@ -518,6 +519,13 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
             "search_bridge_progress_after_first_step": (
                 context.search_bridge_progress_after_first_step
             ),
+            "search_route_target_network_id": context.search_route_target_network_id,
+            "search_route_remaining_steps": context.search_route_remaining_steps,
+            "search_route_committed": (
+                int(context.search_route_committed)
+                if context.search_route_committed is not None
+                else None
+            ),
             "search_delta_starving_network_count": (context.search_delta_starving_network_count),
             "search_delta_food_pressure": context.search_delta_food_pressure,
             "search_delta_isolated_city_count": context.search_delta_isolated_city_count,
@@ -544,6 +552,10 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
                 if context.search_road_after_full_connectivity is not None
                 else None
             ),
+            "search_city_food_capacity_after_action": (
+                context.search_city_food_capacity_after_action
+            ),
+            "search_city_local_plain_capacity": context.search_city_local_plain_capacity,
             "search_greedy_action_type": context.search_greedy_action_type or "",
             "search_matches_greedy_action": (
                 int(context.search_matches_greedy_action)

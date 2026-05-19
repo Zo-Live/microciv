@@ -86,6 +86,7 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     assert context["search_intervention_trigger"] == "none"
     assert context["search_overrode_greedy"] is False
     assert context["search_probe_rejected_reason"] == "healthy_greedy_passthrough"
+    assert context["search_greedy_veto_reason"] is None
     assert isinstance(context["search_best_value"], int)
     assert isinstance(context["search_value_components"], dict)
     assert isinstance(context["search_sequence_adjustment"], int)
@@ -116,6 +117,19 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     assert isinstance(context["search_delta_road_overbuild"], int)
     assert isinstance(context["search_road_merges_networks"], bool)
     assert isinstance(context["search_road_is_redundant"], bool)
+    assert context["search_city_food_capacity_after_action"] is None or isinstance(
+        context["search_city_food_capacity_after_action"], int
+    )
+    assert context["search_city_local_plain_capacity"] is None or isinstance(
+        context["search_city_local_plain_capacity"], int
+    )
+    assert context["search_route_target_network_id"] is None or isinstance(
+        context["search_route_target_network_id"], int
+    )
+    assert context["search_route_remaining_steps"] is None or isinstance(
+        context["search_route_remaining_steps"], int
+    )
+    assert isinstance(context["search_route_committed"], bool)
     assert isinstance(context["search_greedy_action_type"], str)
     assert isinstance(context["search_matches_greedy_action"], bool)
     assert isinstance(context["search_greedy_action_in_root_candidates"], bool)
@@ -339,6 +353,9 @@ def test_search_policy_keeps_multistep_bridge_first_road_candidate() -> None:
     assert context["search_bridge_candidate_count"] >= 1
     assert context["search_bridge_min_steps"] == 2
     assert context["search_bridge_progress_after_first_step"] > 0
+    assert context["search_route_target_network_id"] == 2
+    assert context["search_route_remaining_steps"] == 1
+    assert context["search_route_committed"] is True
     assert context["search_probe_accepted_reason"] in {
         "bridge_sequence_reduced_starving_networks",
         "bridge_sequence_reduced_networks",
@@ -364,6 +381,40 @@ def test_search_policy_bridge_second_step_reduces_network_risk() -> None:
     after_isolated = sum(1 for network in state.networks.values() if len(network.city_ids) == 1)
     assert len(state.networks) < before_network_count
     assert after_isolated < before_isolated
+
+
+def test_search_policy_commits_long_bridge_route_after_veto() -> None:
+    state = _long_route_bridge_state()
+    policy = SearchPolicy(search_depth=2, search_max_depth=4, search_beam_width=2)
+    engine = GameEngine(state)
+
+    paths = _bridge_paths_for_state(state)
+    first_action = policy.select_action(state)
+    first_context = policy.explain_decision(state)
+
+    assert paths
+    assert paths[0].min_steps == 5
+    assert paths[0].actions[0] == Action.build_road((0, 1))
+    assert first_action == Action.build_road((0, 1))
+    assert first_context["search_greedy_veto_reason"] == "road_redundant"
+    assert first_context["search_route_target_network_id"] == 2
+    assert first_context["search_route_remaining_steps"] == 4
+    assert first_context["search_route_committed"] is True
+
+    state.stats.decision_contexts.append(first_context)
+    assert engine.apply_action(first_action).success
+
+    second_action = policy.select_action(state)
+    second_context = policy.explain_decision(state)
+
+    assert second_action == Action.build_road((0, 2))
+    assert second_context["search_greedy_veto_reason"] in {
+        "route_commitment_deviation",
+        None,
+    }
+    assert second_context["search_route_target_network_id"] == 2
+    assert second_context["search_route_remaining_steps"] == 3
+    assert second_context["search_route_committed"] is True
 
 
 def test_search_policy_recent_food_probe_rejection_does_not_block_worsening_bridge() -> None:
@@ -728,6 +779,34 @@ def _two_step_bridge_state() -> GameState:
             city_ids={2},
             resources=ResourcePool(food=80, wood=80, ore=80, science=80),
             unlocked_techs={TechType.AGRICULTURE},
+        ),
+    }
+    state.next_city_id = 3
+    state.next_road_id = 1
+    state.next_network_id = 3
+    return state
+
+
+def _long_route_bridge_state() -> GameState:
+    state = GameState.empty(GameConfig.for_play(turn_limit=40, map_size=18))
+    state.turn = 6
+    state.board = {
+        (row, col): Tile(base_terrain=TerrainType.PLAIN)
+        for row in range(2)
+        for col in range(7)
+    }
+    state.board[(0, 0)].occupant = OccupantType.CITY
+    state.board[(0, 6)].occupant = OccupantType.CITY
+    state.cities = {
+        1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1),
+        2: City(city_id=2, coord=(0, 6), founded_turn=2, network_id=2),
+    }
+    state.networks = {
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=-8)),
+        2: Network(
+            network_id=2,
+            city_ids={2},
+            resources=ResourcePool(food=100, wood=100, ore=100, science=0),
         ),
     }
     state.next_city_id = 3

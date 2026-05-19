@@ -17,7 +17,7 @@ from microciv.game.scoring import (
 )
 from microciv.utils.grid import Coord, coord_sort_key
 
-RECORDS_SCHEMA_VERSION = 10
+RECORDS_SCHEMA_VERSION = 11
 
 CSV_FIELD_ORDER: tuple[str, ...] = (
     "record_id",
@@ -585,6 +585,7 @@ class RecordDecisionContext:
     search_intervention_trigger: str | None = None
     search_probe_accepted_reason: str | None = None
     search_probe_rejected_reason: str | None = None
+    search_greedy_veto_reason: str | None = None
     search_beam_width: int | None = None
     search_candidate_limit: int | None = None
     search_root_legal_build_city_count: int | None = None
@@ -643,6 +644,9 @@ class RecordDecisionContext:
     search_bridge_candidate_count: int | None = None
     search_bridge_min_steps: int | None = None
     search_bridge_progress_after_first_step: int | None = None
+    search_route_target_network_id: int | None = None
+    search_route_remaining_steps: int | None = None
+    search_route_committed: bool | None = None
     search_delta_starving_network_count: int | None = None
     search_delta_food_pressure: int | None = None
     search_delta_isolated_city_count: int | None = None
@@ -655,6 +659,8 @@ class RecordDecisionContext:
     search_road_connected_city_delta: int | None = None
     search_road_is_redundant: bool | None = None
     search_road_after_full_connectivity: bool | None = None
+    search_city_food_capacity_after_action: int | None = None
+    search_city_local_plain_capacity: int | None = None
     search_greedy_action_type: str | None = None
     search_matches_greedy_action: bool | None = None
     search_greedy_action_in_root_candidates: bool | None = None
@@ -775,6 +781,7 @@ class RecordDecisionContext:
             search_intervention_trigger=_optional_str(payload, "search_intervention_trigger"),
             search_probe_accepted_reason=_optional_str(payload, "search_probe_accepted_reason"),
             search_probe_rejected_reason=_optional_str(payload, "search_probe_rejected_reason"),
+            search_greedy_veto_reason=_optional_str(payload, "search_greedy_veto_reason"),
             search_beam_width=_optional_int(payload, "search_beam_width"),
             search_candidate_limit=_optional_int(payload, "search_candidate_limit"),
             search_root_legal_build_city_count=_optional_int(
@@ -888,6 +895,11 @@ class RecordDecisionContext:
             search_bridge_progress_after_first_step=_optional_int(
                 payload, "search_bridge_progress_after_first_step"
             ),
+            search_route_target_network_id=_optional_int(
+                payload, "search_route_target_network_id"
+            ),
+            search_route_remaining_steps=_optional_int(payload, "search_route_remaining_steps"),
+            search_route_committed=_optional_bool(payload, "search_route_committed"),
             search_delta_starving_network_count=_optional_int(
                 payload, "search_delta_starving_network_count"
             ),
@@ -911,6 +923,12 @@ class RecordDecisionContext:
             search_road_is_redundant=_optional_bool(payload, "search_road_is_redundant"),
             search_road_after_full_connectivity=_optional_bool(
                 payload, "search_road_after_full_connectivity"
+            ),
+            search_city_food_capacity_after_action=_optional_int(
+                payload, "search_city_food_capacity_after_action"
+            ),
+            search_city_local_plain_capacity=_optional_int(
+                payload, "search_city_local_plain_capacity"
             ),
             search_greedy_action_type=_optional_str(payload, "search_greedy_action_type"),
             search_matches_greedy_action=_optional_bool(payload, "search_matches_greedy_action"),
@@ -1159,6 +1177,8 @@ class RecordDecisionContext:
             result["search_probe_accepted_reason"] = self.search_probe_accepted_reason
         if self.search_probe_rejected_reason is not None:
             result["search_probe_rejected_reason"] = self.search_probe_rejected_reason
+        if self.search_greedy_veto_reason is not None:
+            result["search_greedy_veto_reason"] = self.search_greedy_veto_reason
         if self.search_beam_width is not None:
             result["search_beam_width"] = self.search_beam_width
         if self.search_candidate_limit is not None:
@@ -1305,6 +1325,12 @@ class RecordDecisionContext:
             result["search_bridge_progress_after_first_step"] = (
                 self.search_bridge_progress_after_first_step
             )
+        if self.search_route_target_network_id is not None:
+            result["search_route_target_network_id"] = self.search_route_target_network_id
+        if self.search_route_remaining_steps is not None:
+            result["search_route_remaining_steps"] = self.search_route_remaining_steps
+        if self.search_route_committed is not None:
+            result["search_route_committed"] = self.search_route_committed
         if self.search_delta_starving_network_count is not None:
             result["search_delta_starving_network_count"] = self.search_delta_starving_network_count
         if self.search_delta_food_pressure is not None:
@@ -1331,6 +1357,12 @@ class RecordDecisionContext:
             result["search_road_is_redundant"] = self.search_road_is_redundant
         if self.search_road_after_full_connectivity is not None:
             result["search_road_after_full_connectivity"] = self.search_road_after_full_connectivity
+        if self.search_city_food_capacity_after_action is not None:
+            result["search_city_food_capacity_after_action"] = (
+                self.search_city_food_capacity_after_action
+            )
+        if self.search_city_local_plain_capacity is not None:
+            result["search_city_local_plain_capacity"] = self.search_city_local_plain_capacity
         if self.search_greedy_action_type is not None:
             result["search_greedy_action_type"] = self.search_greedy_action_type
         if self.search_matches_greedy_action is not None:
