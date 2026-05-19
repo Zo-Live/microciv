@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from microciv.game.actions import Action
+from microciv.game.engine import GameEngine
 from microciv.game.enums import OccupantType, TechType, TerrainType
 from microciv.game.models import City, GameConfig, GameState, Network, ResourcePool, Tile
 from microciv.game.networks import map_passable_coords_to_networks, recompute_networks
@@ -62,3 +64,52 @@ def test_map_passable_coords_to_networks_includes_roads_and_rivers() -> None:
     assert mapping[(1, 0)] == 1
     assert mapping[(2, 0)] == 1
     assert mapping[(3, 0)] == 1
+
+
+def test_adjacent_cities_do_not_directly_merge_without_road_path() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1),
+        2: City(city_id=2, coord=(0, 1), founded_turn=2, network_id=2),
+    }
+    state.networks = {
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=-1)),
+        2: Network(network_id=2, city_ids={2}, resources=ResourcePool(food=30)),
+    }
+
+    recompute_networks(state)
+
+    assert len(state.networks) == 2
+    assert state.cities[1].network_id != state.cities[2].network_id
+
+
+def test_two_side_roads_connect_adjacent_cities() -> None:
+    state = GameState.empty(GameConfig.for_play(turn_limit=30))
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (1, 0): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 1): Tile(base_terrain=TerrainType.PLAIN),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1),
+        2: City(city_id=2, coord=(0, 1), founded_turn=2, network_id=2),
+    }
+    state.networks = {
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=-1)),
+        2: Network(network_id=2, city_ids={2}, resources=ResourcePool(food=30)),
+    }
+    state.next_road_id = 1
+    state.next_network_id = 3
+    engine = GameEngine(state)
+
+    assert engine.apply_action(Action.build_road((1, 0))).success
+    assert len(state.networks) == 2
+
+    assert engine.apply_action(Action.build_road((1, 1))).success
+    assert len(state.networks) == 1
+    assert next(iter(state.networks.values())).city_ids == {1, 2}

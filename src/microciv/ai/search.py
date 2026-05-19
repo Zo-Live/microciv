@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
+from heapq import heappop, heappush
 from typing import Protocol
 
 from microciv.ai.greedy import GreedyPlanSnapshot, GreedyPolicy
@@ -41,9 +43,9 @@ from microciv.constants import (
 )
 from microciv.game.actions import Action
 from microciv.game.enums import ActionType, BuildingType, TechType
-from microciv.game.models import GameState
+from microciv.game.models import GameState, Network
 from microciv.game.scoring import score_breakdown
-from microciv.utils.grid import Coord
+from microciv.utils.grid import Coord, cardinal_neighbors
 
 SEARCH_DEPTH_REASON_FIXED = "fixed"
 SEARCH_DEPTH_REASON_FOOD_RESCUE = "food_rescue"
@@ -172,6 +174,31 @@ class DynamicSearchDepthStrategy:
 
 
 @dataclass(slots=True, frozen=True)
+class BridgePath:
+    actions: tuple[Action, ...]
+    source_network_id: int
+    target_network_id: int
+    progress_after_first_step: int
+
+    @property
+    def min_steps(self) -> int:
+        return len(self.actions)
+
+
+@dataclass(slots=True, frozen=True)
+class BridgeDiagnostics:
+    candidate_count: int = 0
+    min_steps: int | None = None
+    progress_after_first_step: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class RootCandidateDiagnostic:
+    action: Action
+    value: int
+
+
+@dataclass(slots=True, frozen=True)
 class PlannedSearchDecision:
     action: Action
     context: dict[str, object]
@@ -185,12 +212,7 @@ class SearchNode:
     value: int
     sequence_adjustment: int
     leaf_evaluation: SearchLeafEvaluation
-
-
-@dataclass(slots=True, frozen=True)
-class RootCandidateDiagnostic:
-    action: Action
-    value: int
+    bridge_diagnostics: BridgeDiagnostics = BridgeDiagnostics()
 
 
 @dataclass(slots=True, frozen=True)
@@ -202,6 +224,7 @@ class RiskProfile:
     network_count: int
     connected_city_count: int
     isolated_city_count: int
+    starving_isolated_network_count: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -252,6 +275,9 @@ class SearchTelemetry:
     root_redundant_road_candidate_count: int = 0
     root_high_roi_building_candidate_count: int = 0
     root_gated_candidate_count: int = 0
+    bridge_candidate_count: int = 0
+    bridge_min_steps: int | None = None
+    bridge_progress_after_first_step: int = 0
     root_candidate_diagnostics: list[RootCandidateDiagnostic] = field(default_factory=list)
 
 
@@ -395,19 +421,37 @@ class SearchPolicy(Policy):
             greedy_after=greedy_after_risk,
             selected_after=selected_after_risk,
         )
-        if selected_action == greedy_plan.action or not probe_result.accepted:
-            action = greedy_plan.action
-            best_evaluation = evaluate_search_leaf(greedy_after_state, root_state=state)
-            best_value = best_evaluation.value
-            best_sequence_adjustment = 0
-            best_sequence: tuple[Action, ...] = (greedy_plan.action,)
-            selected_after_risk = greedy_after_risk
-        else:
+        if (
+            selected_action != greedy_plan.action
+            and best_node.bridge_diagnostics.candidate_count > 0
+            and best_node.sequence
+            and _bridge_path_for_first_action(state, selected_action) is not None
+        ):
+            bridge_probe_result = _evaluate_bridge_probe_result(
+                root_risk=root_risk,
+                greedy_action=greedy_plan.action,
+                selected_action=selected_action,
+                greedy_after=greedy_after_risk,
+                selected_sequence_after=_risk_profile(best_node.state),
+            )
+            if bridge_probe_result is not None and (
+                bridge_probe_result.accepted or not probe_result.accepted
+            ):
+                probe_result = bridge_probe_result
+
+        if selected_action != greedy_plan.action and probe_result.accepted:
             action = selected_action
             best_evaluation = best_node.leaf_evaluation
             best_value = best_node.value
             best_sequence_adjustment = best_node.sequence_adjustment
             best_sequence = best_node.sequence
+        else:
+            action = greedy_plan.action
+            best_evaluation = evaluate_search_leaf(greedy_after_state, root_state=state)
+            best_value = best_evaluation.value
+            best_sequence_adjustment = 0
+            best_sequence = (greedy_plan.action,)
+            selected_after_risk = greedy_after_risk
 
         decision = PlannedSearchDecision(
             action=action,
@@ -601,6 +645,9 @@ class SearchPolicy(Policy):
                 telemetry.root_high_roi_building_candidate_count
             ),
             "search_root_gated_candidate_count": telemetry.root_gated_candidate_count,
+            "search_bridge_candidate_count": telemetry.bridge_candidate_count,
+            "search_bridge_min_steps": telemetry.bridge_min_steps,
+            "search_bridge_progress_after_first_step": (telemetry.bridge_progress_after_first_step),
             "search_profile_city_count": root_profile.city_count,
             "search_profile_target_city_count": root_profile.target_city_count,
             "search_profile_expansion_deficit": root_profile.expansion_deficit,
@@ -712,7 +759,7 @@ class SearchPolicy(Policy):
                     simulation_cache,
                 )
                 if not node.sequence and telemetry.root_profile is None:
-                    self._record_root_candidate_set(candidate_set, telemetry)
+                    self._record_root_candidate_set(node.state, candidate_set, telemetry)
                 telemetry.nodes_expanded += 1
                 telemetry.candidates_considered += len(candidate_set.candidates)
 
@@ -725,6 +772,11 @@ class SearchPolicy(Policy):
                     leaf_evaluation = evaluate_search_leaf(simulated_state, root_state=state)
                     telemetry.leaf_count += 1
                     sequence = (*node.sequence, candidate.action)
+                    bridge_diagnostics = _sequence_bridge_diagnostics(
+                        node.bridge_diagnostics,
+                        node.state,
+                        candidate.action,
+                    )
                     sequence_adjustment = _sequence_adjustment(
                         state,
                         simulated_state,
@@ -737,6 +789,7 @@ class SearchPolicy(Policy):
                         value=leaf_evaluation.value + sequence_adjustment,
                         sequence_adjustment=sequence_adjustment,
                         leaf_evaluation=leaf_evaluation,
+                        bridge_diagnostics=bridge_diagnostics,
                     )
                     if not node.sequence:
                         telemetry.root_candidate_diagnostics.append(
@@ -756,6 +809,7 @@ class SearchPolicy(Policy):
 
     def _record_root_candidate_set(
         self,
+        state: GameState,
         candidate_set: SearchCandidateSet,
         telemetry: SearchTelemetry,
     ) -> None:
@@ -774,6 +828,22 @@ class SearchPolicy(Policy):
             candidate_set.high_roi_building_candidate_count
         )
         telemetry.root_gated_candidate_count = candidate_set.gated_candidate_count
+        telemetry.bridge_candidate_count = 0
+        telemetry.bridge_min_steps = None
+        telemetry.bridge_progress_after_first_step = 0
+        for candidate in candidate_set.candidates:
+            bridge_path = _bridge_path_for_first_action(state, candidate.action)
+            if bridge_path is None:
+                continue
+            telemetry.bridge_candidate_count += 1
+            telemetry.bridge_min_steps = _min_optional_int(
+                telemetry.bridge_min_steps,
+                bridge_path.min_steps,
+            )
+            telemetry.bridge_progress_after_first_step = max(
+                telemetry.bridge_progress_after_first_step,
+                bridge_path.progress_after_first_step,
+            )
 
     def _build_cache_key(self, state: GameState) -> tuple[object, ...]:
         network_signature = tuple(
@@ -826,6 +896,11 @@ def _risk_profile(state: GameState) -> RiskProfile:
         network_count=profile.network_count,
         connected_city_count=profile.connected_city_count,
         isolated_city_count=profile.isolated_city_count,
+        starving_isolated_network_count=sum(
+            1
+            for network in state.networks.values()
+            if len(network.city_ids) == 1 and _network_needs_food(network)
+        ),
     )
 
 
@@ -893,10 +968,15 @@ def _food_rescue_probe_needed(root: RiskProfile, greedy_after: RiskProfile) -> b
     has_food_risk = (
         root.starving_network_count > 0
         or root.min_network_food < 0
+        or root.starving_isolated_network_count > 0
         or root.food_pressure >= FOOD_CONSUMPTION_PER_CITY * 3
     )
     if not has_food_risk:
         return False
+    if greedy_after.starving_network_count > root.starving_network_count:
+        return True
+    if greedy_after.starving_isolated_network_count >= root.starving_isolated_network_count > 0:
+        return True
     return (
         greedy_after.starving_network_count >= root.starving_network_count
         and greedy_after.food_pressure >= root.food_pressure
@@ -918,7 +998,10 @@ def _connect_probe_needed(
     if not has_connect_risk:
         return False
     recent_connection_gain = _recent_search_or_greedy_connection_gain(state)
-    if recent_connection_gain:
+    if recent_connection_gain and not _has_worsening_starving_isolated_network(
+        root,
+        greedy_after,
+    ):
         return False
     if greedy_plan.stage == SEARCH_MODE_EXPAND and root.starving_network_count == 0:
         return False
@@ -961,6 +1044,13 @@ def _stall_probe_needed(
     )
 
 
+def _has_worsening_starving_isolated_network(root: RiskProfile, after: RiskProfile) -> bool:
+    return (
+        root.starving_isolated_network_count > 0
+        and after.starving_isolated_network_count >= root.starving_isolated_network_count
+    )
+
+
 def _recent_search_or_greedy_connection_gain(state: GameState) -> bool:
     for context in state.stats.decision_contexts[-3:]:
         connected_delta = context.get("search_delta_connected_city_count")
@@ -980,6 +1070,8 @@ def _recent_probe_rejected_without_worsening(
     trigger: str,
     root: RiskProfile,
 ) -> bool:
+    if root.starving_isolated_network_count > 0:
+        return False
     for context in reversed(state.stats.decision_contexts[-8:]):
         if context.get("search_intervention_trigger") != trigger:
             continue
@@ -1038,6 +1130,12 @@ def _evaluate_probe_result(
     if trigger == SEARCH_INTERVENTION_FOOD_RESCUE:
         if selected_after.starving_network_count < greedy_after.starving_network_count:
             return RiskProbeResult(True, "reduced_starving_networks", None)
+        if selected_after.starving_network_count > greedy_after.starving_network_count:
+            return RiskProbeResult(False, None, "food_rescue_gate_failed")
+        if selected_after.network_count > greedy_after.network_count:
+            return RiskProbeResult(False, None, "food_rescue_gate_failed")
+        if selected_after.isolated_city_count > greedy_after.isolated_city_count:
+            return RiskProbeResult(False, None, "food_rescue_gate_failed")
         pressure_improvement = greedy_after.food_pressure - selected_after.food_pressure
         if pressure_improvement >= FOOD_CONSUMPTION_PER_CITY:
             return RiskProbeResult(True, "reduced_food_pressure", None)
@@ -1069,6 +1167,41 @@ def _evaluate_probe_result(
             return RiskProbeResult(True, "stall_score_not_worse", None)
         return RiskProbeResult(False, None, "stall_gate_failed")
     return RiskProbeResult(False, None, "unknown_probe")
+
+
+def _evaluate_bridge_probe_result(
+    *,
+    root_risk: RiskProfile,
+    greedy_action: Action,
+    selected_action: Action,
+    greedy_after: RiskProfile,
+    selected_sequence_after: RiskProfile,
+) -> RiskProbeResult | None:
+    if selected_action == greedy_action:
+        return None
+    if selected_sequence_after.starving_network_count > root_risk.starving_network_count:
+        return RiskProbeResult(False, None, "bridge_sequence_gate_failed")
+    if selected_sequence_after.network_count > root_risk.network_count:
+        return RiskProbeResult(False, None, "bridge_sequence_gate_failed")
+    if selected_sequence_after.isolated_city_count > root_risk.isolated_city_count:
+        return RiskProbeResult(False, None, "bridge_sequence_gate_failed")
+    if selected_sequence_after.starving_network_count < greedy_after.starving_network_count:
+        return RiskProbeResult(True, "bridge_sequence_reduced_starving_networks", None)
+    if selected_sequence_after.starving_network_count < root_risk.starving_network_count:
+        return RiskProbeResult(True, "bridge_sequence_reduced_starving_networks", None)
+    if selected_sequence_after.network_count < greedy_after.network_count:
+        return RiskProbeResult(True, "bridge_sequence_reduced_networks", None)
+    if selected_sequence_after.network_count < root_risk.network_count:
+        return RiskProbeResult(True, "bridge_sequence_reduced_networks", None)
+    if selected_sequence_after.isolated_city_count < greedy_after.isolated_city_count:
+        return RiskProbeResult(True, "bridge_sequence_reduced_networks", None)
+    if selected_sequence_after.isolated_city_count < root_risk.isolated_city_count:
+        return RiskProbeResult(True, "bridge_sequence_reduced_networks", None)
+    if selected_sequence_after.connected_city_count > greedy_after.connected_city_count:
+        return RiskProbeResult(True, "bridge_sequence_increased_connected_cities", None)
+    if selected_sequence_after.connected_city_count > root_risk.connected_city_count:
+        return RiskProbeResult(True, "bridge_sequence_increased_connected_cities", None)
+    return RiskProbeResult(False, None, "bridge_sequence_gate_failed")
 
 
 def _generate_risk_search_candidates(
@@ -1109,6 +1242,8 @@ def _generate_risk_search_candidates(
         for action in candidate_actions
         if action in legal_set
     ][:candidate_limit]
+    bridge_paths = _bridge_paths_for_state(state, legal_actions=legal_actions)
+    bridge_by_first_action = {path.actions[0]: path for path in bridge_paths}
     candidate_counts = {
         action_type: sum(1 for candidate in candidates if candidate.action_type is action_type)
         for action_type in ActionType
@@ -1124,10 +1259,13 @@ def _generate_risk_search_candidates(
         1
         for candidate in candidates
         if candidate.action.action_type is ActionType.BUILD_ROAD
-        and _risk_action_improves_connection(
-            state,
-            candidate.action,
-            simulation_cache=simulation_cache,
+        and (
+            candidate.action in bridge_by_first_action
+            or _risk_action_improves_connection(
+                state,
+                candidate.action,
+                simulation_cache=simulation_cache,
+            )
         )
     )
     rescue_count = sum(
@@ -1176,6 +1314,8 @@ def _risk_candidate_actions(
     candidates.extend(greedy_plan.escape_candidates[:greedy_quota])
     candidates.extend(greedy_plan.candidates[:greedy_quota])
     groups = partition_actions(legal_actions)
+    bridge_paths = _bridge_paths_for_state(state, legal_actions=legal_actions)
+    bridge_actions = [path.actions[0] for path in bridge_paths]
     supplemental_actions = _supplemental_risk_actions(
         state,
         groups,
@@ -1183,8 +1323,23 @@ def _risk_candidate_actions(
         trigger=trigger,
         limit=max(candidate_limit, 4),
     )
+    supplemental_actions = _dedupe_ordered_actions([*bridge_actions, *supplemental_actions])
 
     if trigger == SEARCH_INTERVENTION_FOOD_RESCUE:
+        bridge_quota = _bridge_candidate_quota(candidate_limit, bridge_actions)
+        candidates.extend(
+            sorted(
+                bridge_actions,
+                key=lambda action: _risk_action_sort_key(
+                    state,
+                    action,
+                    trigger,
+                    context,
+                    profile,
+                    simulation_cache,
+                ),
+            )[:bridge_quota]
+        )
         candidates.extend(
             sorted(
                 (
@@ -1200,6 +1355,7 @@ def _risk_candidate_actions(
                         action,
                         simulation_cache=simulation_cache,
                     )
+                    or action in bridge_actions
                 ),
                 key=lambda action: _risk_action_sort_key(
                     state,
@@ -1212,6 +1368,20 @@ def _risk_candidate_actions(
             )[:candidate_limit]
         )
     elif trigger == SEARCH_INTERVENTION_CONNECT:
+        bridge_quota = _bridge_candidate_quota(candidate_limit, bridge_actions)
+        candidates.extend(
+            sorted(
+                bridge_actions,
+                key=lambda action: _risk_action_sort_key(
+                    state,
+                    action,
+                    trigger,
+                    context,
+                    profile,
+                    simulation_cache,
+                ),
+            )[:bridge_quota]
+        )
         candidates.extend(
             sorted(
                 (
@@ -1222,6 +1392,7 @@ def _risk_candidate_actions(
                         action,
                         simulation_cache=simulation_cache,
                     )
+                    or action in bridge_actions
                 ),
                 key=lambda action: _risk_action_sort_key(
                     state,
@@ -1234,6 +1405,20 @@ def _risk_candidate_actions(
             )[:candidate_limit]
         )
     elif trigger == SEARCH_INTERVENTION_STALL:
+        bridge_quota = _bridge_candidate_quota(candidate_limit, bridge_actions)
+        candidates.extend(
+            sorted(
+                bridge_actions,
+                key=lambda action: _risk_action_sort_key(
+                    state,
+                    action,
+                    trigger,
+                    context,
+                    profile,
+                    simulation_cache,
+                ),
+            )[:bridge_quota]
+        )
         candidates.extend(
             sorted(
                 (
@@ -1257,6 +1442,7 @@ def _risk_candidate_actions(
                             action,
                             simulation_cache=simulation_cache,
                         )
+                        or action in bridge_actions
                     )
                 ),
                 key=lambda action: _risk_action_sort_key(
@@ -1271,6 +1457,12 @@ def _risk_candidate_actions(
         )
 
     return _dedupe_ordered_actions(candidates)[:candidate_limit]
+
+
+def _bridge_candidate_quota(candidate_limit: int, bridge_actions: list[Action]) -> int:
+    if not bridge_actions:
+        return 0
+    return min(len(bridge_actions), max(1, min(3, candidate_limit // 3)))
 
 
 def _supplemental_risk_actions(
@@ -1353,6 +1545,10 @@ def _risk_search_candidate(
         action,
         simulation_cache=simulation_cache,
     )
+    bridge_path = _bridge_path_for_first_action(state, action)
+    bridge_bonus = 0
+    if bridge_path is not None:
+        bridge_bonus = 18 + bridge_path.progress_after_first_step * 6
     rank_score = improvement * 1_000
     if action.action_type is ActionType.BUILD_CITY and action.coord is not None:
         quality = _city_anchor_quality(state, action.coord, context)
@@ -1367,15 +1563,15 @@ def _risk_search_candidate(
     ):
         rank_score += 700
     elif action.action_type is ActionType.BUILD_ROAD:
-        rank_score += 800
+        rank_score += 800 + (bridge_bonus * 1_000)
     if action.action_type is ActionType.SKIP:
         rank_score -= 10_000
     return SearchCandidate(
         action=action,
         action_type=action.action_type,
         rank_score=rank_score,
-        reason=trigger,
-        effective=improvement > 0,
+        reason="bridge_path_progress" if bridge_path is not None else trigger,
+        effective=improvement > 0 or bridge_path is not None,
         risk=False,
     )
 
@@ -1405,6 +1601,9 @@ def _risk_action_improvement_score(
     *,
     simulation_cache: SimulationCache | None = None,
 ) -> int:
+    bridge_path = _bridge_path_for_first_action(state, action)
+    if bridge_path is not None:
+        return 18 + bridge_path.progress_after_first_step * 6
     before = _risk_profile(state)
     try:
         simulated = (
@@ -1490,6 +1689,28 @@ def _risk_action_improves_connection(
     )
 
 
+def _sequence_bridge_diagnostics(
+    previous: BridgeDiagnostics,
+    state: GameState,
+    action: Action,
+) -> BridgeDiagnostics:
+    bridge_path = _bridge_path_for_first_action(state, action)
+    if bridge_path is None:
+        return previous
+    return BridgeDiagnostics(
+        candidate_count=previous.candidate_count + 1,
+        min_steps=_min_optional_int(previous.min_steps, bridge_path.min_steps),
+        progress_after_first_step=max(
+            previous.progress_after_first_step,
+            bridge_path.progress_after_first_step,
+        ),
+    )
+
+
+def _min_optional_int(first: int | None, second: int) -> int:
+    return second if first is None else min(first, second)
+
+
 def _dedupe_ordered_actions(actions: list[Action]) -> list[Action]:
     result: list[Action] = []
     seen: set[Action] = set()
@@ -1499,6 +1720,295 @@ def _dedupe_ordered_actions(actions: list[Action]) -> list[Action]:
         result.append(action)
         seen.add(action)
     return result
+
+
+def _bridge_paths_for_state(
+    state: GameState,
+    *,
+    legal_actions: list[Action] | None = None,
+) -> list[BridgePath]:
+    if len(state.networks) < 2:
+        return []
+    legal_actions = legal_actions or get_legal_actions(state)
+    legal_roads = [
+        action
+        for action in legal_actions
+        if action.action_type is ActionType.BUILD_ROAD and action.coord is not None
+    ]
+    if not legal_roads:
+        return []
+    legal_road_coords = {action.coord for action in legal_roads if action.coord is not None}
+    risk_network_ids = _bridge_risk_network_ids(state)
+    target_network_ids = _bridge_target_network_ids(state, risk_network_ids)
+    if not risk_network_ids or not target_network_ids:
+        return []
+
+    passable_map = _component_passable_map_by_network(state)
+    paths_by_first_action: dict[Action, BridgePath] = {}
+    current_connected_pairs: set[tuple[int, int]] = set()
+    for source_id in sorted(risk_network_ids):
+        source_coords = _network_frontier_coords(passable_map, source_id)
+        if not source_coords:
+            continue
+        for target_id in sorted(target_network_ids):
+            if target_id == source_id:
+                continue
+            pair_key = (min(source_id, target_id), max(source_id, target_id))
+            if pair_key in current_connected_pairs:
+                continue
+            target_coords = _network_frontier_coords(passable_map, target_id)
+            if not target_coords:
+                continue
+            blocked_coords = {
+                coord
+                for coord, network_id in passable_map.items()
+                if network_id not in {source_id, target_id}
+            }
+            coord_path = _short_bridge_path(
+                state,
+                source_coords=source_coords,
+                target_coords=target_coords,
+                legal_road_coords=legal_road_coords,
+                blocked_coords=blocked_coords,
+                max_steps=3,
+            )
+            if coord_path is None:
+                if _networks_are_touching(source_coords, target_coords):
+                    current_connected_pairs.add(pair_key)
+                continue
+            actions = tuple(Action.build_road(coord) for coord in coord_path)
+            if not actions:
+                continue
+            first_action = actions[0]
+            progress = _bridge_progress_after_first_step(
+                state,
+                first_action,
+                source_network_id=source_id,
+                target_network_id=target_id,
+            )
+            path = BridgePath(
+                actions=actions,
+                source_network_id=source_id,
+                target_network_id=target_id,
+                progress_after_first_step=progress,
+            )
+            if progress <= 0 and path.min_steps > 1:
+                continue
+            previous = paths_by_first_action.get(first_action)
+            if previous is None or _bridge_path_sort_key(path) < _bridge_path_sort_key(previous):
+                paths_by_first_action[first_action] = path
+    return sorted(paths_by_first_action.values(), key=_bridge_path_sort_key)
+
+
+def _bridge_risk_network_ids(state: GameState) -> set[int]:
+    if len(state.networks) < 2:
+        return set()
+    return {
+        network_id
+        for network_id, network in state.networks.items()
+        if _network_needs_food(network) or len(network.city_ids) == 1
+    }
+
+
+def _component_passable_map_by_network(state: GameState) -> dict[Coord, int]:
+    coord_to_city_id = {city.coord: city_id for city_id, city in state.cities.items()}
+    mapping: dict[Coord, int] = {}
+    seen: set[Coord] = set()
+    for city_coord, city_id in sorted(coord_to_city_id.items()):
+        if city_coord in seen:
+            continue
+        network_id = state.cities[city_id].network_id
+        queue = deque([city_coord])
+        seen.add(city_coord)
+        while queue:
+            current = queue.popleft()
+            mapping[current] = network_id
+            current_is_city = current in coord_to_city_id
+            for neighbor in cardinal_neighbors(current):
+                if neighbor in seen:
+                    continue
+                tile = state.board.get(neighbor)
+                if tile is None:
+                    continue
+                if not _is_bridge_passable_tile(state, neighbor):
+                    continue
+                if current_is_city and neighbor in coord_to_city_id:
+                    continue
+                seen.add(neighbor)
+                queue.append(neighbor)
+    return mapping
+
+
+def _is_bridge_passable_tile(state: GameState, coord: Coord) -> bool:
+    tile = state.board.get(coord)
+    if tile is None:
+        return False
+    return tile.occupant.value in {"city", "road"} or tile.base_terrain.value == "river"
+
+
+def _bridge_target_network_ids(state: GameState, risk_network_ids: set[int]) -> set[int]:
+    del risk_network_ids
+    targets = {
+        network_id
+        for network_id, network in state.networks.items()
+        if _network_has_food_buffer(network)
+    }
+    if targets:
+        return targets
+    return {
+        network_id
+        for network_id, network in state.networks.items()
+        if not _network_needs_food(network)
+    }
+
+
+def _network_needs_food(network: Network) -> bool:
+    return (
+        network.resources.food <= 0 or city_network_pressure(network) >= FOOD_CONSUMPTION_PER_CITY
+    )
+
+
+def _network_has_food_buffer(network: Network) -> bool:
+    return (
+        network.resources.food >= max(1, len(network.city_ids)) * FOOD_CONSUMPTION_PER_CITY * 3
+        or city_network_pressure(network) < 0
+    )
+
+
+def _network_frontier_coords(passable_map: dict[Coord, int], network_id: int) -> set[Coord]:
+    return {
+        coord
+        for coord, mapped_network_id in passable_map.items()
+        if mapped_network_id == network_id
+    }
+
+
+def _networks_are_touching(first: set[Coord], second: set[Coord]) -> bool:
+    return any(neighbor in second for coord in first for neighbor in cardinal_neighbors(coord))
+
+
+def _short_bridge_path(
+    state: GameState,
+    *,
+    source_coords: set[Coord],
+    target_coords: set[Coord],
+    legal_road_coords: set[Coord],
+    blocked_coords: set[Coord],
+    max_steps: int,
+) -> tuple[Coord, ...] | None:
+    del state
+    queue: list[tuple[int, Coord, tuple[Coord, ...]]] = []
+    best_seen: dict[Coord, int] = {}
+    for coord in sorted(source_coords):
+        heappush(queue, (0, coord, ()))
+        best_seen[coord] = 0
+
+    while queue:
+        steps, coord, path = heappop(queue)
+        if steps > max_steps:
+            continue
+        if coord in target_coords and path:
+            return path
+        if steps == max_steps:
+            continue
+        for neighbor in sorted(cardinal_neighbors(coord)):
+            if neighbor in target_coords:
+                if path:
+                    return path
+                continue
+            if neighbor in source_coords:
+                continue
+            if neighbor in blocked_coords:
+                continue
+            if neighbor not in legal_road_coords:
+                continue
+            next_steps = steps + 1
+            previous_steps = best_seen.get(neighbor)
+            if previous_steps is not None and previous_steps <= next_steps:
+                continue
+            best_seen[neighbor] = next_steps
+            heappush(queue, (next_steps, neighbor, (*path, neighbor)))
+    return None
+
+
+def _bridge_progress_after_first_step(
+    state: GameState,
+    action: Action,
+    *,
+    source_network_id: int,
+    target_network_id: int,
+) -> int:
+    before = _network_bridge_steps(
+        state,
+        source_network_id=source_network_id,
+        target_network_id=target_network_id,
+        max_steps=3,
+    )
+    try:
+        after_state = simulate_action(state, action)
+    except ValueError:
+        return 0
+    after = _network_bridge_steps(
+        after_state,
+        source_network_id=source_network_id,
+        target_network_id=target_network_id,
+        max_steps=3,
+    )
+    if before is None or after is None:
+        return 0
+    return max(0, before - after)
+
+
+def _network_bridge_steps(
+    state: GameState,
+    *,
+    source_network_id: int,
+    target_network_id: int,
+    max_steps: int,
+) -> int | None:
+    passable_map = _component_passable_map_by_network(state)
+    source_coords = _network_frontier_coords(passable_map, source_network_id)
+    target_coords = _network_frontier_coords(passable_map, target_network_id)
+    if not source_coords or not target_coords:
+        return None
+    legal_road_coords = {
+        action.coord
+        for action in get_legal_actions(state)
+        if action.action_type is ActionType.BUILD_ROAD and action.coord is not None
+    }
+    blocked_coords = {
+        coord
+        for coord, network_id in passable_map.items()
+        if network_id not in {source_network_id, target_network_id}
+    }
+    path = _short_bridge_path(
+        state,
+        source_coords=source_coords,
+        target_coords=target_coords,
+        legal_road_coords=legal_road_coords,
+        blocked_coords=blocked_coords,
+        max_steps=max_steps,
+    )
+    return len(path) if path is not None else None
+
+
+def _bridge_path_for_first_action(state: GameState, action: Action) -> BridgePath | None:
+    if action.action_type is not ActionType.BUILD_ROAD or action.coord is None:
+        return None
+    for path in _bridge_paths_for_state(state):
+        if path.actions and path.actions[0] == action:
+            return path
+    return None
+
+
+def _bridge_path_sort_key(path: BridgePath) -> tuple[int, int, int, tuple[int, int]]:
+    first_coord = path.actions[0].coord if path.actions[0].coord is not None else (10**9, 10**9)
+    return (
+        path.min_steps,
+        -path.progress_after_first_step,
+        path.source_network_id,
+        first_coord,
+    )
 
 
 def _required_coord(action: Action) -> Coord:
@@ -1813,6 +2323,12 @@ def _sequence_adjustment(
         0,
         root_profile.starving_network_count - leaf_profile.starving_network_count,
     )
+    starvation_increase = max(
+        0,
+        leaf_profile.starving_network_count - root_profile.starving_network_count,
+    )
+    network_increase = max(0, leaf_profile.network_count - root_profile.network_count)
+    isolated_increase = max(0, leaf_profile.isolated_city_count - root_profile.isolated_city_count)
     pressure_reduction = max(0, root_profile.food_pressure - leaf_profile.food_pressure)
     first_action = sequence[0] if sequence else None
     first_delta = (
@@ -1830,6 +2346,11 @@ def _sequence_adjustment(
     if root_profile.turns_remaining > 3 and skip_actions:
         adjustment -= skip_actions * 5_500
         adjustment -= max(0, skip_actions - 1) * 2_500
+
+    if root_profile.mode in {SEARCH_MODE_RESCUE, SEARCH_MODE_CONNECT}:
+        adjustment -= starvation_increase * 58_000
+        adjustment -= network_increase * 22_000
+        adjustment -= isolated_increase * 22_000
 
     if root_profile.mode == SEARCH_MODE_EXPAND:
         adjustment += min(city_actions, root_profile.safe_expansion_deficit) * 14_000
@@ -1853,6 +2374,7 @@ def _sequence_adjustment(
             and root_profile.network_count > 1
             and first_connected_delta <= 0
             and first_network_delta >= 0
+            and _bridge_path_for_first_action(root_state, first_action) is None
         ):
             adjustment -= 14_000
         adjustment -= skip_actions * 2_500
@@ -1875,10 +2397,15 @@ def _sequence_adjustment(
 
     if first_action is not None:
         if first_action.action_type is ActionType.BUILD_ROAD:
+            first_bridge_path = _bridge_path_for_first_action(root_state, first_action)
+            if first_bridge_path is not None:
+                adjustment += 24_000
+                adjustment += first_bridge_path.progress_after_first_step * 4_000
             if (
                 first_road_overbuild_delta > 0
                 and first_connected_delta <= 0
                 and first_network_delta >= 0
+                and first_bridge_path is None
             ):
                 adjustment -= 45_000
             if (
@@ -1886,6 +2413,7 @@ def _sequence_adjustment(
                 and root_profile.city_count >= 2
                 and first_connected_delta <= 0
                 and first_network_delta >= 0
+                and first_bridge_path is None
             ):
                 adjustment -= 24_000
         if first_action.action_type is ActionType.BUILD_BUILDING and (

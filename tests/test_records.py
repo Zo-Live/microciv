@@ -406,6 +406,9 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
         search_root_redundant_road_candidate_count=0,
         search_root_high_roi_building_candidate_count=1,
         search_root_gated_candidate_count=4,
+        search_bridge_candidate_count=1,
+        search_bridge_min_steps=2,
+        search_bridge_progress_after_first_step=1,
         search_delta_starving_network_count=-1,
         search_delta_food_pressure=-4,
         search_delta_isolated_city_count=0,
@@ -527,6 +530,9 @@ def test_record_decision_context_roundtrip_preserves_search_fields() -> None:
     assert restored.search_root_redundant_road_candidate_count == 0
     assert restored.search_root_high_roi_building_candidate_count == 1
     assert restored.search_root_gated_candidate_count == 4
+    assert restored.search_bridge_candidate_count == 1
+    assert restored.search_bridge_min_steps == 2
+    assert restored.search_bridge_progress_after_first_step == 1
     assert restored.search_delta_food_pressure == -4
     assert restored.search_delta_worst_network_food_pressure == -3
     assert restored.search_delta_min_network_food == 4
@@ -593,6 +599,9 @@ def test_record_decision_artifact_rows_preserve_search_planning_fields() -> None
             search_selected_after_score_total=321,
             search_simulation_cache_hits=8,
             search_simulation_cache_misses=5,
+            search_bridge_candidate_count=1,
+            search_bridge_min_steps=2,
+            search_bridge_progress_after_first_step=1,
             search_chosen_city_resource_ring_bonus=180,
             search_greedy_city_resource_ring_bonus=180,
         )
@@ -613,6 +622,9 @@ def test_record_decision_artifact_rows_preserve_search_planning_fields() -> None
     assert row["search_selected_after_score_total"] == 321
     assert row["search_simulation_cache_hits"] == 8
     assert row["search_simulation_cache_misses"] == 5
+    assert row["search_bridge_candidate_count"] == 1
+    assert row["search_bridge_min_steps"] == 2
+    assert row["search_bridge_progress_after_first_step"] == 1
     assert row["search_chosen_city_resource_ring_bonus"] == 180
     assert row["search_greedy_city_resource_ring_bonus"] == 180
 

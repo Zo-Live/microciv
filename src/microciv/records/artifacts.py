@@ -30,7 +30,7 @@ from microciv.game.models import (
 from microciv.game.scoring import score_breakdown
 from microciv.records.models import RecordEntry
 
-ARTIFACT_SCHEMA_VERSION: Final[int] = 7
+ARTIFACT_SCHEMA_VERSION: Final[int] = 8
 ARTIFACT_MANIFEST_FILENAME: Final[str] = "artifact_manifest.json"
 ARTIFACT_TABLES: Final[tuple[str, ...]] = (
     "macro",
@@ -513,6 +513,11 @@ def record_decision_rows(record: RecordEntry) -> list[dict[str, object]]:
                 context.search_root_high_roi_building_candidate_count
             ),
             "search_root_gated_candidate_count": context.search_root_gated_candidate_count,
+            "search_bridge_candidate_count": context.search_bridge_candidate_count,
+            "search_bridge_min_steps": context.search_bridge_min_steps,
+            "search_bridge_progress_after_first_step": (
+                context.search_bridge_progress_after_first_step
+            ),
             "search_delta_starving_network_count": (context.search_delta_starving_network_count),
             "search_delta_food_pressure": context.search_delta_food_pressure,
             "search_delta_isolated_city_count": context.search_delta_isolated_city_count,

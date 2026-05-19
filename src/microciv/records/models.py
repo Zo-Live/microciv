@@ -17,7 +17,7 @@ from microciv.game.scoring import (
 )
 from microciv.utils.grid import Coord, coord_sort_key
 
-RECORDS_SCHEMA_VERSION = 9
+RECORDS_SCHEMA_VERSION = 10
 
 CSV_FIELD_ORDER: tuple[str, ...] = (
     "record_id",
@@ -640,6 +640,9 @@ class RecordDecisionContext:
     search_root_redundant_road_candidate_count: int | None = None
     search_root_high_roi_building_candidate_count: int | None = None
     search_root_gated_candidate_count: int | None = None
+    search_bridge_candidate_count: int | None = None
+    search_bridge_min_steps: int | None = None
+    search_bridge_progress_after_first_step: int | None = None
     search_delta_starving_network_count: int | None = None
     search_delta_food_pressure: int | None = None
     search_delta_isolated_city_count: int | None = None
@@ -879,6 +882,11 @@ class RecordDecisionContext:
             ),
             search_root_gated_candidate_count=_optional_int(
                 payload, "search_root_gated_candidate_count"
+            ),
+            search_bridge_candidate_count=_optional_int(payload, "search_bridge_candidate_count"),
+            search_bridge_min_steps=_optional_int(payload, "search_bridge_min_steps"),
+            search_bridge_progress_after_first_step=_optional_int(
+                payload, "search_bridge_progress_after_first_step"
             ),
             search_delta_starving_network_count=_optional_int(
                 payload, "search_delta_starving_network_count"
@@ -1289,6 +1297,14 @@ class RecordDecisionContext:
             )
         if self.search_root_gated_candidate_count is not None:
             result["search_root_gated_candidate_count"] = self.search_root_gated_candidate_count
+        if self.search_bridge_candidate_count is not None:
+            result["search_bridge_candidate_count"] = self.search_bridge_candidate_count
+        if self.search_bridge_min_steps is not None:
+            result["search_bridge_min_steps"] = self.search_bridge_min_steps
+        if self.search_bridge_progress_after_first_step is not None:
+            result["search_bridge_progress_after_first_step"] = (
+                self.search_bridge_progress_after_first_step
+            )
         if self.search_delta_starving_network_count is not None:
             result["search_delta_starving_network_count"] = self.search_delta_starving_network_count
         if self.search_delta_food_pressure is not None:

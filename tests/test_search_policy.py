@@ -18,6 +18,7 @@ from microciv.ai.search import (
     SearchDepthContext,
     SearchDepthDecision,
     SearchPolicy,
+    _bridge_paths_for_state,
     _evaluate_probe_result,
 )
 from microciv.game.actions import Action, validate_action
@@ -318,6 +319,73 @@ def test_search_policy_stall_probe_rejects_when_gate_fails() -> None:
     }
     assert context["search_leaf_count"] > 0
     assert context["search_simulation_cache_hits"] > 0
+
+
+def test_search_policy_keeps_multistep_bridge_first_road_candidate() -> None:
+    state = _two_step_bridge_state()
+    greedy_action = GreedyPolicy().select_action(state)
+    policy = SearchPolicy(search_depth=2, search_max_depth=4, search_beam_width=2)
+
+    paths = _bridge_paths_for_state(state)
+    action = policy.select_action(state)
+    context = policy.explain_decision(state)
+
+    assert paths
+    assert paths[0].min_steps == 2
+    assert paths[0].actions[0] == Action.build_road((1, 0))
+    assert greedy_action != paths[0].actions[0]
+    assert action == paths[0].actions[0]
+    assert context["search_planning_mode"] == "beam_search"
+    assert context["search_bridge_candidate_count"] >= 1
+    assert context["search_bridge_min_steps"] == 2
+    assert context["search_bridge_progress_after_first_step"] > 0
+    assert context["search_probe_accepted_reason"] in {
+        "bridge_sequence_reduced_starving_networks",
+        "bridge_sequence_reduced_networks",
+        "bridge_sequence_increased_connected_cities",
+    }
+
+
+def test_search_policy_bridge_second_step_reduces_network_risk() -> None:
+    state = _two_step_bridge_state()
+    policy = SearchPolicy(search_depth=2, search_max_depth=4, search_beam_width=2)
+    engine = GameEngine(state)
+
+    first_action = policy.select_action(state)
+    assert first_action == Action.build_road((1, 0))
+    assert engine.apply_action(first_action).success
+    before_network_count = len(state.networks)
+    before_isolated = sum(1 for network in state.networks.values() if len(network.city_ids) == 1)
+
+    second_action = policy.select_action(state)
+    assert second_action == Action.build_road((1, 1))
+    assert engine.apply_action(second_action).success
+
+    after_isolated = sum(1 for network in state.networks.values() if len(network.city_ids) == 1)
+    assert len(state.networks) < before_network_count
+    assert after_isolated < before_isolated
+
+
+def test_search_policy_recent_food_probe_rejection_does_not_block_worsening_bridge() -> None:
+    state = _two_step_bridge_state()
+    state.stats.decision_contexts = [
+        {
+            "search_intervention_trigger": "food_rescue_probe",
+            "search_probe_rejected_reason": "food_rescue_gate_failed",
+            "search_selected_after_starving_network_count": 1,
+            "search_selected_after_food_pressure": 12,
+            "search_selected_after_network_count": 2,
+            "search_selected_after_isolated_city_count": 2,
+        }
+    ]
+    policy = SearchPolicy(search_depth=2, search_max_depth=4, search_beam_width=2)
+
+    action = policy.select_action(state)
+    context = policy.explain_decision(state)
+
+    assert action == Action.build_road((1, 0))
+    assert context["search_intervention_trigger"] == "food_rescue_probe"
+    assert context["search_probe_rejected_reason"] != "recent_food_rescue_probe_rejected"
 
 
 def test_search_policy_uses_custom_depth_strategy() -> None:
@@ -632,6 +700,39 @@ def _food_rescue_override_state() -> GameState:
             unlocked_techs={TechType.AGRICULTURE},
         )
     }
+    return state
+
+
+def _two_step_bridge_state() -> GameState:
+    state = GameState.empty(GameConfig.for_play(turn_limit=30))
+    state.turn = 6
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 1): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 2): Tile(base_terrain=TerrainType.FOREST),
+        (1, 0): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 1): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 2): Tile(base_terrain=TerrainType.MOUNTAIN),
+        (2, 0): Tile(base_terrain=TerrainType.FOREST),
+        (2, 1): Tile(base_terrain=TerrainType.MOUNTAIN),
+        (2, 2): Tile(base_terrain=TerrainType.PLAIN),
+    }
+    state.cities = {
+        1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1),
+        2: City(city_id=2, coord=(0, 1), founded_turn=2, network_id=2),
+    }
+    state.networks = {
+        1: Network(network_id=1, city_ids={1}, resources=ResourcePool(food=-8)),
+        2: Network(
+            network_id=2,
+            city_ids={2},
+            resources=ResourcePool(food=80, wood=80, ore=80, science=80),
+            unlocked_techs={TechType.AGRICULTURE},
+        ),
+    }
+    state.next_city_id = 3
+    state.next_road_id = 1
+    state.next_network_id = 3
     return state
 
 
