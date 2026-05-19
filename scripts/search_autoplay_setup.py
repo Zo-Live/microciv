@@ -1,4 +1,4 @@
-"""Open the Autoplay setup screen with a fixed Search configuration."""
+"""Open the Autoplay setup screen with a fixed-seed AI configuration."""
 
 from __future__ import annotations
 
@@ -25,7 +25,17 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Open MicroCiv Autoplay setup for a fixed-seed Search run."
+        description="Open MicroCiv Autoplay setup for a fixed-seed AI run."
+    )
+    parser.add_argument(
+        "--policy",
+        choices=[
+            PolicyType.GREEDY.value,
+            PolicyType.RANDOM.value,
+            PolicyType.SEARCH.value,
+        ],
+        default=PolicyType.SEARCH.value,
+        help="AI policy to use (default: search).",
     )
     parser.add_argument(
         "--difficulty",
@@ -63,7 +73,7 @@ def build_search_autoplay_config(args: argparse.Namespace) -> GameConfig:
         map_size=args.map_size,
         turn_limit=args.turn_limit,
         map_difficulty=MapDifficulty(args.difficulty),
-        policy_type=PolicyType.SEARCH,
+        policy_type=PolicyType(args.policy),
         playback_mode=PlaybackMode.SPEED,
         seed=args.seed,
     )

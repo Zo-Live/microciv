@@ -39,6 +39,44 @@ def test_build_search_autoplay_config_uses_fixed_search_speed() -> None:
     assert config.seed == 397
 
 
+def test_search_autoplay_config_accepts_explicit_greedy_policy() -> None:
+    args = search_autoplay_setup._parse_args(
+        [
+            "--policy",
+            "greedy",
+            "--map-size",
+            "16",
+            "--turns",
+            "80",
+            "--seed",
+            "21",
+        ]
+    )
+
+    config = search_autoplay_setup.build_search_autoplay_config(args)
+
+    assert config.policy_type is PolicyType.GREEDY
+    assert config.playback_mode is PlaybackMode.SPEED
+    assert config.seed == 21
+
+
+def test_search_autoplay_config_accepts_explicit_random_policy() -> None:
+    args = search_autoplay_setup._parse_args(
+        [
+            "--policy",
+            "random",
+            "--seed",
+            "22",
+        ]
+    )
+
+    config = search_autoplay_setup.build_search_autoplay_config(args)
+
+    assert config.policy_type is PolicyType.RANDOM
+    assert config.playback_mode is PlaybackMode.SPEED
+    assert config.seed == 22
+
+
 def test_search_autoplay_config_accepts_parameter_aliases() -> None:
     args = search_autoplay_setup._parse_args(
         [
