@@ -69,9 +69,16 @@ def charge_river_road_cost(network: Network) -> ResourceType:
     raise ValueError("Network cannot pay the river-road cost.")
 
 
-def choose_river_road_payment_network(state: GameState, coord: Coord) -> int | None:
+def choose_river_road_payment_network(
+    state: GameState,
+    coord: Coord,
+    *,
+    network_coord_map: dict[Coord, int] | None = None,
+) -> int | None:
     """Choose the adjacent network that must pay a river-road surcharge."""
-    network_coord_map = map_passable_coords_to_networks(state)
+    network_coord_map = (
+        map_passable_coords_to_networks(state) if network_coord_map is None else network_coord_map
+    )
     adjacent_network_nodes = sorted(
         (
             neighbor,

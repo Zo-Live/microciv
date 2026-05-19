@@ -895,9 +895,7 @@ class RecordDecisionContext:
             search_bridge_progress_after_first_step=_optional_int(
                 payload, "search_bridge_progress_after_first_step"
             ),
-            search_route_target_network_id=_optional_int(
-                payload, "search_route_target_network_id"
-            ),
+            search_route_target_network_id=_optional_int(payload, "search_route_target_network_id"),
             search_route_remaining_steps=_optional_int(payload, "search_route_remaining_steps"),
             search_route_committed=_optional_bool(payload, "search_route_committed"),
             search_delta_starving_network_count=_optional_int(

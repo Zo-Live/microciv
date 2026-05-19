@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from microciv.game.actions import Action, validate_action
+from microciv.game.actions import Action, list_legal_actions, validate_action
 from microciv.game.engine import GameEngine
 from microciv.game.enums import BuildingType, OccupantType, TechType, TerrainType
 from microciv.game.models import (
@@ -151,6 +151,34 @@ def test_river_road_cannot_fallback_to_richer_non_priority_network() -> None:
     assert result.message == "Not enough resources"
     assert state.turn == 1
     assert state.board[(1, 1)].occupant is OccupantType.NONE
+
+
+def test_list_legal_actions_matches_validation_for_river_roads() -> None:
+    state = GameState.empty(GameConfig.for_play())
+    state.board = {
+        (0, 0): Tile(base_terrain=TerrainType.PLAIN, occupant=OccupantType.CITY),
+        (0, 1): Tile(base_terrain=TerrainType.RIVER),
+        (1, 0): Tile(base_terrain=TerrainType.PLAIN),
+        (1, 1): Tile(base_terrain=TerrainType.RIVER),
+    }
+    state.cities = {1: City(city_id=1, coord=(0, 0), founded_turn=1, network_id=1)}
+    state.networks = {1: Network(network_id=1, city_ids={1}, resources=ResourcePool(wood=15))}
+
+    legal_actions = list_legal_actions(state)
+    individually_valid = [
+        action
+        for action in [
+            Action.build_city((1, 0)),
+            Action.build_road((0, 1)),
+            Action.build_road((1, 0)),
+        ]
+        if validate_action(state, action).is_valid
+    ]
+
+    assert Action.build_road((0, 1)) in legal_actions
+    assert Action.build_road((1, 1)) not in legal_actions
+    for action in individually_valid:
+        assert action in legal_actions
 
 
 def test_build_building_succeeds_and_new_building_produces_same_turn() -> None:

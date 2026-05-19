@@ -203,6 +203,7 @@ class RootCandidateDiagnostic:
 class PlannedSearchDecision:
     action: Action
     context: dict[str, object]
+    greedy_action: Action
     root_candidate_diagnostics: tuple[RootCandidateDiagnostic, ...] = ()
 
 
@@ -245,6 +246,19 @@ class RiskProbeResult:
 @dataclass(slots=True)
 class SimulationCache:
     entries: dict[tuple[int, Action], GameState] = field(default_factory=dict)
+    legal_actions_by_state: dict[int, list[Action]] = field(default_factory=dict)
+    profiles_by_state: dict[int, SearchPositionProfile] = field(default_factory=dict)
+    heuristic_contexts_by_state: dict[int, HeuristicContext] = field(default_factory=dict)
+    risk_profiles_by_state: dict[int, RiskProfile] = field(default_factory=dict)
+    network_food_risk_by_state: dict[int, dict[str, int]] = field(default_factory=dict)
+    leaf_evaluations_by_state: dict[tuple[int, int], SearchLeafEvaluation] = field(
+        default_factory=dict
+    )
+    greedy_plans_by_state: dict[int, GreedyPlanSnapshot] = field(default_factory=dict)
+    bridge_paths_by_state: dict[int, tuple[BridgePath, ...]] = field(default_factory=dict)
+    bridge_paths_by_first_action_by_state: dict[int, dict[Action, BridgePath]] = field(
+        default_factory=dict
+    )
     hits: int = 0
     misses: int = 0
 
@@ -258,6 +272,97 @@ class SimulationCache:
         self.entries[key] = simulated
         self.misses += 1
         return simulated
+
+    def legal_actions(self, state: GameState) -> list[Action]:
+        state_key = id(state)
+        cached = self.legal_actions_by_state.get(state_key)
+        if cached is None:
+            cached = get_legal_actions(state)
+            self.legal_actions_by_state[state_key] = cached
+        return cached
+
+    def profile(self, state: GameState) -> SearchPositionProfile:
+        state_key = id(state)
+        cached = self.profiles_by_state.get(state_key)
+        if cached is None:
+            cached = build_search_position_profile(state)
+            self.profiles_by_state[state_key] = cached
+        return cached
+
+    def heuristic_context(self, state: GameState) -> HeuristicContext:
+        state_key = id(state)
+        cached = self.heuristic_contexts_by_state.get(state_key)
+        if cached is None:
+            cached = build_heuristic_context(state)
+            self.heuristic_contexts_by_state[state_key] = cached
+        return cached
+
+    def network_food_risk(self, state: GameState) -> dict[str, int]:
+        state_key = id(state)
+        cached = self.network_food_risk_by_state.get(state_key)
+        if cached is None:
+            cached = _network_food_risk_profile(state)
+            self.network_food_risk_by_state[state_key] = cached
+        return cached
+
+    def risk_profile(self, state: GameState) -> RiskProfile:
+        state_key = id(state)
+        cached = self.risk_profiles_by_state.get(state_key)
+        if cached is None:
+            profile = self.profile(state)
+            network_risk = self.network_food_risk(state)
+            cached = _risk_profile_from_parts(state, profile, network_risk)
+            self.risk_profiles_by_state[state_key] = cached
+        return cached
+
+    def leaf_evaluation(
+        self,
+        state: GameState,
+        *,
+        root_state: GameState,
+    ) -> SearchLeafEvaluation:
+        key = (id(state), id(root_state))
+        cached = self.leaf_evaluations_by_state.get(key)
+        if cached is None:
+            cached = evaluate_search_leaf(state, root_state=root_state)
+            self.leaf_evaluations_by_state[key] = cached
+        return cached
+
+    def greedy_plan(self, greedy_policy: GreedyPolicy, state: GameState) -> GreedyPlanSnapshot:
+        state_key = id(state)
+        cached = self.greedy_plans_by_state.get(state_key)
+        if cached is None:
+            cached = greedy_policy.plan_for_search(state)
+            self.greedy_plans_by_state[state_key] = cached
+        return cached
+
+    def bridge_paths(self, state: GameState) -> tuple[BridgePath, ...]:
+        state_key = id(state)
+        cached = self.bridge_paths_by_state.get(state_key)
+        if cached is None:
+            cached = tuple(
+                _bridge_paths_for_state(
+                    state,
+                    legal_actions=self.legal_actions(state),
+                    simulation_cache=self,
+                )
+            )
+            self.bridge_paths_by_state[state_key] = cached
+        return cached
+
+    def bridge_path_for_first_action(
+        self,
+        state: GameState,
+        action: Action,
+    ) -> BridgePath | None:
+        if action.action_type is not ActionType.BUILD_ROAD or action.coord is None:
+            return None
+        state_key = id(state)
+        cached = self.bridge_paths_by_first_action_by_state.get(state_key)
+        if cached is None:
+            cached = {path.actions[0]: path for path in self.bridge_paths(state) if path.actions}
+            self.bridge_paths_by_first_action_by_state[state_key] = cached
+        return cached.get(action)
 
 
 @dataclass(slots=True)
@@ -337,11 +442,11 @@ class SearchPolicy(Policy):
 
         simulation_cache = SimulationCache()
         depth_decision = self._choose_depth(state)
-        root_profile = build_search_position_profile(state)
-        root_risk = _risk_profile(state)
-        greedy_plan = self._greedy_policy.plan_for_search(state)
+        root_profile = simulation_cache.profile(state)
+        root_risk = simulation_cache.risk_profile(state)
+        greedy_plan = simulation_cache.greedy_plan(self._greedy_policy, state)
         greedy_after_state = simulation_cache.simulate(state, greedy_plan.action)
-        greedy_after_risk = _risk_profile(greedy_after_state)
+        greedy_after_risk = simulation_cache.risk_profile(greedy_after_state)
         probe_decision = _risk_probe_decision(
             state=state,
             root_profile=root_profile,
@@ -366,7 +471,10 @@ class SearchPolicy(Policy):
         )
 
         if probe_decision.trigger is None:
-            greedy_evaluation = evaluate_search_leaf(greedy_after_state, root_state=state)
+            greedy_evaluation = simulation_cache.leaf_evaluation(
+                greedy_after_state,
+                root_state=state,
+            )
             decision = self._build_planned_decision(
                 state=state,
                 action=greedy_plan.action,
@@ -413,8 +521,11 @@ class SearchPolicy(Policy):
             )
             if fallback is not None:
                 selected_after_state = simulation_cache.simulate(state, fallback)
-                selected_after_risk = _risk_profile(selected_after_state)
-                fallback_evaluation = evaluate_search_leaf(selected_after_state, root_state=state)
+                selected_after_risk = simulation_cache.risk_profile(selected_after_state)
+                fallback_evaluation = simulation_cache.leaf_evaluation(
+                    selected_after_state,
+                    root_state=state,
+                )
                 decision = self._build_planned_decision(
                     state=state,
                     action=fallback,
@@ -443,7 +554,10 @@ class SearchPolicy(Policy):
                 self._cached_decision = decision
                 return decision
 
-            greedy_evaluation = evaluate_search_leaf(greedy_after_state, root_state=state)
+            greedy_evaluation = simulation_cache.leaf_evaluation(
+                greedy_after_state,
+                root_state=state,
+            )
             decision = self._build_planned_decision(
                 state=state,
                 action=greedy_plan.action,
@@ -474,7 +588,7 @@ class SearchPolicy(Policy):
 
         selected_action = best_node.sequence[0]
         selected_after_state = simulation_cache.simulate(state, selected_action)
-        selected_after_risk = _risk_profile(selected_after_state)
+        selected_after_risk = simulation_cache.risk_profile(selected_after_state)
         probe_result = _evaluate_probe_result(
             trigger=probe_decision.trigger,
             root_risk=root_risk,
@@ -487,14 +601,14 @@ class SearchPolicy(Policy):
             selected_action != greedy_plan.action
             and best_node.bridge_diagnostics.candidate_count > 0
             and best_node.sequence
-            and _bridge_path_for_first_action(state, selected_action) is not None
+            and simulation_cache.bridge_path_for_first_action(state, selected_action) is not None
         ):
             bridge_probe_result = _evaluate_bridge_probe_result(
                 root_risk=root_risk,
                 greedy_action=greedy_plan.action,
                 selected_action=selected_action,
                 greedy_after=greedy_after_risk,
-                selected_sequence_after=_risk_profile(best_node.state),
+                selected_sequence_after=simulation_cache.risk_profile(best_node.state),
             )
             if bridge_probe_result is not None and (
                 bridge_probe_result.accepted or not probe_result.accepted
@@ -503,6 +617,7 @@ class SearchPolicy(Policy):
 
         committed_route_result = _evaluate_committed_route_probe_result(
             state=state,
+            simulation_cache=simulation_cache,
             root_risk=root_risk,
             greedy_action=greedy_plan.action,
             selected_action=selected_action,
@@ -514,6 +629,7 @@ class SearchPolicy(Policy):
 
         veto_probe_result = _evaluate_greedy_veto_probe_result(
             state=state,
+            simulation_cache=simulation_cache,
             veto_reason=greedy_veto.reason,
             root_risk=root_risk,
             greedy_action=greedy_plan.action,
@@ -532,7 +648,10 @@ class SearchPolicy(Policy):
             best_sequence = best_node.sequence
         else:
             action = greedy_plan.action
-            best_evaluation = evaluate_search_leaf(greedy_after_state, root_state=state)
+            best_evaluation = simulation_cache.leaf_evaluation(
+                greedy_after_state,
+                root_state=state,
+            )
             best_value = best_evaluation.value
             best_sequence_adjustment = 0
             best_sequence = (greedy_plan.action,)
@@ -548,8 +667,11 @@ class SearchPolicy(Policy):
             if fallback is not None:
                 action = fallback
                 selected_after_state = simulation_cache.simulate(state, action)
-                selected_after_risk = _risk_profile(selected_after_state)
-                best_evaluation = evaluate_search_leaf(selected_after_state, root_state=state)
+                selected_after_risk = simulation_cache.risk_profile(selected_after_state)
+                best_evaluation = simulation_cache.leaf_evaluation(
+                    selected_after_state,
+                    root_state=state,
+                )
                 best_value = best_evaluation.value
                 best_sequence_adjustment = 0
                 best_sequence = (action,)
@@ -589,6 +711,7 @@ class SearchPolicy(Policy):
                 else None,
                 greedy_veto_reason=greedy_veto.reason,
             ),
+            greedy_action=greedy_plan.action,
             root_candidate_diagnostics=tuple(telemetry.root_candidate_diagnostics),
         )
         self._cache_key = cache_key
@@ -647,6 +770,7 @@ class SearchPolicy(Policy):
                 rejected_reason=rejected_reason,
                 greedy_veto_reason=greedy_veto_reason,
             ),
+            greedy_action=greedy_plan.action,
             root_candidate_diagnostics=tuple(telemetry.root_candidate_diagnostics),
         )
 
@@ -707,7 +831,11 @@ class SearchPolicy(Policy):
             action,
             simulation_cache=simulation_cache,
         )
-        route_diagnostics = _route_diagnostics(state, action)
+        route_diagnostics = _route_diagnostics(
+            state,
+            action,
+            simulation_cache=simulation_cache,
+        )
         return {
             **greedy_plan.context,
             "search_mode": root_profile.mode,
@@ -846,7 +974,7 @@ class SearchPolicy(Policy):
         simulation_cache: SimulationCache,
         blocked_root_action: Action | None,
     ) -> SearchNode | None:
-        root_evaluation = evaluate_search_leaf(state, root_state=state)
+        root_evaluation = simulation_cache.leaf_evaluation(state, root_state=state)
         beam = [
             SearchNode(
                 state=state,
@@ -874,7 +1002,12 @@ class SearchPolicy(Policy):
                     blocked_action=blocked_root_action if not node.sequence else None,
                 )
                 if not node.sequence and telemetry.root_profile is None:
-                    self._record_root_candidate_set(node.state, candidate_set, telemetry)
+                    self._record_root_candidate_set(
+                        node.state,
+                        candidate_set,
+                        telemetry,
+                        simulation_cache=simulation_cache,
+                    )
                 telemetry.nodes_expanded += 1
                 telemetry.candidates_considered += len(candidate_set.candidates)
 
@@ -884,13 +1017,17 @@ class SearchPolicy(Policy):
 
                 for candidate in candidate_set.candidates:
                     simulated_state = simulation_cache.simulate(node.state, candidate.action)
-                    leaf_evaluation = evaluate_search_leaf(simulated_state, root_state=state)
+                    leaf_evaluation = simulation_cache.leaf_evaluation(
+                        simulated_state,
+                        root_state=state,
+                    )
                     telemetry.leaf_count += 1
                     sequence = (*node.sequence, candidate.action)
                     bridge_diagnostics = _sequence_bridge_diagnostics(
                         node.bridge_diagnostics,
                         node.state,
                         candidate.action,
+                        simulation_cache=simulation_cache,
                     )
                     sequence_adjustment = _sequence_adjustment(
                         state,
@@ -927,6 +1064,8 @@ class SearchPolicy(Policy):
         state: GameState,
         candidate_set: SearchCandidateSet,
         telemetry: SearchTelemetry,
+        *,
+        simulation_cache: SimulationCache,
     ) -> None:
         telemetry.root_profile = candidate_set.profile
         telemetry.root_legal_action_count = candidate_set.legal_action_count
@@ -947,7 +1086,7 @@ class SearchPolicy(Policy):
         telemetry.bridge_min_steps = None
         telemetry.bridge_progress_after_first_step = 0
         for candidate in candidate_set.candidates:
-            bridge_path = _bridge_path_for_first_action(state, candidate.action)
+            bridge_path = simulation_cache.bridge_path_for_first_action(state, candidate.action)
             if bridge_path is None:
                 continue
             telemetry.bridge_candidate_count += 1
@@ -1003,6 +1142,14 @@ def _require_positive(value: int, field_name: str) -> int:
 def _risk_profile(state: GameState) -> RiskProfile:
     profile = build_search_position_profile(state)
     network_risk = _network_food_risk_profile(state)
+    return _risk_profile_from_parts(state, profile, network_risk)
+
+
+def _risk_profile_from_parts(
+    state: GameState,
+    profile: SearchPositionProfile,
+    network_risk: dict[str, int],
+) -> RiskProfile:
     return RiskProfile(
         score_total=score_breakdown(state).total,
         starving_network_count=profile.starving_network_count,
@@ -1145,7 +1292,10 @@ def _greedy_veto_reason(
     simulation_cache: SimulationCache,
 ) -> str | None:
     action = greedy_plan.action
-    committed_route_action = _preferred_committed_route_action(state)
+    committed_route_action = _preferred_committed_route_action(
+        state,
+        simulation_cache=simulation_cache,
+    )
     if committed_route_action is not None and action != committed_route_action:
         return "route_commitment_deviation"
     if action.action_type is ActionType.BUILD_ROAD:
@@ -1157,9 +1307,10 @@ def _greedy_veto_reason(
             root_risk=root_risk,
             action=action,
             greedy_after=greedy_after,
+            context=simulation_cache.heuristic_context(state),
         )
     if action.action_type is ActionType.SKIP:
-        return _greedy_skip_veto_reason(state, root_risk)
+        return _greedy_skip_veto_reason(state, root_risk, simulation_cache=simulation_cache)
     return None
 
 
@@ -1169,7 +1320,7 @@ def _greedy_road_veto_reason(
     *,
     simulation_cache: SimulationCache,
 ) -> str | None:
-    if _bridge_path_for_first_action(state, action) is not None:
+    if simulation_cache.bridge_path_for_first_action(state, action) is not None:
         return None
     delta = _action_delta_diagnostics(state, action, simulation_cache=simulation_cache)
     connected_delta = int(delta["search_delta_connected_city_count"])
@@ -1194,9 +1345,10 @@ def _greedy_city_veto_reason(
     root_risk: RiskProfile,
     action: Action,
     greedy_after: RiskProfile,
+    context: HeuristicContext | None = None,
 ) -> str | None:
     assert action.coord is not None
-    context = build_heuristic_context(state)
+    context = build_heuristic_context(state) if context is None else context
     coord = action.coord
     budget = site_budget(state, coord, context)
     _forest, _mountain, river, plain, _occupied = resource_ring_counts_for_context(
@@ -1226,10 +1378,18 @@ def _greedy_city_veto_reason(
     return None
 
 
-def _greedy_skip_veto_reason(state: GameState, root_risk: RiskProfile) -> str | None:
-    has_non_skip_action = any(
-        action.action_type is not ActionType.SKIP for action in get_legal_actions(state)
+def _greedy_skip_veto_reason(
+    state: GameState,
+    root_risk: RiskProfile,
+    *,
+    simulation_cache: SimulationCache | None = None,
+) -> str | None:
+    legal_actions = (
+        simulation_cache.legal_actions(state)
+        if simulation_cache is not None
+        else get_legal_actions(state)
     )
+    has_non_skip_action = any(action.action_type is not ActionType.SKIP for action in legal_actions)
     if not has_non_skip_action:
         return None
     recent_skip_count = sum(
@@ -1491,6 +1651,7 @@ def _evaluate_bridge_probe_result(
 def _evaluate_committed_route_probe_result(
     *,
     state: GameState,
+    simulation_cache: SimulationCache | None = None,
     root_risk: RiskProfile,
     greedy_action: Action,
     selected_action: Action,
@@ -1499,7 +1660,11 @@ def _evaluate_committed_route_probe_result(
 ) -> RiskProbeResult | None:
     if selected_action == greedy_action:
         return None
-    bridge_path = _bridge_path_for_first_action(state, selected_action)
+    bridge_path = (
+        simulation_cache.bridge_path_for_first_action(state, selected_action)
+        if simulation_cache is not None
+        else _bridge_path_for_first_action(state, selected_action)
+    )
     if bridge_path is None or bridge_path.progress_after_first_step <= 0:
         return None
     if selected_after.starving_network_count > root_risk.starving_network_count:
@@ -1521,6 +1686,7 @@ def _evaluate_committed_route_probe_result(
 def _evaluate_greedy_veto_probe_result(
     *,
     state: GameState,
+    simulation_cache: SimulationCache | None = None,
     veto_reason: str | None,
     root_risk: RiskProfile,
     greedy_action: Action,
@@ -1536,7 +1702,12 @@ def _evaluate_greedy_veto_probe_result(
         return RiskProbeResult(False, None, "greedy_veto_gate_failed")
     if selected_after.food_pressure > max(root_risk.food_pressure, greedy_after.food_pressure):
         return RiskProbeResult(False, None, "greedy_veto_gate_failed")
-    if _bridge_path_for_first_action(state, selected_action) is not None:
+    bridge_path = (
+        simulation_cache.bridge_path_for_first_action(state, selected_action)
+        if simulation_cache is not None
+        else _bridge_path_for_first_action(state, selected_action)
+    )
+    if bridge_path is not None:
         return RiskProbeResult(True, "greedy_veto_committed_route", None)
     if selected_after.network_count < greedy_after.network_count:
         return RiskProbeResult(True, "greedy_veto_reduced_networks", None)
@@ -1558,10 +1729,10 @@ def _generate_risk_search_candidates(
     *,
     blocked_action: Action | None = None,
 ) -> SearchCandidateSet:
-    greedy_plan = greedy_policy.plan_for_search(state)
-    profile = build_search_position_profile(state)
-    context = build_heuristic_context(state)
-    legal_actions = get_legal_actions(state)
+    greedy_plan = simulation_cache.greedy_plan(greedy_policy, state)
+    profile = simulation_cache.profile(state)
+    context = simulation_cache.heuristic_context(state)
+    legal_actions = simulation_cache.legal_actions(state)
     legal_set = set(legal_actions)
     legal_counts = {
         action_type: sum(1 for action in legal_actions if action.action_type is action_type)
@@ -1590,7 +1761,7 @@ def _generate_risk_search_candidates(
         for action in candidate_actions
         if action in legal_set
     ][:candidate_limit]
-    bridge_paths = _bridge_paths_for_state(state, legal_actions=legal_actions)
+    bridge_paths = list(simulation_cache.bridge_paths(state))
     bridge_by_first_action = {path.actions[0]: path for path in bridge_paths}
     candidate_counts = {
         action_type: sum(1 for candidate in candidates if candidate.action_type is action_type)
@@ -1663,7 +1834,7 @@ def _risk_candidate_actions(
     candidates.extend(greedy_plan.escape_candidates[:greedy_quota])
     candidates.extend(greedy_plan.candidates[:greedy_quota])
     groups = partition_actions(legal_actions)
-    bridge_paths = _bridge_paths_for_state(state, legal_actions=legal_actions)
+    bridge_paths = list(simulation_cache.bridge_paths(state))
     bridge_actions = [path.actions[0] for path in bridge_paths]
     supplemental_actions = _supplemental_risk_actions(
         state,
@@ -1897,7 +2068,11 @@ def _risk_search_candidate(
         action,
         simulation_cache=simulation_cache,
     )
-    bridge_path = _bridge_path_for_first_action(state, action)
+    bridge_path = (
+        simulation_cache.bridge_path_for_first_action(state, action)
+        if simulation_cache is not None
+        else _bridge_path_for_first_action(state, action)
+    )
     bridge_bonus = 0
     if bridge_path is not None:
         bridge_bonus = 18 + bridge_path.progress_after_first_step * 6
@@ -1953,17 +2128,29 @@ def _risk_action_improvement_score(
     *,
     simulation_cache: SimulationCache | None = None,
 ) -> int:
-    bridge_path = _bridge_path_for_first_action(state, action)
+    bridge_path = (
+        simulation_cache.bridge_path_for_first_action(state, action)
+        if simulation_cache is not None
+        else _bridge_path_for_first_action(state, action)
+    )
     if bridge_path is not None:
         return 18 + bridge_path.progress_after_first_step * 6
-    before = _risk_profile(state)
+    before = (
+        simulation_cache.risk_profile(state)
+        if simulation_cache is not None
+        else _risk_profile(state)
+    )
     try:
         simulated = (
             simulation_cache.simulate(state, action)
             if simulation_cache is not None
             else simulate_action(state, action)
         )
-        after = _risk_profile(simulated)
+        after = (
+            simulation_cache.risk_profile(simulated)
+            if simulation_cache is not None
+            else _risk_profile(simulated)
+        )
     except ValueError:
         return -10_000
     return (
@@ -1982,14 +2169,22 @@ def _risk_action_score_delta(
     *,
     simulation_cache: SimulationCache | None = None,
 ) -> int:
-    before = _risk_profile(state)
+    before = (
+        simulation_cache.risk_profile(state)
+        if simulation_cache is not None
+        else _risk_profile(state)
+    )
     try:
         simulated = (
             simulation_cache.simulate(state, action)
             if simulation_cache is not None
             else simulate_action(state, action)
         )
-        after = _risk_profile(simulated)
+        after = (
+            simulation_cache.risk_profile(simulated)
+            if simulation_cache is not None
+            else _risk_profile(simulated)
+        )
     except ValueError:
         return -10_000
     return after.score_total - before.score_total
@@ -2004,10 +2199,10 @@ def _best_veto_fallback_action(
 ) -> Action | None:
     if veto_reason is None:
         return None
-    context = build_heuristic_context(state)
-    profile = build_search_position_profile(state)
+    context = simulation_cache.heuristic_context(state)
+    profile = simulation_cache.profile(state)
     scored: list[tuple[int, Action]] = []
-    for action in get_legal_actions(state):
+    for action in simulation_cache.legal_actions(state):
         if action == greedy_action or action.action_type is ActionType.SKIP:
             continue
         if not _action_is_valid_veto_fallback(
@@ -2022,11 +2217,17 @@ def _best_veto_fallback_action(
             simulated = simulation_cache.simulate(state, action)
         except ValueError:
             continue
-        evaluation = evaluate_search_leaf(simulated, root_state=state)
+        evaluation = simulation_cache.leaf_evaluation(simulated, root_state=state)
         scored.append(
             (
                 evaluation.value
-                + _veto_fallback_bonus(state, action, context, veto_reason=veto_reason),
+                + _veto_fallback_bonus(
+                    state,
+                    action,
+                    context,
+                    veto_reason=veto_reason,
+                    simulation_cache=simulation_cache,
+                ),
                 action,
             )
         )
@@ -2044,7 +2245,7 @@ def _action_is_valid_veto_fallback(
     simulation_cache: SimulationCache,
 ) -> bool:
     if action.action_type is ActionType.BUILD_ROAD and action.coord is not None:
-        if _bridge_path_for_first_action(state, action) is not None:
+        if simulation_cache.bridge_path_for_first_action(state, action) is not None:
             return True
         delta = _action_delta_diagnostics(state, action, simulation_cache=simulation_cache)
         return (
@@ -2056,9 +2257,9 @@ def _action_is_valid_veto_fallback(
         budget = site_budget(state, action.coord, context)
         return budget.food_balance >= 1 or _city_can_stabilize_food(state, action.coord, context)
     if action.action_type is ActionType.BUILD_BUILDING:
-        return _is_rescue_fill_action(state, action)
+        return _is_rescue_fill_action(state, action, simulation_cache=simulation_cache)
     if action.action_type is ActionType.RESEARCH_TECH:
-        return _is_rescue_fill_action(state, action)
+        return _is_rescue_fill_action(state, action, simulation_cache=simulation_cache)
     return profile.turns_remaining <= 1
 
 
@@ -2068,8 +2269,14 @@ def _veto_fallback_bonus(
     context: HeuristicContext,
     *,
     veto_reason: str,
+    simulation_cache: SimulationCache | None = None,
 ) -> int:
-    if action.action_type is ActionType.BUILD_ROAD and _bridge_path_for_first_action(state, action):
+    bridge_path = (
+        simulation_cache.bridge_path_for_first_action(state, action)
+        if simulation_cache is not None
+        else _bridge_path_for_first_action(state, action)
+    )
+    if action.action_type is ActionType.BUILD_ROAD and bridge_path is not None:
         if veto_reason.startswith(("road_", "route_")):
             return 1_000_000
         return 80_000
@@ -2102,16 +2309,21 @@ def _city_can_stabilize_food(
     )
 
 
-def _is_rescue_fill_action(state: GameState, action: Action) -> bool:
+def _is_rescue_fill_action(
+    state: GameState,
+    action: Action,
+    *,
+    simulation_cache: SimulationCache | None = None,
+) -> bool:
     if action.action_type is ActionType.BUILD_BUILDING:
         return (
             action.building_type is BuildingType.FARM
-            or _risk_action_score_delta(state, action) >= 0
+            or _risk_action_score_delta(state, action, simulation_cache=simulation_cache) >= 0
         )
     if action.action_type is ActionType.RESEARCH_TECH:
         return (
             action.tech_type is TechType.AGRICULTURE
-            or _risk_action_score_delta(state, action) >= 0
+            or _risk_action_score_delta(state, action, simulation_cache=simulation_cache) >= 0
         )
     return False
 
@@ -2122,14 +2334,22 @@ def _risk_action_improves_food(
     *,
     simulation_cache: SimulationCache | None = None,
 ) -> bool:
-    before = _risk_profile(state)
+    before = (
+        simulation_cache.risk_profile(state)
+        if simulation_cache is not None
+        else _risk_profile(state)
+    )
     try:
         simulated = (
             simulation_cache.simulate(state, action)
             if simulation_cache is not None
             else simulate_action(state, action)
         )
-        after = _risk_profile(simulated)
+        after = (
+            simulation_cache.risk_profile(simulated)
+            if simulation_cache is not None
+            else _risk_profile(simulated)
+        )
     except ValueError:
         return False
     return (
@@ -2145,14 +2365,22 @@ def _risk_action_improves_connection(
     *,
     simulation_cache: SimulationCache | None = None,
 ) -> bool:
-    before = _risk_profile(state)
+    before = (
+        simulation_cache.risk_profile(state)
+        if simulation_cache is not None
+        else _risk_profile(state)
+    )
     try:
         simulated = (
             simulation_cache.simulate(state, action)
             if simulation_cache is not None
             else simulate_action(state, action)
         )
-        after = _risk_profile(simulated)
+        after = (
+            simulation_cache.risk_profile(simulated)
+            if simulation_cache is not None
+            else _risk_profile(simulated)
+        )
     except ValueError:
         return False
     return (
@@ -2166,8 +2394,14 @@ def _sequence_bridge_diagnostics(
     previous: BridgeDiagnostics,
     state: GameState,
     action: Action,
+    *,
+    simulation_cache: SimulationCache | None = None,
 ) -> BridgeDiagnostics:
-    bridge_path = _bridge_path_for_first_action(state, action)
+    bridge_path = (
+        simulation_cache.bridge_path_for_first_action(state, action)
+        if simulation_cache is not None
+        else _bridge_path_for_first_action(state, action)
+    )
     if bridge_path is None:
         return previous
     return BridgeDiagnostics(
@@ -2199,10 +2433,19 @@ def _bridge_paths_for_state(
     state: GameState,
     *,
     legal_actions: list[Action] | None = None,
+    simulation_cache: SimulationCache | None = None,
 ) -> list[BridgePath]:
     if len(state.networks) < 2:
         return []
-    legal_actions = legal_actions or get_legal_actions(state)
+    legal_actions = (
+        legal_actions
+        if legal_actions is not None
+        else (
+            simulation_cache.legal_actions(state)
+            if simulation_cache is not None
+            else get_legal_actions(state)
+        )
+    )
     legal_roads = [
         action
         for action in legal_actions
@@ -2262,6 +2505,10 @@ def _bridge_paths_for_state(
                 source_network_id=source_id,
                 target_network_id=target_id,
                 max_steps=max_steps,
+                simulation_cache=simulation_cache,
+                before_passable_map=passable_map,
+                before_legal_road_coords=legal_road_coords,
+                before_buildable_road_coords=buildable_road_coords,
             )
             path = BridgePath(
                 actions=actions,
@@ -2346,11 +2593,7 @@ def _bridge_target_network_ids(state: GameState, risk_network_ids: set[int]) -> 
 
 
 def _bridge_buildable_road_coords(state: GameState) -> set[Coord]:
-    return {
-        coord
-        for coord, tile in state.board.items()
-        if tile.occupant.value == "none"
-    }
+    return {coord for coord, tile in state.board.items() if tile.occupant.value == "none"}
 
 
 def _network_needs_food(network: Network) -> bool:
@@ -2432,15 +2675,27 @@ def _bridge_progress_after_first_step(
     source_network_id: int,
     target_network_id: int,
     max_steps: int,
+    simulation_cache: SimulationCache | None = None,
+    before_passable_map: dict[Coord, int] | None = None,
+    before_legal_road_coords: set[Coord] | None = None,
+    before_buildable_road_coords: set[Coord] | None = None,
 ) -> int:
     before = _network_bridge_steps(
         state,
         source_network_id=source_network_id,
         target_network_id=target_network_id,
         max_steps=max_steps,
+        simulation_cache=simulation_cache,
+        passable_map=before_passable_map,
+        legal_road_coords=before_legal_road_coords,
+        buildable_road_coords=before_buildable_road_coords,
     )
     try:
-        after_state = simulate_action(state, action)
+        after_state = (
+            simulation_cache.simulate(state, action)
+            if simulation_cache is not None
+            else simulate_action(state, action)
+        )
     except ValueError:
         return 0
     after = _network_bridge_steps(
@@ -2448,6 +2703,7 @@ def _bridge_progress_after_first_step(
         source_network_id=source_network_id,
         target_network_id=target_network_id,
         max_steps=max_steps,
+        simulation_cache=simulation_cache,
     )
     if before is None or after is None:
         return 0
@@ -2460,17 +2716,29 @@ def _network_bridge_steps(
     source_network_id: int,
     target_network_id: int,
     max_steps: int,
+    simulation_cache: SimulationCache | None = None,
+    passable_map: dict[Coord, int] | None = None,
+    legal_road_coords: set[Coord] | None = None,
+    buildable_road_coords: set[Coord] | None = None,
 ) -> int | None:
-    passable_map = _component_passable_map_by_network(state)
+    passable_map = (
+        _component_passable_map_by_network(state) if passable_map is None else passable_map
+    )
     source_coords = _network_frontier_coords(passable_map, source_network_id)
     target_coords = _network_frontier_coords(passable_map, target_network_id)
     if not source_coords or not target_coords:
         return None
-    legal_road_coords = {
-        action.coord
-        for action in get_legal_actions(state)
-        if action.action_type is ActionType.BUILD_ROAD and action.coord is not None
-    }
+    if legal_road_coords is None:
+        legal_actions = (
+            simulation_cache.legal_actions(state)
+            if simulation_cache is not None
+            else get_legal_actions(state)
+        )
+        legal_road_coords = {
+            action.coord
+            for action in legal_actions
+            if action.action_type is ActionType.BUILD_ROAD and action.coord is not None
+        }
     blocked_coords = {
         coord
         for coord, network_id in passable_map.items()
@@ -2481,7 +2749,9 @@ def _network_bridge_steps(
         source_coords=source_coords,
         target_coords=target_coords,
         legal_road_coords=legal_road_coords,
-        buildable_road_coords=_bridge_buildable_road_coords(state),
+        buildable_road_coords=buildable_road_coords
+        if buildable_road_coords is not None
+        else _bridge_buildable_road_coords(state),
         blocked_coords=blocked_coords,
         max_steps=max_steps,
     )
@@ -2582,15 +2852,31 @@ def _action_delta_diagnostics(
     *,
     simulation_cache: SimulationCache | None = None,
 ) -> dict[str, object]:
-    before = build_search_position_profile(state)
-    before_risk = _network_food_risk_profile(state)
+    before = (
+        simulation_cache.profile(state)
+        if simulation_cache is not None
+        else build_search_position_profile(state)
+    )
+    before_risk = (
+        simulation_cache.network_food_risk(state)
+        if simulation_cache is not None
+        else _network_food_risk_profile(state)
+    )
     after_state = (
         simulation_cache.simulate(state, action)
         if simulation_cache is not None
         else simulate_action(state, action)
     )
-    after = build_search_position_profile(after_state)
-    after_risk = _network_food_risk_profile(after_state)
+    after = (
+        simulation_cache.profile(after_state)
+        if simulation_cache is not None
+        else build_search_position_profile(after_state)
+    )
+    after_risk = (
+        simulation_cache.network_food_risk(after_state)
+        if simulation_cache is not None
+        else _network_food_risk_profile(after_state)
+    )
     road_connected_city_delta = after.connected_city_count - before.connected_city_count
     road_merges_networks = (
         action.action_type is ActionType.BUILD_ROAD and after.network_count < before.network_count
@@ -2631,7 +2917,7 @@ def _action_delta_diagnostics(
         "search_road_after_full_connectivity": road_after_full_connectivity,
         "search_city_food_capacity_after_action": city_capacity,
         "search_city_local_plain_capacity": city_plain_capacity,
-        **_network_food_risk_diagnostics(after_state),
+        **_network_food_risk_diagnostics(after_state, simulation_cache=simulation_cache),
     }
 
 
@@ -2656,8 +2942,17 @@ def _city_local_plain_capacity(state: GameState, action: Action) -> int | None:
     return center_plain + plain + river
 
 
-def _route_diagnostics(state: GameState, action: Action) -> dict[str, object]:
-    bridge_path = _bridge_path_for_first_action(state, action)
+def _route_diagnostics(
+    state: GameState,
+    action: Action,
+    *,
+    simulation_cache: SimulationCache | None = None,
+) -> dict[str, object]:
+    bridge_path = (
+        simulation_cache.bridge_path_for_first_action(state, action)
+        if simulation_cache is not None
+        else _bridge_path_for_first_action(state, action)
+    )
     if bridge_path is None:
         return {
             "search_route_target_network_id": None,
@@ -2682,7 +2977,11 @@ def _route_committed_from_history(state: GameState, bridge_path: BridgePath) -> 
     return True
 
 
-def _preferred_committed_route_action(state: GameState) -> Action | None:
+def _preferred_committed_route_action(
+    state: GameState,
+    *,
+    simulation_cache: SimulationCache | None = None,
+) -> Action | None:
     previous_target_id: int | None = None
     previous_remaining_steps: int | None = None
     for context in reversed(state.stats.decision_contexts[-6:]):
@@ -2694,7 +2993,12 @@ def _preferred_committed_route_action(state: GameState) -> Action | None:
     if previous_target_id is None:
         return None
 
-    for path in _bridge_paths_for_state(state):
+    paths = (
+        simulation_cache.bridge_paths(state)
+        if simulation_cache is not None
+        else _bridge_paths_for_state(state)
+    )
+    for path in paths:
         if path.target_network_id != previous_target_id:
             continue
         if previous_remaining_steps is not None and path.min_steps > previous_remaining_steps:
@@ -2707,17 +3011,16 @@ def _post_decision_diagnostics(
     state: GameState,
     decision: PlannedSearchDecision,
 ) -> dict[str, object]:
-    greedy_action = GreedyPolicy().select_action(state)
     diagnostics = _greedy_anchor_diagnostics(
         root_candidates=decision.root_candidate_diagnostics,
         chosen_action=decision.action,
-        greedy_action=greedy_action,
+        greedy_action=decision.greedy_action,
     )
     diagnostics.update(
         _city_anchor_diagnostics(
             state=state,
             chosen_action=decision.action,
-            greedy_action=greedy_action,
+            greedy_action=decision.greedy_action,
         )
     )
     return diagnostics
@@ -2844,8 +3147,16 @@ def _adjacent_network_ids_for_context(context: HeuristicContext, coord: Coord) -
     }
 
 
-def _network_food_risk_diagnostics(state: GameState) -> dict[str, object]:
-    profile = _network_food_risk_profile(state)
+def _network_food_risk_diagnostics(
+    state: GameState,
+    *,
+    simulation_cache: SimulationCache | None = None,
+) -> dict[str, object]:
+    profile = (
+        simulation_cache.network_food_risk(state)
+        if simulation_cache is not None
+        else _network_food_risk_profile(state)
+    )
     return {
         "search_min_network_food_after_action": profile["min_food"],
         "search_worst_network_food_pressure_after_action": profile["worst_pressure"],
@@ -2880,8 +3191,16 @@ def _sequence_adjustment(
     *,
     simulation_cache: SimulationCache | None = None,
 ) -> int:
-    root_profile = build_search_position_profile(root_state)
-    leaf_profile = build_search_position_profile(leaf_state)
+    root_profile = (
+        simulation_cache.profile(root_state)
+        if simulation_cache is not None
+        else build_search_position_profile(root_state)
+    )
+    leaf_profile = (
+        simulation_cache.profile(leaf_state)
+        if simulation_cache is not None
+        else build_search_position_profile(leaf_state)
+    )
     action_counts = {
         action_type: sum(1 for action in sequence if action.action_type is action_type)
         for action_type in ActionType
@@ -2949,7 +3268,12 @@ def _sequence_adjustment(
             and root_profile.network_count > 1
             and first_connected_delta <= 0
             and first_network_delta >= 0
-            and _bridge_path_for_first_action(root_state, first_action) is None
+            and (
+                simulation_cache.bridge_path_for_first_action(root_state, first_action)
+                if simulation_cache is not None
+                else _bridge_path_for_first_action(root_state, first_action)
+            )
+            is None
         ):
             adjustment -= 14_000
         adjustment -= skip_actions * 2_500
@@ -2972,7 +3296,11 @@ def _sequence_adjustment(
 
     if first_action is not None:
         if first_action.action_type is ActionType.BUILD_ROAD:
-            first_bridge_path = _bridge_path_for_first_action(root_state, first_action)
+            first_bridge_path = (
+                simulation_cache.bridge_path_for_first_action(root_state, first_action)
+                if simulation_cache is not None
+                else _bridge_path_for_first_action(root_state, first_action)
+            )
             if first_bridge_path is not None:
                 adjustment += 24_000
                 adjustment += first_bridge_path.progress_after_first_step * 4_000
@@ -3038,13 +3366,21 @@ def _first_action_delta(
     *,
     simulation_cache: SimulationCache | None = None,
 ) -> dict[str, int]:
-    before = build_search_position_profile(state)
+    before = (
+        simulation_cache.profile(state)
+        if simulation_cache is not None
+        else build_search_position_profile(state)
+    )
     after_state = (
         simulation_cache.simulate(state, action)
         if simulation_cache is not None
         else simulate_action(state, action)
     )
-    after = build_search_position_profile(after_state)
+    after = (
+        simulation_cache.profile(after_state)
+        if simulation_cache is not None
+        else build_search_position_profile(after_state)
+    )
     return {
         "starving_network_count": after.starving_network_count - before.starving_network_count,
         "food_pressure": after.food_pressure - before.food_pressure,

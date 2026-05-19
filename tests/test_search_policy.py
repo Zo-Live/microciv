@@ -151,6 +151,23 @@ def test_search_policy_returns_legal_action_and_default_diagnostics() -> None:
     assert _entry_matches_action(best_sequence[0], action)
 
 
+def test_search_explain_reuses_planned_greedy_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _mixed_action_state()
+    policy = SearchPolicy()
+    action = policy.select_action(state)
+
+    def fail_select_action(self: GreedyPolicy, state: GameState) -> Action:
+        raise AssertionError("explain_decision should not recompute Greedy select_action")
+
+    monkeypatch.setattr(GreedyPolicy, "select_action", fail_select_action)
+
+    context = policy.explain_decision(state)
+
+    assert context["search_greedy_action_type"]
+    assert isinstance(context["search_matches_greedy_action"], bool)
+    assert _entry_matches_action(context["search_best_sequence"][0], action)
+
+
 def test_search_policy_does_not_mutate_input_state() -> None:
     state = _mixed_action_state()
     before = _state_signature(state)
@@ -791,9 +808,7 @@ def _long_route_bridge_state() -> GameState:
     state = GameState.empty(GameConfig.for_play(turn_limit=40, map_size=18))
     state.turn = 6
     state.board = {
-        (row, col): Tile(base_terrain=TerrainType.PLAIN)
-        for row in range(2)
-        for col in range(7)
+        (row, col): Tile(base_terrain=TerrainType.PLAIN) for row in range(2) for col in range(7)
     }
     state.board[(0, 0)].occupant = OccupantType.CITY
     state.board[(0, 6)].occupant = OccupantType.CITY

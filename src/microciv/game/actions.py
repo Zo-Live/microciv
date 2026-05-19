@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from microciv.constants import BUILDING_COSTS, BUILDING_LIMIT_PER_CITY, TECH_COSTS, TECH_UNLOCKS
 from microciv.game.enums import ActionType, BuildingType, OccupantType, TechType, TerrainType
 from microciv.game.models import GameState
+from microciv.game.networks import map_passable_coords_to_networks
 from microciv.game.resources import choose_river_road_payment_network
 from microciv.utils.grid import Coord, cardinal_neighbors, coord_sort_key
 
@@ -95,9 +96,14 @@ def list_legal_actions(state: GameState, *, include_skip: bool = True) -> list[A
         if (neighbor_tile := state.board.get(neighbor)) is not None
         and neighbor_tile.occupant is OccupantType.NONE
     }
+    network_coord_map = map_passable_coords_to_networks(state) if road_candidate_coords else {}
     for coord in sorted(road_candidate_coords, key=coord_sort_key):
         action = Action.build_road(coord)
-        if validate_action(state, action).is_valid:
+        if _validate_build_road(
+            state,
+            action,
+            network_coord_map=network_coord_map,
+        ).is_valid:
             actions.append(action)
 
     for city_id in state.sorted_city_ids():
@@ -131,7 +137,12 @@ def _validate_build_city(state: GameState, action: Action) -> ActionValidation:
     return ActionValidation(True)
 
 
-def _validate_build_road(state: GameState, action: Action) -> ActionValidation:
+def _validate_build_road(
+    state: GameState,
+    action: Action,
+    *,
+    network_coord_map: dict[Coord, int] | None = None,
+) -> ActionValidation:
     if action.coord is None:
         return ActionValidation(False, "Cannot build road here")
     tile = state.board.get(action.coord)
@@ -147,7 +158,12 @@ def _validate_build_road(state: GameState, action: Action) -> ActionValidation:
 
     if (
         tile.base_terrain is TerrainType.RIVER
-        and choose_river_road_payment_network(state, action.coord) is None
+        and choose_river_road_payment_network(
+            state,
+            action.coord,
+            network_coord_map=network_coord_map,
+        )
+        is None
     ):
         return ActionValidation(False, "Not enough resources")
     return ActionValidation(True)
