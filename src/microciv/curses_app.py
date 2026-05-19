@@ -182,8 +182,10 @@ class MicroCivController:
         self.current_route = ScreenRoute.SETUP_PLAY
         self.message = ""
 
-    def open_setup_for_autoplay(self) -> None:
-        self.setup_state = SetupState(autoplay=True, config=GameConfig.for_autoplay())
+    def open_setup_for_autoplay(self, config: GameConfig | None = None) -> None:
+        if config is not None and config.mode is not Mode.AUTOPLAY:
+            raise ValueError("Autoplay setup requires an autoplay config.")
+        self.setup_state = SetupState(autoplay=True, config=config or GameConfig.for_autoplay())
         self.current_route = ScreenRoute.SETUP_AUTOPLAY
         self.message = ""
 

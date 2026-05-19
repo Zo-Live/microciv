@@ -15,8 +15,15 @@ from microciv.curses_app import (
     _scoreboard_score_text,
 )
 from microciv.game.actions import Action, validate_action
-from microciv.game.enums import Mode, OccupantType, PlaybackMode, PolicyType, TerrainType
-from microciv.game.models import City, Network, ResourcePool, Tile
+from microciv.game.enums import (
+    MapDifficulty,
+    Mode,
+    OccupantType,
+    PlaybackMode,
+    PolicyType,
+    TerrainType,
+)
+from microciv.game.models import City, GameConfig, Network, ResourcePool, Tile
 from microciv.records.models import RecordDatabase, RecordEntry
 
 
@@ -61,6 +68,29 @@ def test_controller_can_open_setup_and_cycle_autoplay_options(tmp_path: Path) ->
 
     controller.click("setup-playback")
     assert controller.setup_state.config.playback_mode is PlaybackMode.SPEED
+
+
+def test_controller_can_open_autoplay_setup_with_prefilled_search_config(tmp_path: Path) -> None:
+    controller = build_controller(tmp_path)
+    config = GameConfig.for_autoplay(
+        map_size=20,
+        turn_limit=100,
+        map_difficulty=MapDifficulty.HARD,
+        policy_type=PolicyType.SEARCH,
+        playback_mode=PlaybackMode.SPEED,
+        seed=397,
+    )
+
+    controller.open_setup_for_autoplay(config=config)
+
+    assert controller.current_route is ScreenRoute.SETUP_AUTOPLAY
+    assert controller.setup_state.autoplay is True
+    assert controller.setup_state.config.map_size == 20
+    assert controller.setup_state.config.turn_limit == 100
+    assert controller.setup_state.config.map_difficulty is MapDifficulty.HARD
+    assert controller.setup_state.config.policy_type is PolicyType.SEARCH
+    assert controller.setup_state.config.playback_mode is PlaybackMode.SPEED
+    assert controller.setup_state.config.seed == 397
 
 
 def test_controller_can_start_manual_session_and_build_city(tmp_path: Path) -> None:
