@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from heapq import heappop, heappush
-from typing import Protocol
+from typing import Protocol, cast
 
 from microciv.ai.greedy import GreedyPlanSnapshot, GreedyPolicy
 from microciv.ai.heuristics import (
@@ -961,7 +961,7 @@ class SearchPolicy(Policy):
             raise ValueError("SearchDepthStrategy returned depth less than 1")
         if decision.depth > self.search_max_depth:
             raise ValueError("SearchDepthStrategy returned depth greater than search_max_depth")
-        reason = decision.reason or "custom"
+        reason = decision.reason or "strategy"
         return SearchDepthDecision(depth=decision.depth, reason=reason)
 
     def _run_risk_beam_search(
@@ -1323,10 +1323,10 @@ def _greedy_road_veto_reason(
     if simulation_cache.bridge_path_for_first_action(state, action) is not None:
         return None
     delta = _action_delta_diagnostics(state, action, simulation_cache=simulation_cache)
-    connected_delta = int(delta["search_delta_connected_city_count"])
-    network_delta = int(delta["search_delta_network_count"])
-    food_delta = int(delta["search_delta_food_pressure"])
-    overbuild_delta = int(delta["search_delta_road_overbuild"])
+    connected_delta = cast(int, delta["search_delta_connected_city_count"])
+    network_delta = cast(int, delta["search_delta_network_count"])
+    food_delta = cast(int, delta["search_delta_food_pressure"])
+    overbuild_delta = cast(int, delta["search_delta_road_overbuild"])
     if bool(delta["search_road_after_full_connectivity"]) and connected_delta <= 0:
         return "road_after_full_connectivity"
     if bool(delta["search_road_is_redundant"]):
@@ -2250,8 +2250,8 @@ def _action_is_valid_veto_fallback(
         delta = _action_delta_diagnostics(state, action, simulation_cache=simulation_cache)
         return (
             bool(delta["search_road_merges_networks"])
-            or int(delta["search_delta_connected_city_count"]) > 0
-            or int(delta["search_delta_network_count"]) < 0
+            or cast(int, delta["search_delta_connected_city_count"]) > 0
+            or cast(int, delta["search_delta_network_count"]) < 0
         )
     if action.action_type is ActionType.BUILD_CITY and action.coord is not None:
         budget = site_budget(state, action.coord, context)

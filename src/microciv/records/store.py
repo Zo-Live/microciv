@@ -10,6 +10,8 @@ from microciv.constants import MAX_RECORDS, PROJECT_VERSION
 from microciv.game.models import GameState
 from microciv.records.models import RECORDS_SCHEMA_VERSION, RecordDatabase, RecordEntry
 
+PREVIOUS_RECORDS_SCHEMA_VERSION_WITH_CUSTOM_GOAL = 11
+
 
 class RecordStore:
     """Load, append, and save the local records file."""
@@ -27,9 +29,17 @@ class RecordStore:
         except (KeyError, TypeError, ValueError):
             return self._reset_incompatible_file()
 
-        if database.schema_version != RECORDS_SCHEMA_VERSION:
-            return self._reset_incompatible_file()
-        return database
+        if database.schema_version == RECORDS_SCHEMA_VERSION:
+            return database
+        if database.schema_version == PREVIOUS_RECORDS_SCHEMA_VERSION_WITH_CUSTOM_GOAL:
+            migrated = RecordDatabase(
+                schema_version=RECORDS_SCHEMA_VERSION,
+                next_record_id=database.next_record_id,
+                records=database.records,
+            )
+            self.save(migrated)
+            return migrated
+        return self._reset_incompatible_file()
 
     def save(self, database: RecordDatabase) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

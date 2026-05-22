@@ -18,6 +18,7 @@ from microciv.game.models import (
 from microciv.records.artifacts import record_decision_rows
 from microciv.records.export import export_records_json
 from microciv.records.models import (
+    CSV_FIELD_ORDER,
     RECORDS_SCHEMA_VERSION,
     RecordDatabase,
     RecordDecisionContext,
@@ -73,6 +74,7 @@ def test_record_store_persists_and_reloads_completed_games(tmp_path) -> None:
     assert payload["schema_version"] == RECORDS_SCHEMA_VERSION
     assert payload["next_record_id"] == 2
     assert len(payload["records"]) == 1
+    assert "custom_goal" not in payload["records"][0]
     assert "final_map" in payload["records"][0]
     assert "cities" in payload["records"][0]
     assert "roads" in payload["records"][0]
@@ -110,6 +112,38 @@ def test_record_store_resets_schema_version_3(tmp_path) -> None:
     assert database.schema_version == RECORDS_SCHEMA_VERSION
     assert database.records == []
     assert records_path.with_suffix(".json.incompatible").exists()
+
+
+def test_record_store_migrates_schema_version_11_custom_goal(tmp_path) -> None:
+    records_path = tmp_path / "data" / "records.json"
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = RecordEntry.from_game_state(
+        record_id=1,
+        timestamp="2026-04-09T12:00:00+08:00",
+        state=build_completed_autoplay_state(),
+    )
+    record_payload = entry.to_dict()
+    record_payload["custom_goal"] = "legacy natural language goal"
+    records_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 11,
+                "next_record_id": 2,
+                "records": [record_payload],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    database = RecordStore(records_path).load()
+    saved_payload = json.loads(records_path.read_text(encoding="utf-8"))
+
+    assert database.schema_version == RECORDS_SCHEMA_VERSION
+    assert database.next_record_id == 2
+    assert database.records[0].ai_type == "Random"
+    assert saved_payload["schema_version"] == RECORDS_SCHEMA_VERSION
+    assert "custom_goal" not in saved_payload["records"][0]
+    assert not records_path.with_suffix(".json.incompatible").exists()
 
 
 def test_record_store_resets_missing_top_level_fields(tmp_path) -> None:
@@ -209,6 +243,8 @@ def test_record_entry_accepts_search_ai_type_roundtrip() -> None:
 
     assert entry.ai_type == "Search"
     assert restored.ai_type == "Search"
+    assert "custom_goal" not in CSV_FIELD_ORDER
+    assert "custom_goal" not in entry.to_dict()
 
 
 def test_record_entry_accepts_explicit_none_optional_decision_fields() -> None:

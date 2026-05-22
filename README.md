@@ -133,7 +133,7 @@ MicroCiv 是一款回合制文明经营游戏，运行在终端中。游戏以�
 - 正方形网格随机地图生成，包含平原、森林、山地、河流、荒地五种地形
 - 城市建设、道路网络、建筑建造、科技研究与评分系统
 - 手动游玩（Play）与自动演示（Autoplay）两种模式
-- 三种 Autoplay AI 策略：`Greedy`（分阶段贪心）、`Random`（带权随机）与 `Search`（滚动窗口束搜索）
+- 三种 Autoplay AI 策略：`Greedy`（分阶段贪心）、`Random`（带权随机）与 `Search`（Greedy 风险旁路 + 滚动窗口束搜索）
 - 本地 Records 记录系统，支持 JSON 导出
 - 像素字体渲染（标题、分数、回合数）
 - AI 决策计时指标：决策时间、单回合耗时、全局会话耗时
@@ -144,7 +144,7 @@ MicroCiv 是一款回合制文明经营游戏，运行在终端中。游戏以�
 ```
 microciv/
 ├── src/microciv/
-│   ├── ai/            # AI 策略（Greedy、Random、Search、Custom 占位）
+│   ├── ai/            # AI 策略（Greedy、Random、Search）
 │   ├── game/          # 核心规则与状态机
 │   ├── records/       # 本地持久化、导出与 artifact 表
 │   ├── tui/           # 终端 UI 组件（像素字体）

@@ -270,7 +270,6 @@ def make_record(record_id: int, timestamp: str) -> RecordEntry:
         game_version="0.1.0-test",
         mode="play",
         ai_type="Human",
-        custom_goal="",
         playback_mode="",
         seed=record_id,
         map_size=16,

@@ -17,7 +17,7 @@ from microciv.game.scoring import (
 )
 from microciv.utils.grid import Coord, coord_sort_key
 
-RECORDS_SCHEMA_VERSION = 11
+RECORDS_SCHEMA_VERSION = 12
 
 CSV_FIELD_ORDER: tuple[str, ...] = (
     "record_id",
@@ -25,7 +25,6 @@ CSV_FIELD_ORDER: tuple[str, ...] = (
     "game_version",
     "mode",
     "ai_type",
-    "custom_goal",
     "playback_mode",
     "seed",
     "map_size",
@@ -1547,7 +1546,6 @@ class RecordEntry:
     game_version: str
     mode: str
     ai_type: str
-    custom_goal: str
     playback_mode: str
     seed: int
     map_size: int
@@ -1609,7 +1607,6 @@ class RecordEntry:
             game_version=game_version,
             mode=state.config.mode.value,
             ai_type=_ai_type_label(state),
-            custom_goal="",
             playback_mode=""
             if state.config.mode is Mode.PLAY
             else state.config.playback_mode.value,
@@ -1675,7 +1672,6 @@ class RecordEntry:
             game_version=_require_str(payload, "game_version"),
             mode=mode,
             ai_type=ai_type,
-            custom_goal=_require_str(payload, "custom_goal"),
             playback_mode=playback_mode,
             seed=_require_int(payload, "seed"),
             map_size=_require_int(payload, "map_size"),

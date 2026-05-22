@@ -456,7 +456,7 @@ def test_search_policy_recent_food_probe_rejection_does_not_block_worsening_brid
     assert context["search_probe_rejected_reason"] != "recent_food_rescue_probe_rejected"
 
 
-def test_search_policy_uses_custom_depth_strategy() -> None:
+def test_search_policy_uses_injected_depth_strategy() -> None:
     state = _mixed_action_state()
     policy = SearchPolicy(
         search_depth=1,

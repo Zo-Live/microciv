@@ -56,7 +56,6 @@ def _make_record(*, seed: int, policy_type: PolicyType, final_score: int) -> Rec
         game_version="0.1.0-test",
         mode="autoplay",
         ai_type=ai_type,
-        custom_goal="",
         playback_mode="speed",
         seed=seed,
         map_size=16,
@@ -136,6 +135,7 @@ def test_batch_autoplay_exports_serial_outputs(monkeypatch, tmp_path) -> None:
 
     assert [record.record_id for record in database.records] == [3, 4]
     assert [row["record_id"] for row in rows] == ["3", "4"]
+    assert "custom_goal" not in rows[0]
     assert summary["execution_mode"] == "serial"
     assert summary["workers"] == 1
     assert summary["chunksize"] == 8

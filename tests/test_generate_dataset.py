@@ -62,7 +62,6 @@ def _make_record(
         game_version="0.1.0-test",
         mode="autoplay",
         ai_type=ai_type,
-        custom_goal="",
         playback_mode="speed",
         seed=seed,
         map_size=12,
@@ -211,6 +210,7 @@ def test_generate_dataset_exports_anomaly_json_and_csv(monkeypatch, tmp_path) ->
     assert [record.record_id for record in anomaly_database.records] == [1, 3]
     assert all(record.ai_type == "Greedy" for record in anomaly_database.records)
     assert [row["record_id"] for row in anomaly_rows] == ["1", "3"]
+    assert "custom_goal" not in anomaly_rows[0]
     assert manifest["anomaly_count"] == 2
     assert manifest["negative_score_anomaly_count"] == 1
     assert manifest["under_random_anomaly_count"] == 2
